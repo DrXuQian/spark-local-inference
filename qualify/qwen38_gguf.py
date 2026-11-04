@@ -181,6 +181,13 @@ class PartialDecoder:
         if self.sampler is not None:
             self.sampler()
 
+    @property
+    def device_errors(self):
+        from ignition.components.operator_errors import device_errors
+
+        return device_errors(self.embedding, self.lookup,
+            *(operation for _, attention, _, moe in self.layers for operation in (attention, moe)))
+
 
 @torch.no_grad()
 def prepare(args):
@@ -327,6 +334,9 @@ def prepare(args):
             session.register_scratch(workspace)
             session.tune(show_progress=False)
             print('Compiling complete prefill/MTP/maintenance forwards', flush=True)
+            from ignition.components.operator_errors import guard_forwards
+
+            functions = guard_forwards(functions, requests, completion, frame, sequence)
             stream = torch.cuda.Stream()
             graphs, compiled = capture_forwards(functions, signatures, session=session, device=torch.device('cuda:0'),
                 stream=stream, pool=storage.graph_pool.id, retain_graphs=True,

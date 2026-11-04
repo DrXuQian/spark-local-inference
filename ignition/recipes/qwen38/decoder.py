@@ -415,3 +415,10 @@ class PreparedDecoder:
         self.lm_head(s.sample_hidden)
         if sampler is not None:
             sampler()
+
+    @property
+    def device_errors(self):
+        from ignition.components.operator_errors import device_errors
+
+        return device_errors(self.embedding, self.ple.embedding_lookup,
+            *(operation for _, attention, _, moe in self.layers for operation in (attention, moe)))

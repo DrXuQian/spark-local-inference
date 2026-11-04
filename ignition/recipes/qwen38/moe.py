@@ -229,3 +229,9 @@ class PreparedQwenMoe:
         if self.concurrent_shared is not None:
             self.concurrent_shared.finish(source, routed)
         return self.shared.finish(routed, out=self.output)
+
+    @property
+    def device_errors(self):
+        from ignition.components.operator_errors import device_errors
+
+        return device_errors(self.experts)

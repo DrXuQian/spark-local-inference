@@ -190,6 +190,7 @@ class PreparedMTP:
             workspace=workspace, projection_workspace=workspace, max_cache_pages=max_cache_pages,
             cache_only=cache_only)
         if cache_only:
+            self.prepare_errors(self.embedding, self.attention)
             return
         self.mlp_hc = PreparedHyperconnection(layer.mlp_hyper_connection, scratch.hyperconnection,
             priming_state=scratch.residual, session=session, name=f"{name}.mlp_hc",
@@ -223,9 +224,25 @@ class PreparedMTP:
             self.lm_head = PreparedVocabularyProjection(scratch.selected_hidden, head,
                 scratch.local_logits, scratch.logits, runtime=vocabulary_runtime, session=session,
                 coordinator=coordinator, name=f"{name}.lm_head", workspace=workspace)
+        self.prepare_errors(self.embedding, self.attention, self.moe, self.lm_head)
 
     def rebind_pages_for_preparation(self, state):
         self.attention.rebind_pages_for_preparation(state)
+
+    def prepare_errors(self, *operators):
+        from ignition.components.operator_errors import device_errors
+
+        self.error_inputs = device_errors(*operators)
+        self.device_errors = ((torch.zeros(1, dtype=torch.int32, device=self.scratch.residual.device),)
+                              if self.error_inputs else ())
+
+    def record_errors(self):
+        # One proposal owner runs repeatedly in a round. Its ABI may clear a
+        # per-call flag, so preserve every failure until the outer graph ends.
+        from ignition.components.operator_errors import accumulate_errors
+
+        if self.error_inputs:
+            accumulate_errors(self.error_inputs, self.device_errors[0])
 
     def __call__(self):
         s = self.scratch
@@ -238,6 +255,7 @@ class PreparedMTP:
         mixed = self.attn_hc.mix(s.residual)
         block = self.attention(mixed)
         if self.cache_only:
+            self.record_errors()
             return None
         if self.reductions:
             block = self.reductions[0](block)
@@ -251,4 +269,5 @@ class PreparedMTP:
         self.final_mixer.mix(s.residual)
         torch.index_select(s.hidden, 0, self.output_indices, out=s.selected_hidden)
         self.lm_head(s.selected_hidden)
+        self.record_errors()
         return self.output

@@ -30,6 +30,7 @@ class PreparedGgufEmbedding:
         self.raw, self.ids, self.output, self.num_rows = weight.raw, ids, output, num_rows
         self.qtype, self.table_rows = weight.qtype, weight.shape[0]
         self.device_error = torch.zeros((), dtype=torch.int32, device=output.device)
+        self.device_errors = (self.device_error,)
         record_numeric_tensor(self.raw)
 
     def __call__(self):

@@ -124,6 +124,12 @@ class PreparedMixedRound:
         o.completion.merge(self.prompt_completion, self.decode_completion,
             self.prompt_inputs.row_slot_ids[0], o.frame)
 
+    @property
+    def device_errors(self):
+        from ignition.components.operator_errors import device_errors
+
+        return device_errors(self.decoder, self.round if self.enabled else None, self.absorb)
+
 
 class DecodeTarget:
     """Consume prompt logits before MTP absorption reuses target scratch."""
@@ -134,3 +140,9 @@ class DecodeTarget:
     def __call__(self):
         self.forward()
         self.prompt_sampler()
+
+    @property
+    def device_errors(self):
+        from ignition.components.operator_errors import device_errors
+
+        return device_errors(self.forward)

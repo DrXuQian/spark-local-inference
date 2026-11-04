@@ -530,6 +530,9 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
         stream = torch.cuda.Stream(device=device)
         graph_pool = torch.cuda.graph_pool_handle() if package_storage is None else package_storage.graph_pool.id
         compiled_functions = {}
+        from ignition.components.operator_errors import guard_forwards
+
+        functions = guard_forwards(functions, requests, completion, frame, sequence)
         def capture_catalog(*, compile_decoder, materialize=None, label="Prepare serving graphs"):
             captured, compiled = capture_forwards(functions, signatures, session=session, device=device,
                 stream=stream, pool=graph_pool, compile_decoder=compile_decoder, materialize=materialize,

@@ -111,6 +111,7 @@ class PreparedGgufRoutedExperts:
         self.source, self.ids, self.weights, self.output = source, ids, weights, output
         self.workspace, self.num_experts = workspace, experts.num_experts
         self.errors = torch.zeros(((tokens + capacity - 1) // capacity, 2), dtype=torch.int32, device=source.device)
+        self.device_errors = (self.errors,)
         self.calls, prepared = [], {}
         for start in range(0, tokens, capacity):
             end = min(start + capacity, tokens)

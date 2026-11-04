@@ -67,6 +67,7 @@ class PreparedGgufProjection:
         # compiling forwards in metadata-only workers and restoring artifacts.
         self.handle = self.owner.native_handle
         self.device_error = self.owner.device_error
+        self.device_errors = (self.device_error,)
         record_numeric_tensor(self.raw)
 
     def __getstate__(self):

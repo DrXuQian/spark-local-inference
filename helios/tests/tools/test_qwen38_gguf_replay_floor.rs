@@ -11,6 +11,7 @@ use flare_helios::{
 };
 use serde::Deserialize;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::{
     path::PathBuf,
     time::{Duration, Instant},
@@ -250,6 +251,12 @@ fn run(executor: &mut GraphExecutor, corpus: &Corpus, output: &PathBuf) -> Resul
             compared += a.len();
         }
         assert_eq!(before.len(), after.len());
+        // Retain exact state fingerprints for comparisons across re-exports.
+        // Readback and hashing happen after replay has drained, outside timing.
+        let fingerprints: std::collections::BTreeMap<_, _> = after
+            .iter()
+            .map(|(name, bytes)| (name, format!("{:x}", Sha256::digest(bytes))))
+            .collect();
         println!(
             "{}: {} rounds, {} ns, {} compared state bytes",
             case.name,
@@ -257,8 +264,11 @@ fn run(executor: &mut GraphExecutor, corpus: &Corpus, output: &PathBuf) -> Resul
             elapsed,
             compared
         );
-        report.push(json!({"case":case.name,"rounds":rounds.len(),"elapsed_ns":elapsed,
-            "state_bytes_compared":compared,"state_equal":true,"logprobs_equal":true,"tokens":actual,"samples":samples}));
+        report.push(
+            json!({"case":case.name,"rounds":rounds.len(),"elapsed_ns":elapsed,
+            "state_bytes_compared":compared,"state_sha256":fingerprints,
+            "state_equal":true,"logprobs_equal":true,"tokens":actual,"samples":samples}),
+        );
         std::fs::write(output, serde_json::to_vec_pretty(&report)?)?;
     }
     Ok(())

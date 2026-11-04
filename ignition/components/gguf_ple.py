@@ -40,6 +40,7 @@ class PreparedGgufPLELookup:
         self.rows = torch.arange(tokens * self.heads, dtype=torch.int64, device=output.device)
         self.count = torch.zeros(1, dtype=torch.int32, device=output.device)
         self.error = torch.zeros((), dtype=torch.int32, device=output.device)
+        self.device_errors = (self.error,)
         self.weights, self.event = table.weights[:tokens * self.heads], table.ready.cuda_event
         self.wait = PreparedReadinessWait(table.timings, 0, runtime=runtime, session=session,
                                          coordinator=coordinator, name=name + '.readiness')

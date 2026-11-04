@@ -155,6 +155,12 @@ class PreparedPrefillAbsorption:
               hidden, rope, o.draft_tables, capacity=self.indices.numel())
         self.mtp()
 
+    @property
+    def device_errors(self):
+        from ignition.components.operator_errors import device_errors
+
+        return device_errors(self.decoder, self.mtp)
+
 
 
 class PreparedSpeculativeRound:
@@ -318,3 +324,9 @@ class PreparedSpeculativeRound:
         self.absorb_metadata.set(slots, commit.emitted_count.long(), self.before - 1,
             self.state.token_ids, hidden, rope, o.draft_tables, capacity=w)
         self.absorb()
+
+    @property
+    def device_errors(self):
+        from ignition.components.operator_errors import device_errors
+
+        return device_errors(self.decoder, self.draft, self.absorb)

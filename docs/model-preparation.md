@@ -458,6 +458,18 @@ packed. The shared MTP uses the target embedding/head and ordinary attention
 (compression ratio zero). Target QSA uses compression ratio four. Vocabulary
 IDs, padding rows and BPE merges must match the pinned Flare frontend assets.
 
+External GGUF error flags are consumed inside the complete captured forward,
+after post-sampling MTP absorption. Repeated draft calls accumulate failures even
+when the native ABI clears its flag on the next successful call. A failed round
+uses the existing request error status/code 7, emits no tokens or logprobs, and
+restores the logical consumed/generated counters. Already terminal requests,
+inactive slots, stale generations and the other completion frame stay intact.
+The current ABI reports batch-global errors, so all participating requests fail;
+the native scheduler drains and retires their state without publishing a prefix.
+This is request failure handling, not speculative rollback of a surviving request.
+No host flag polling or additional graph launch is required. Actual external
+lookup faults cover AOT, capture, two queued native frames and slot reuse.
+
 For a complete local checkpoint, select a directory containing `manifest.json`:
 
 ```json
@@ -533,6 +545,20 @@ The service/replay ratios over the same interior 21 rounds are 0.9959–0.9992,
 including SSE serialization and loopback delivery. Differences this small are
 measurement variation; all four cases pass the 5% native-overhead limit. This
 qualifies the partial fixture at batch one and fixed width six, with RAM PLE.
+
+After adding captured external-error handling, all 18 MTP and 50 ordinary
+request cases retain the baseline tokens and logprobs exactly. Four paired
+native replay cases retain identical completion records and SHA-256 fingerprints
+for all 40 state/KV ranges (165465088 bytes per case). Their median GPU-round
+cost increases by 0.51–0.64%. The updated service/replay ratios are
+0.9826–1.0057; all four remain within the 5% overhead limit. Hashing and state
+readback are outside the measured rounds. These comparisons use the same partial
+checkpoint, graph capacities, fixed five drafts and RAM PLE configuration.
+The updated 102-round Nsight trace has 665 kernels per complete width-six graph.
+Across 94 consecutive pairs, inter-round gaps are median 15.136 us, p95
+16.256 us and maximum 16.352 us. There is no execution-time GPU allocation,
+recapture, module loading or out-of-graph compute. Internal dependency gaps
+remain; this does not assert literal zero idle or qualify other capacities.
 
 Run that comparison against a fresh service using `--mtp-draft-tokens 5
 --no-mtp-adaptive-verification`. The native tool explicitly trusts only the

@@ -38,6 +38,17 @@
     M<=8 selects SIMT, so do not carry the NVIDIA prefill chunk of eight into
     the PPU grouped-TC path without measuring complete forwards.
 
+[x] Propagate external GGUF operator failures inside complete serving graphs.
+    Preserve errors across repeated MTP calls and inspect them after final
+    absorption. Failed rounds emit no tokens and restore logical progress;
+    terminal/stale/inactive slots and the other completion frame remain intact.
+    Actual QU lookup faults pass AOT/capture and native two-frame validation,
+    including a later successful call, queued terminal errors and slot reuse.
+    Re-exported native serving preserves all 68 HTTP cases and four replay
+    cases' complete state exactly. Median GPU cost rises 0.51-0.64%; service
+    overhead remains within 5%, with no extra host wait or graph launch.
+    PPU adapters must still expose and reset their ABI's error storage.
+
 [x] Add explicit BF16 cache and hybrid-snapshot storage for PPU preparation.
     Twelve storage/maintenance cases pass, including capacity 2/32, scattered
     live rows, all 12 target cache tails and both MTP boundary pages. The
