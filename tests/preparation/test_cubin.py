@@ -4,6 +4,8 @@
 """Cubin debug stripping preserves executable layouts and original CUDA symbols."""
 
 import struct
+import os
+from pathlib import Path
 
 import pytest
 
@@ -84,3 +86,49 @@ def test_invalid_metadata_cannot_overwrite_executable_bytes(mutation, error):
     mutation(image)
     with pytest.raises(ValueError, match=error):
         strip_debug(bytes(image))
+
+
+@pytest.mark.parametrize('name,kind,flags', [
+    (b'.data', 1, 3), (b'.data.foo', 1, 3), (b'.bss', 8, 3), (b'.rodata', 1, 2),
+])
+def test_ppu_data_globals_require_native_machine_and_allocated_storage(name, kind, flags):
+    image = bytearray(cubin())
+    offset = image.index(b'.nv.global\0')
+    image[offset:offset + 10] = name.ljust(10, b'\0')
+    struct.pack_into('<I', image, 64 + 5 * 64 + 4, kind)
+    struct.pack_into('<Q', image, 64 + 5 * 64 + 8, flags)
+    for machine in (62, 190):
+        struct.pack_into('<H', image, 18, machine)
+        assert global_symbols(bytes(image)) == []
+    struct.pack_into('<H', image, 18, 270)
+    assert global_symbols(bytes(image)) == ['.nv.reservedSmem.offset0', 'weight_layout']
+    struct.pack_into('<Q', image, 64 + 5 * 64 + 8, 0)
+    assert global_symbols(bytes(image)) == []
+
+
+def test_actual_ppu_module_preserves_globals_and_executable_sections():
+    path = os.environ.get('FLARE_TEST_PPU_ELF')
+    if path is None:
+        pytest.skip('compile fixtures/ppu_module_globals.cu with the PPU SDK and supply FLARE_TEST_PPU_ELF')
+    original = Path(path).read_bytes()
+    assert struct.unpack_from('<H', original, 18)[0] == 270
+    wanted = {'qwen_export_counter', 'qwen_export_zero', 'qwen_export_constants', 'qwen_export_pointer'}
+    assert wanted <= set(global_symbols(original))
+    clean = strip_debug(original)
+    assert global_symbols(clean) == global_symbols(original)
+    before, after = sections(original), sections(clean)
+    assert len(before) == len(after)
+    names = before[struct.unpack_from('<H', original, 62)[0]]
+    strings = original[names[4]:names[4] + names[5]]
+    retained = set()
+    for a, b in zip(before, after, strict=True):
+        name = strings[a[0]:].split(b'\0', 1)[0]
+        if b'.debug' in name or name == b'.comment':
+            assert b[5] == 0
+            continue
+        retained.add(name)
+        assert a == b, name
+        if a[1] != 8:  # NOBITS owns storage without bytes in the module image.
+            start, size = a[4:6]
+            assert original[start:start + size] == clean[start:start + size], name
+    assert {b'.data', b'.bss', b'.hg_info', b'.rela.data'} <= retained

@@ -660,6 +660,41 @@ handles, and propagate failures through existing request state. Never read
 routing decisions back to the host. actlizeLA's supported build targets are
 `ppu10`, `ppu15` and `cuda_sm120`; a PPU1.7 target is a separate qualification.
 
+A further SDK 2.1.1 host audit finds hg-prefixed declarations for all 66 entry
+names resolved unconditionally by the native package driver. Compiled header
+probes compare 70 structure sizes, alignments and field offsets with CUDA,
+including graph kernel/copy parameters, VMM properties and profiling callbacks;
+all match on x86-64. This does not establish shared-library symbol availability
+or device behavior. The shipped profiling library exports `hgpti*`, not the
+`cupti*` names currently consumed by the recorder. Of its 46 enabled driver
+callback IDs, 45 retain the corresponding name; ID 742 (`cuFuncLoad`) is absent
+from the inspected HGPTI callback header even though `hgFuncLoad` is declared.
+Export naming also requires an NVML PCI-ID mapping whose current table admits
+only NVIDIA GB10/GB202. Resolve these bindings against the deployment stack;
+do not label a PPU artifact as one of those NVIDIA platforms.
+
+Native PPU ELF global discovery is now prepared for the observed machine 270
+format. The old CUDA section-name filter returned no globals for a real PPU
+module containing persistent counters, constants and a device pointer. The
+exporter now enumerates allocated `.data`, `.bss` and `.rodata` objects for that
+machine, retaining local objects as well as public ones. Existing native module
+lookup, download and relocation validation still apply and must pass on PPU.
+Eleven host tests pass, including the actual SDK-compiled fixture and preservation
+of code, `.hg_info`, symbol tables and `.rela.data` through debug stripping.
+No PPU kernel was launched; target module lookup and export/replay remain unrun.
+
+Reproduce the offline fixture check with the selected SDK on PATH:
+
+```sh
+ppu_export_check=/workspace/ppu-export-check
+mkdir -p "$ppu_export_check"
+hgcc -arch=ppu_10 -x hg -std=c++17 -O2 -c \
+  tests/preparation/fixtures/ppu_module_globals.cu -o "$ppu_export_check/globals.o"
+(cd "$ppu_export_check" && hgobjdump --extract-elf=0 globals.o)
+FLARE_TEST_PPU_ELF="$ppu_export_check/globals.o_ELF_File_1_PPU10" \
+  .venv/bin/python -m pytest -q tests/preparation/test_cubin.py
+```
+
 ### Native Qwen serving
 
 Enable hybrid history drafting at serving startup with

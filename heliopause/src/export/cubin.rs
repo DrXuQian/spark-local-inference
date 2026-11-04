@@ -216,13 +216,27 @@ pub(crate) fn strip_debug(image: &[u8]) -> ExportResult<Vec<u8>> {
 
 pub(crate) fn global_symbols(image: &[u8]) -> ExportResult<Vec<String>> {
     let elf = Elf::parse(image)?;
+    // SDK 2.1.1 native PPU images use machine 270 and ordinary allocated
+    // data sections, including NOBITS for zero-initialized device globals.
+    let ppu = number(image, 18, 2)? == 270;
     let mut result = BTreeSet::new();
     for (_, _, name, kind, index, _, size) in elf.symbols(false)? {
         if kind != 1 || size == 0 || index == 0 || index >= elf.sections.len() {
             continue;
         }
         let section_name = elf.string(elf.names, elf.sections[index].name)?;
-        if section_name.starts_with(b".nv.global") || section_name.starts_with(b".nv.constant") {
+        let section = &elf.sections[index];
+        let ppu_data = ppu
+            && section.flags & 2 != 0
+            && matches!(section.kind, 1 | 8)
+            && [b".data".as_slice(), b".bss", b".rodata"].iter().any(|name| {
+                section_name == *name
+                    || section_name.strip_prefix(*name).is_some_and(|tail| tail.starts_with(b"."))
+            });
+        if section_name.starts_with(b".nv.global")
+            || section_name.starts_with(b".nv.constant")
+            || ppu_data
+        {
             result.insert(std::str::from_utf8(name)?.to_owned());
         }
     }

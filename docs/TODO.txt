@@ -79,6 +79,15 @@
     behavior. Export on PPU; NVIDIA cubins are not PPU artifacts. See
     model-preparation.md#ppu-port-preparation for the concrete operator table.
 
+[x] Check the SDK 2.1.1 export ABI and native ELF data discovery. All 66
+    runtime driver entry names have hg-prefixed header declarations; 70 host
+    structure sizes/alignments/offsets match CUDA. This is not symbol resolution
+    or device execution. Fix missing globals in actual machine-270 ELF .data,
+    .bss and .rodata sections; 11 host parser checks preserve code, metadata and
+    pointer relocations. Retain all discovered state, including local objects.
+    HGPTI symbol names, the absent cuFuncLoad callback ID 742, actual module
+    global lookup and NVIDIA-only PCI platform naming still need target binding.
+
 [x] Export and serve the partial GGUF package after Python exits. Eighteen
     fixed-MTP HTTP cases and 50 ordinary-decode/teacher-prefix cases pass;
     seeded output and scores survive exact prefix restore in each fixed mode,
