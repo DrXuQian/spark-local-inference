@@ -22,6 +22,17 @@
     or Python/Torch/operator-host-library mapping. This is the recurrence and
     gated-normalization component boundary, not a complete PPU model adapter.
 
+[x] Bind actlizeLA GDN into the actual partial GGUF serving graph on SM120.
+    Share transient scratch while retaining each layer's correction records;
+    commit framework-computed consumed counts and restore convolution only for
+    zero consumption. Twelve actual-weight cases cover prefill 1/17/64, decode,
+    prefixes 0..6, retry history and two owners sharing scratch. All 68 native
+    HTTP cases pass; four queued/isolated replay cases preserve 165465088 bytes
+    of state each exactly. GDN score differences from b12x remain explicit;
+    fixed/adaptive Nsight runs have no hot allocation, recapture, module load
+    or out-of-graph compute, with 16.479/16.320 us maximum consecutive-round
+    gaps. This is not complete-model or PPU hardware qualification.
+
 [ ] QUactlize PPU: add device-indexed Q8_0/IQ4_NL row lookup for token
     embedding/PLE. The new host-indexed dequant range API cannot implement
     captured lookup with changing token IDs. Preserve original GGUF bytes.
@@ -71,7 +82,8 @@
     consumed input counts and handle zero-prefix convolution rollback exactly
     once. The current Qwen decoder sets checkpoint_export=False; the external
     ABI's lack of intermediate prefill checkpoint exports does not block that
-    path. Component export is not a complete-model adapter.
+    path. GDN composition now passes partial GGUF serving on SM120; QSA
+    substitution in that serving path and PPU target execution remain unrun.
 
 [x] Inspect remaining PPU seams: FA2 paged KV requires a multiple of 256,
     while current Flare uses 64; the available narrow FA3 build disables

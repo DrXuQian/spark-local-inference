@@ -124,6 +124,7 @@ class PartialDecoder:
                                        session=session, name=name + '.ple')
         source = s.hyperconnection.block_input
         self.layers = []
+        self.gdn_operations = {}
         for index, module, attention_weights, moe_weights in weights.blocks:
             prefix = f'{name}.layer{index}'
             ah = PreparedHyperconnection(module.attn_hyper_connection, s.hyperconnection,
@@ -138,7 +139,9 @@ class PartialDecoder:
                 attention = PreparedGDN(module.linear_attn, attention_weights, source, s.gdn,
                     state.pool.gdn[index], state.gdn, mode=state.mode, session=session, name=prefix + '.gdn',
                     checkpoint_export=False, workspace=workspace, projection_workspace=workspace,
-                    records=None if gdn_records is None else gdn_records[index], in_place=gdn_in_place)
+                    records=None if gdn_records is None else gdn_records[index], in_place=gdn_in_place,
+                    actlize_library=weights.actlize_library)
+                self.gdn_operations[index] = attention
             moe = PreparedQwenMoe(source, moe_weights, session=session, name=prefix + '.moe',
                 scratch=s.moe, workspace=s.gguf_experts, projection_workspace=workspace)
             ah.prepare_combine_norm(mh, priming_state=s.residual, session=session, name=prefix + '.attn_combine')
@@ -254,8 +257,18 @@ def prepare(args):
         frame = torch.zeros(1, dtype=torch.int32, device='cuda')
         sequence = torch.zeros(1, dtype=torch.int64, device='cuda')
         table, ple_caps = fixture_table(output, 64, storage, sequence, frame)
+        library = None
+        operators = {'gdn': 'b12x'}
+        if args.actlize_library is not None:
+            from actlize_la.serving import NativeLibrary
+
+            library = NativeLibrary(args.actlize_library, target='cuda_sm120')
+            with library.path.open('rb') as source:
+                operators = {'gdn': 'actlize', 'target': library.target,
+                             'library': hashlib.file_digest(source, 'sha256').hexdigest()}
         weights = SimpleNamespace(blocks=tuple(blocks), embedding=embedding, head=head,
-            final_mixer=mtp.module.hyper_connection_mixer, ple_caps=ple_caps, shard=TensorParallelShard(0, 1))
+            final_mixer=mtp.module.hyper_connection_mixer, ple_caps=ple_caps, shard=TensorParallelShard(0, 1),
+            actlize_library=library)
         state = HybridStatePool.allocate(5, 'cuda:0', speculative_tokens=7, storage=storage)
         state = replace(state, gdn=MappingProxyType({i: state.gdn[i] for i in args.layers if i % 4 != 3}))
         requests = DeviceRequestState.allocate('cuda:0', capacity=1)
@@ -282,7 +295,8 @@ def prepare(args):
         with RecordedPreparationSession(device='cuda:0', checkpoint='qwen38-gguf-partial',
                 workload_schema='qwen38-gguf-partial-v1', numerical_policy='default',
                 namespace={'fixture': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-                           'layers': args.layers, 'target_header': manifest.shards[0].header_sha256},
+                           'layers': args.layers, 'target_header': manifest.shards[0].header_sha256,
+                           'operators': operators},
                 autotune_effort='off', compile_workers=2) as session:
             speculation = SpeculativePreparation(weights=weights, mtp_weights=mtp, pool=state, requests=requests,
                 inputs=inputs, scratch=scratch, workspaces=workspace, rotary=rotary, cache=cache, table=table,
@@ -346,7 +360,8 @@ def prepare(args):
                 tokens_per_record=4 if name == 'compressed_k_cache' else 1)
                 for i, value in cache.items() for name in ('main_k_cache', 'main_v_cache', 'compressed_k_cache')]
             identity = hashlib.sha256((manifest.shards[0].header_sha256
-                + hashlib.sha256(Path(__file__).read_bytes()).hexdigest()).encode()).hexdigest()
+                + hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+                + json.dumps(operators, sort_keys=True)).encode()).hexdigest()
             settings = dict(model_id='qwen38-gguf-partial-qualification', identity=identity,
                 max_sequence_tokens=1024, prefill_chunk_size=64, pages=64, state_rows=4, snapshots=3, page_tokens=64,
                 frontend=prepare_frontend(frontend, eos_token_ids=[248046, 248044], image_profile=None),
@@ -378,4 +393,6 @@ if __name__ == '__main__':
     for name in ('target-shard', 'metadata', 'mtp', 'frontend', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--layers', type=int, nargs='+', default=[44, 47])
+    parser.add_argument('--actlize-library', type=Path,
+                        help='qualify the actlizeLA SM120 GDN library inside complete serving graphs')
     prepare(parser.parse_args())

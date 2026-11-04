@@ -14,7 +14,7 @@ from ignition.preparation.scratch import GraphBufferPool
 
 from .decoder import PreparedDecoder
 from .draft_state import DRAFT_RAW_FIELDS, DraftMetadata
-from ignition.components.gdn_recovery import GDNLayerRecords, PreparedGDNCommit
+from ignition.components.gdn_recovery import GDNLayerRecords
 from .mtp import MTPScratch, PreparedMTP
 from ignition.components.speculation import (
     DRAFT_RNG_DOMAIN, PreparedSpeculativeCommit,
@@ -246,10 +246,12 @@ class PreparedSpeculativeRound:
                                   self.target_residual, self.decoder.scratch.sample_hidden)
         model_commit = tuple(self.state._commit)
         if o.gdn_records is not None and w > 1:
-            heads = o.gdn_records.delta.shape[2]
-            model_commit += (PreparedGDNCommit(o.pool.backing,
+            from ignition.components.actlize_gdn import prepare_layer_commits
+
+            decoder = getattr(self.decoder, 'forward', self.decoder)
+            model_commit += prepare_layer_commits(o.pool.backing,
                 {layer: state.recurrent for layer, state in o.pool.gdn.items()}, o.gdn_records, self.state.gdn,
-                commit.emitted_count, key_heads=heads // 3, value_heads=heads),)
+                commit.emitted_count, decoder.gdn_operations)
         self.operations = (target, proposals, verify, commit, model_commit)
 
     def __call__(self):

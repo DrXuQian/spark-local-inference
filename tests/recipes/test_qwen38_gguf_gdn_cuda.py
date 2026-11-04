@@ -27,6 +27,18 @@ from tests.recipes.test_qwen38_gdn import _metadata, _numerical, _prefill_checks
 pytestmark = pytest.mark.skipif(os.environ.get('FLARE_RUN_CUDA_TESTS') != '1', reason='explicit CUDA assignment required')
 
 
+@pytest.fixture(params=('b12x', 'actlize'))
+def recurrence_library(request):
+    if request.param == 'b12x':
+        return None
+    path = os.environ.get('FLARE_ACTLIZE_LIBRARY')
+    if not path:
+        pytest.skip('actual actlizeLA SM120 serving library required')
+    from actlize_la.serving import NativeLibrary
+
+    return NativeLibrary(path, target='cuda_sm120')
+
+
 @pytest.fixture(scope='module')
 def checkpoint():
     path, frontend = os.environ.get('FLARE_GGUF_TARGET_SHARD'), os.environ.get('FLARE_GGUF_FRONTEND')
@@ -74,7 +86,19 @@ class Forward:
     def __call__(self):
         self.operator(self.source)
         if self.commit is not None:
-            self.commit()
+            for operation in self.commit:
+                operation()
+
+
+class LayerForward:
+    def __init__(self, operations, source, commits):
+        self.operations, self.source, self.commits = tuple(operations), source, commits
+
+    def __call__(self):
+        for operation in self.operations:
+            operation(self.source)
+        for commit in self.commits:
+            commit()
 
 
 def test_target_gdn_inverse_head_layout(checkpoint):
@@ -92,8 +116,8 @@ def test_target_gdn_inverse_head_layout(checkpoint):
     assert torch.equal(module.dt_bias.cpu(), expand('ssm_dt.bias')[heads])
 
 
-@pytest.mark.parametrize('tokens', [1, 17])
-def test_target_gdn_prefill_graph(checkpoint, tokens, tmp_path):
+@pytest.mark.parametrize('tokens', [1, 17, 64])
+def test_target_gdn_prefill_graph(checkpoint, tokens, tmp_path, recurrence_library):
     module, weights, _ = checkpoint
     source = torch.zeros((tokens, 2560), dtype=torch.bfloat16, device='cuda')
     scratch = GDNScratch.allocate(tokens, torch.device('cuda:0'))
@@ -102,7 +126,8 @@ def test_target_gdn_prefill_graph(checkpoint, tokens, tmp_path):
     arena = ScratchArena('cuda:0')
     with PreparationSession(device='cuda:0', autotune=False, compile_workers=0) as session:
         op = PreparedGDN(module, weights, source, scratch, state, metadata, mode='prefill',
-            session=session, name='target.gguf.gdn', workspace=arena, projection_workspace=arena)
+            session=session, name='target.gguf.gdn', workspace=arena, projection_workspace=arena,
+            actlize_library=recurrence_library)
         arena.finalize(); arena.freeze()
         cache = ForwardCache(namespace={'model': 'target-gguf-gdn'}, device='cuda:0', root=tmp_path)
         forward = cache.prepare_many({'gdn': Forward(op, source)}, {'gdn': GraphSignature('prefill', 1, tokens)})['gdn']
@@ -125,6 +150,7 @@ def test_target_gdn_prefill_graph(checkpoint, tokens, tmp_path):
                 allocated = torch.cuda.memory_stats()['allocation.all.allocated']
                 graph.replay(); torch.cuda.synchronize()
                 assert torch.cuda.memory_stats()['allocation.all.allocated'] == allocated
+                assert all(not error.any().item() for error in op.device_errors)
                 if live:
                     _prefill_checks(op, reference, initial, convolution)
                     _numerical(scratch.output[:live], (scratch.gated[:live].float() @ weights['out_proj'].float().T).bfloat16(), limit=.004)
@@ -135,9 +161,85 @@ def test_target_gdn_prefill_graph(checkpoint, tokens, tmp_path):
             torch.cuda.synchronize(); graph.reset()
 
 
+@pytest.mark.parametrize('recurrence_library', ['actlize'], indirect=True)
+def test_actlize_retains_each_layers_records_through_shared_scratch(checkpoint, recurrence_library, tmp_path):
+    from ignition.components.actlize_gdn import prepare_layer_commits
+    from ignition.components.gdn_recovery import GDNLayerRecords
+    from tests.recipes.test_qwen38_gdn_recovery_cuda import _reference
+
+    module, weights, _ = checkpoint
+    device = torch.device('cuda:0')
+    source = torch.zeros((6, 2560), dtype=torch.bfloat16, device=device)
+    scratch = GDNScratch.allocate(6, device)
+    states = {layer: GDNState.allocate(9, device, speculative_tokens=7) for layer in (0, 1)}
+    metadata = DeltaMetadata.allocate(2, device, verification_columns=8)
+    arena = ScratchArena(device)
+    records = GDNLayerRecords.allocate(states, 2, device, key_heads=16, value_heads=48)
+    counts = torch.zeros(2, dtype=torch.int32, device=device)
+    with PreparationSession(device=device, autotune=False, compile_workers=0) as session:
+        operations = {layer: PreparedGDN(module, weights, source, scratch, state, metadata,
+            mode='decode', session=session, name=f'gguf.layers.{layer}', workspace=arena,
+            projection_workspace=arena, records=records[layer], actlize_library=recurrence_library)
+            for layer, state in states.items()}
+        commits = prepare_layer_commits(states[0].recurrent.view(torch.uint8).reshape(9, -1),
+            {layer: state.recurrent for layer, state in states.items()}, records, metadata, counts, operations)
+        arena.finalize(); arena.freeze()
+        forward = ForwardCache(namespace={'model': 'gguf-actlize-shared-records'}, device=device,
+            root=tmp_path).prepare_many({'verify': LayerForward(operations.values(), source, commits)},
+            {'verify': GraphSignature('speculative', 2, 6)})['verify']
+        forward(); torch.cuda.synchronize()
+        graph = torch.cuda.CUDAGraph()
+        with session.capture(), torch.cuda.graph(graph):
+            forward()
+        try:
+            source.normal_(std=.2)
+            metadata.query_start_loc.copy_(torch.tensor([0, 6, 6], dtype=torch.int32, device=device))
+            metadata.state_indices[:, 0].copy_(torch.tensor([1, 2], device=device))
+            metadata.convolution_slots.copy_(torch.tensor([1, 2], device=device))
+            metadata.accepted_tokens.fill_(1)
+            metadata.num_seqs.fill_(2); metadata.num_tokens.fill_(6)
+            initial, convolution, expected = {}, {}, {}
+            for layer, operation in operations.items():
+                state = states[layer]
+                initial[layer] = torch.randn_like(state.recurrent) * .01
+                initial[layer][0].zero_()
+                convolution[layer] = torch.randn_like(state.convolution) * .1
+                state.recurrent.copy_(initial[layer]); state.convolution.copy_(convolution[layer])
+                operation(source)
+                reference_state = initial[layer].clone()
+                _reference(dict(mixed_qkv=scratch.convolved_qkv, a=scratch.a, b=scratch.b,
+                    A_log=module.A_log, dt_bias=module.dt_bias, recurrent_state=reference_state,
+                    z=scratch.z.view(6, 48, 128), norm_weight=module.norm.weight,
+                    query_start_loc=metadata.query_start_loc, num_accepted_tokens=metadata.accepted_tokens,
+                    state_indices=torch.arange(1, 9, device=device, dtype=torch.int64).repeat(2, 1),
+                    num_seqs=metadata.num_seqs, num_tokens=metadata.num_tokens,
+                    output=torch.empty((6, 48, 128), dtype=torch.bfloat16, device=device)), 8)
+                expected[layer] = reference_state
+            for consumed in range(7):
+                for layer, state in states.items():
+                    state.recurrent.copy_(initial[layer]); state.convolution.copy_(convolution[layer])
+                counts.copy_(torch.tensor([consumed, 0], dtype=torch.int32, device=device))
+                allocated = torch.cuda.memory_stats()['allocation.all.allocated']
+                graph.replay(); torch.cuda.synchronize()
+                assert torch.cuda.memory_stats()['allocation.all.allocated'] == allocated
+                for layer, state in states.items():
+                    assert all(not error.any().item() for error in operations[layer].device_errors)
+                    wanted = expected[layer][consumed] if consumed else initial[layer][1]
+                    torch.testing.assert_close(state.recurrent[1], wanted, rtol=1e-5, atol=1e-6)
+                    assert torch.equal(state.recurrent[0], initial[layer][0])
+                    assert torch.equal(state.recurrent[2:], initial[layer][2:])
+                    assert torch.equal(state.convolution[0], convolution[layer][0])
+                    assert torch.equal(state.convolution[2:], convolution[layer][2:])
+                    if not consumed:
+                        assert torch.equal(state.convolution, convolution[layer])
+        finally:
+            torch.cuda.synchronize(); graph.reset()
+
+
 @pytest.mark.parametrize('width', [1, 6])
-def test_actual_gguf_decode_commit_matches_flare_checkpoints(checkpoint, width, tmp_path):
-    from ignition.components.gdn_recovery import GDNLayerRecords, PreparedGDNCommit
+def test_actual_gguf_decode_commit_matches_flare_checkpoints(checkpoint, width, tmp_path, recurrence_library):
+    from ignition.components.gdn_recovery import GDNLayerRecords
+    from ignition.components.actlize_gdn import prepare_layer_commits
     from tests.recipes.test_qwen38_gdn_recovery_cuda import _reference
 
     module, weights, _ = checkpoint
@@ -152,10 +254,11 @@ def test_actual_gguf_decode_commit_matches_flare_checkpoints(checkpoint, width, 
     with PreparationSession(device=device, autotune=False, compile_workers=0) as session:
         op = PreparedGDN(module, weights, source, scratch, state, metadata, mode='decode',
             session=session, name='target.gguf.verify', workspace=arena, projection_workspace=arena,
-            records=records[44] if width > 1 else None, in_place=width == 1)
-        commit = None if width == 1 else PreparedGDNCommit(
+            records=records[44] if width > 1 else None, in_place=width == 1,
+            actlize_library=recurrence_library)
+        commit = None if width == 1 else prepare_layer_commits(
             state.recurrent.view(torch.uint8).reshape(9, -1), {44: state.recurrent}, records,
-            metadata, counts, key_heads=16, value_heads=48)
+            metadata, counts, {44: op})
         arena.finalize(); arena.freeze()
         cache = ForwardCache(namespace={'model': 'gguf-commit-checkpoints', 'width': width},
             device=device, root=tmp_path)
@@ -167,6 +270,7 @@ def test_actual_gguf_decode_commit_matches_flare_checkpoints(checkpoint, width, 
             forward()
         try:
             source.normal_(std=.2)
+            first_source = source.clone()
             initial = torch.randn_like(state.recurrent) * .01
             initial[0].zero_()
             convolution = torch.randn_like(state.convolution) * .1
@@ -190,15 +294,40 @@ def test_actual_gguf_decode_commit_matches_flare_checkpoints(checkpoint, width, 
                 num_tokens=metadata.num_tokens, output=expected), 8)
             for consumed in ((1,) if width == 1 else range(width + 1)):
                 state.recurrent.copy_(initial); state.convolution.copy_(convolution)
+                source.copy_(first_source); metadata.accepted_tokens.fill_(1)
                 counts.fill_(consumed); torch.cuda.synchronize()
                 allocated = torch.cuda.memory_stats()['allocation.all.allocated']
                 graph.replay(); torch.cuda.synchronize()
                 assert torch.cuda.memory_stats()['allocation.all.allocated'] == allocated
+                assert all(not error.any().item() for error in op.device_errors)
+                if op.actlize is not None and consumed == 0:
+                    assert torch.equal(state.convolution, convolution)
                 assert torch.equal(state.recurrent[0], initial[0])
                 assert torch.equal(state.recurrent[2:], initial[2:])
                 wanted = reference_state[consumed] if consumed else initial[1]
                 torch.testing.assert_close(state.recurrent[1], wanted, rtol=1e-5, atol=1e-6)
                 torch.testing.assert_close(scratch.gated.view_as(expected), expected, rtol=2**-6, atol=2e-2)
                 assert (scratch.gated.view_as(expected) == expected).float().mean() > .99
+                if op.actlize is not None and width > 1:
+                    import torch.nn.functional as F
+
+                    history = convolution[1, :, :3].cpu()
+                    if consumed:
+                        history = torch.cat((history, scratch.projected_qkv.cpu().T), -1)[:, consumed:consumed + 3]
+                    # Retry from the committed prefix with new tokens. ShortConv
+                    # must select the positive prefix once, or the old history
+                    # after zero consumption; the physical tail is not shifted twice.
+                    source.normal_(std=.2); counts.fill_(width)
+                    metadata.accepted_tokens.fill_(max(1, consumed))
+                    allocated = torch.cuda.memory_stats()['allocation.all.allocated']
+                    graph.replay(); torch.cuda.synchronize()
+                    assert torch.cuda.memory_stats()['allocation.all.allocated'] == allocated
+                    assert all(not error.any().item() for error in op.device_errors)
+                    projected = torch.cat((history, scratch.projected_qkv.cpu().T), -1)
+                    convolved = F.silu(F.conv1d(projected[None], module.conv1d.weight.cpu().bfloat16(),
+                                               groups=projected.shape[0]))[0].T
+                    _numerical(scratch.convolved_qkv, convolved, limit=.004)
+                    assert torch.equal(state.convolution[0], convolution[0])
+                    assert torch.equal(state.convolution[2:], convolution[2:])
         finally:
             torch.cuda.synchronize(); graph.reset()

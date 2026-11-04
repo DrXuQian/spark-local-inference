@@ -242,7 +242,7 @@ class PreparedDecoder:
                  max_cache_pages: int | None = None,
                  residual_output: torch.Tensor | None = None, verification: bool = False,
                  gdn_records=None, gdn_in_place: bool = False, runtime=None, vocabulary_runtime=None, coordinator=None,
-                 sampling_workspace=None, scoring=None):
+                 sampling_workspace=None, scoring=None, actlize_library=None):
         from ignition.components.embedding import PreparedEmbedding
         from ignition.components.linear import UnquantizedProjection
 
@@ -276,6 +276,7 @@ class PreparedDecoder:
         self.embedding = PreparedEmbedding(weights.embedding_weight, state.ple.token_ids,
             scratch.embedding, num_rows=state.gdn.num_tokens, session=session, name=f"{name}.embedding")
         self.layers, self.reductions = [], []
+        self.gdn_operations = {}
         for index, (module, layer_weights) in enumerate(zip(language.layers, weights.layers, strict=True)):
             prefix = f"{name}.layer{index}"
             attn_hc = PreparedHyperconnection(module.attn_hyper_connection, scratch.hyperconnection,
@@ -295,7 +296,8 @@ class PreparedDecoder:
                     session=session, name=f"{prefix}.gdn", checkpoint_export=False,
                     workspace=workspaces, projection_workspace=workspaces,
                     records=None if gdn_records is None else gdn_records[index], in_place=gdn_in_place,
-                    partitions=getattr(state, "gdn_partitions", None))
+                    partitions=getattr(state, "gdn_partitions", None), actlize_library=actlize_library)
+                self.gdn_operations[index] = attention
             moe = PreparedQwenMoe(source, layer_weights.moe, session=session, name=f"{prefix}.moe",
                 scratch=scratch.moe, workspace=workspaces if scratch.gguf_experts is None else scratch.gguf_experts,
                 projection_workspace=workspaces)

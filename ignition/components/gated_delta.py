@@ -175,6 +175,7 @@ class PreparedGDN:
         in_place: bool = False,
         partitions=None,
         prepare_projections: bool = True,
+        actlize_library=None,
     ) -> None:
         self.world_size = 48 // module.num_v_heads
         self.key_heads, self.value_heads = module.num_k_heads, module.num_v_heads
@@ -313,6 +314,10 @@ class PreparedGDN:
                     self.projections["in_proj_qkvz"], self.projections["in_proj_ba"],
                     session=session, workspace=projection_workspace)
         self.partitions = partitions
+        self.actlize = None
+        if actlize_library is not None and (partitions is not None or checkpoint_export or
+                mode == 'decode' and records is None and not in_place and columns != 1):
+            raise ValueError('actlizeLA GDN requires unmixed final-state prefill or committed-slot decode/verify')
         if partitions is not None:
             self.sequences_by_role = tuple(
                 PreparedGDN(module, projections, part.scratch.output, part.scratch, state, part.metadata,
@@ -348,7 +353,8 @@ class PreparedGDN:
             conv_caps,
             invocation=short_conv.invocation_from_tensors(**conv_args),
         )
-        fused_convolution = mode == "decode" and records is not None and metadata.state_indices.shape[1] > 1
+        fused_convolution = (actlize_library is None and mode == "decode" and records is not None
+                             and metadata.state_indices.shape[1] > 1)
         self.conv_binding = None
         if fused_convolution:
             self.conv_plan = None
@@ -377,7 +383,12 @@ class PreparedGDN:
         }
         self.recovered = None
         self.chunked = None
-        if mode == "decode" and (records is not None or in_place):
+        if actlize_library is not None:
+            from .actlize_gdn import PreparedActlizeGDN
+
+            self.actlize = PreparedActlizeGDN(actlize_library, module=module, scratch=scratch,
+                state=state, metadata=metadata, mode=mode, records=records, workspace=workspace)
+        elif mode == "decode" and (records is not None or in_place):
             # Speculative verification records corrections and the round commits the accepted ones;
             # single-token rounds advance the committed state in place.
             self.recovered = PreparedRecoveredRecurrence(
@@ -454,7 +465,7 @@ class PreparedGDN:
             self.recurrent_binding = binding
             self.workspace = binding.scratch
 
-        if self.recovered is None and self.chunked is None:
+        if self.recovered is None and self.chunked is None and self.actlize is None:
             self.recurrent_binding = prepare_sequence_binding(
                 self.recurrent_plan,
                 args,
@@ -466,7 +477,7 @@ class PreparedGDN:
                 set_binding=set_recurrent_binding,
                 run_options={"eps": module.norm.variance_epsilon} if mode == "decode" else None,
             )
-        if mode != "decode" or self.recovered is not None:
+        if mode != "decode" or self.recovered is not None or self.actlize is not None:
             # Qwen's gated norm, fused: it rounds normalized values to BF16 before weighting.
             self.output_norm = PreparedGatedRMSNorm(
                 scratch.recurrence.view(self.tokens, self.value_heads, 128),
@@ -501,9 +512,14 @@ class PreparedGDN:
 
     def run_sequence(self):
         scratch = self.scratch
+        if self.actlize is not None:
+            self.actlize.before_convolution()
         if self.conv_binding is not None:
             short_conv.run(self.conv_binding)
-        if self.recovered is not None:
+        if self.actlize is not None:
+            self.actlize()
+            self.output_norm()
+        elif self.recovered is not None:
             self.recovered()
             self.output_norm()
         elif self.mode == "decode":
@@ -517,6 +533,14 @@ class PreparedGDN:
             else:
                 gdn_prefill.run(self.recurrent_binding)
             self.output_norm()
+
+    @property
+    def device_errors(self):
+        from .operator_errors import device_errors
+
+        if self.partitions is not None:
+            return device_errors(*self.sequences_by_role)
+        return device_errors(self.actlize)
 
 
 __all__ = [ "GDNScratch", "GDNState", "PreparedGDN"]

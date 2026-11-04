@@ -617,6 +617,46 @@ The Qwen decoder explicitly disables intermediate prefill checkpoint exports,
 which the external GDN ABI does not implement. That missing feature is not a
 requirement of the current Qwen path; preserve the disabled setting when binding it.
 
+The partial GGUF fixture also accepts `--actlize-library /path/libactlize_la_serving.so`
+to select the checked SM120 GDN implementation inside complete serving graphs.
+Install the external Python package with `pip install --no-deps /path/actlizeLA`;
+its default Python-only installation does not build the native serving library.
+Build that library separately for the explicit target, as described by the
+operator package. The remaining projections, ShortConv, gated normalization,
+QSA and MTP attention still require their existing NVIDIA operators.
+
+`PreparedGDN` binds the supplied library during preparation. Transient operands
+reuse the shared scratch arena; each layer retains its correction records until
+the existing speculative acceptance supplies consumed input counts. Positive
+prefixes preserve ShortConv's encoded history for the next call. Zero consumption
+restores a snapshot taken before that convolution. Separate device flags preserve
+recurrence, snapshot, commit and restore errors through the outer request guard.
+The graph catalog, native scheduling and sampling policy are unchanged.
+
+Twelve actual-weight cases cover prefill capacities 1/17/64, in-place decode,
+consumed prefixes 0..6, subsequent convolution retries, and two GDN owners
+sharing activation/workspace storage while retaining independent records.
+Existing numerical bounds are retained. The exported partial package passes
+18 MTP and 50 ordinary/teacher-prefix HTTP cases, including exact prefix restore
+within each mode. Its 18 MTP cases emit the same 239 tokens as the b12x package,
+but scores differ: reconstructed synthetic-head raw-logit relative L2 is
+0.003023 overall and at most 0.014921 per position. This is a measured comparison,
+not a claim of bitwise arithmetic equivalence or full-model language quality.
+Four native queued/isolated replay cases match tokens, logprobs and all 40
+state/KV ranges exactly (165465088 bytes each). Service/replay ratios are
+0.9881–1.0085, within the 5% overhead limit. The Rust service has no Python,
+Torch or actlizeLA host library mapped. PPU execution and substitution of QSA
+in complete serving graphs still require qualification.
+
+Nsight confirms the external recurrence/commit kernels inside the exported
+graphs. The 102-round fixed-width-six trace has 679 kernels per round;
+94 consecutive pairs have median 15.375 us, p95 16.351 us and maximum
+16.479 us between rounds. Adaptive execution covers 573 rounds at widths
+1/2/4/6; its 560 consecutive width-one pairs have median 15.391 us,
+p95 16.128 us and maximum 16.320 us. Neither trace contains execution-time
+GPU allocation, module loading, recapture or out-of-graph compute. These
+bounded traces do not explain the isolated tails in the earlier packages.
+
 With the checked `actlize_la.serving` package installed and its separate SM120
 native library built, use an empty output directory:
 
