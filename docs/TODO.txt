@@ -14,6 +14,14 @@
     rollback and paged QSA replay. This does not qualify PPU hardware or
     Flare's compiled-forward/package boundary.
 
+[x] Qualify actlizeLA GDN verify/commit across Flare's AOT workers, cached
+    handle rebinding, fixed-VMM export and standalone Rust replay on SM120.
+    Fifteen cases cover widths 1/2/4/6, consumed prefixes 0..6, inactive/empty/null
+    rows and strided state; Flare reference bounds remain unchanged. Thirty
+    native replays compare 16024872 bytes each exactly, with no CUDA allocation
+    or Python/Torch/operator-host-library mapping. This is the recurrence and
+    gated-normalization component boundary, not a complete PPU model adapter.
+
 [ ] QUactlize PPU: add device-indexed Q8_0/IQ4_NL row lookup for token
     embedding/PLE. The new host-indexed dequant range API cannot implement
     captured lookup with changing token IDs. Preserve original GGUF bytes.

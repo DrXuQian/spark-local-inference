@@ -93,6 +93,13 @@ test = false
 bench = false
 
 [[bin]]
+name = "test_actlize_runtime_package"
+path = "tests/tools/test_actlize_runtime_package.rs"
+required-features = ["runtime-package", "test-tools"]
+test = false
+bench = false
+
+[[bin]]
 name = "test_runtime_package"
 path = "tests/tools/test_runtime_package.rs"
 required-features = ["runtime-package", "test-tools"]

@@ -45,7 +45,9 @@ def _reference(tensors, columns):
     with PreparationSession(device=device, autotune=False, compile_workers=0) as session:
         session.prepare((plan.request(name="gdn", prepare_call=prepare),))
     restore()
-    gdn_decode.run(gdn_decode.bind(plan, **tensors), eps=1e-6)
+    binding = gdn_decode.bind(plan, **tensors)
+    gdn_decode.run(binding, eps=1e-6)
+    return binding
 
 
 def _backing(initial, prefix=4096, padding=8192):

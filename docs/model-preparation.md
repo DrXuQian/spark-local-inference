@@ -569,6 +569,33 @@ The checked actlizeLA interface is
 Its 44 host cases and 42 independent SM120 device cases pass. These are operator
 checks, not Flare package replay or PPU hardware qualification.
 
+The separate `qualify.actlize_export` fixture now checks the GDN verify/commit
+and Flare gated-normalization composition through AOT workers, cached artifacts
+with fresh native handles, and the production fixed-VMM package exporter.
+It releases the first prepared owner before testing the restored artifact.
+Fifteen cases cover physical width six with record capacity eight, changing
+widths 1/2/4/6, consumed prefixes 0..6, changed state slots, and inactive,
+empty and null rows. Output and FP32 state satisfy Flare's existing checkpoint
+reference bounds. After Python exits, 30 native replays compare 16024872 bytes
+per case exactly, with no execution allocation or Python, Torch or actlizeLA
+host library mappings. This qualifies that component boundary on SM120;
+it does not qualify complete-model actlizeLA substitution or PPU execution.
+
+With the checked `actlize_la.serving` package installed and its separate SM120
+native library built, use an empty output directory:
+
+```sh
+.venv/bin/python -m qualify.actlize_export \
+  --library /path/libactlize_la_serving.so --output /models/actlize-qualification
+cargo run --release --locked --manifest-path helios/Cargo.toml \
+  --features runtime-package,test-tools --bin test_actlize_runtime_package \
+  -- /models/actlize-qualification
+```
+
+Automatic kernel discovery preserves C-ABI pointers through fixed virtual
+addresses. Relocatable low-level packages require explicit parameter bindings;
+automatic discovery alone does not reconstruct those bindings.
+
 | Operation | Required contract | Current PPU source and remaining work |
 | --- | --- | --- |
 | GGUF projections and MoE | Q5_1, Q8_0, Q2_K–Q6_K; H2560/I640; 512 experts, top10; BF16 operands/output, FP32 accumulation | New QU raw path admits these shapes. Canonical packing retains stricter alignment. Bind the new ABI with prepared custom ops and verify each capacity on the target. |
