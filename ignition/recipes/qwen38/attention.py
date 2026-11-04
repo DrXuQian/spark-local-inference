@@ -192,6 +192,13 @@ class PreparedAttention:
     count on restore and invalidates raw tags at aligned checkpoints.
     """
 
+    def __new__(cls, module=None, *args, **kwargs):
+        if getattr(module, 'compress_ratio', 4) == 0:
+            from .full_attention import PreparedFullAttention
+
+            return PreparedFullAttention(module, *args, **kwargs)
+        return super().__new__(cls)
+
     def __init__(self, module: torch.nn.Module, weights: Mapping, source: torch.Tensor,
                  scratch: QSAScratch, state: QSAState, metadata: QSAMetadata,
                  rotary: RotaryTables, *, session: PreparationSession, name: str,

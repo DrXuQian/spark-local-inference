@@ -45,8 +45,11 @@ class SpeculativePreparation:
         b, w = requests.capacity, verification_width
         self.sampling_buffers = GraphBufferPool(device, chunk_bytes=2 << 20)
         self.verification_residual = torch.zeros((b * w, 10240), dtype=torch.bfloat16, device=device)
+        from ignition.components.gguf_moe import GgufExperts
+
         self.mtp_scratch = MTPScratch.allocate(prefill_capacity, requests.capacity, device, world_size=weights.shard.world_size,
             buffers=None if graph_buffers is None else graph_buffers.cursor(),
+            gguf_experts=mtp_weights.moe.experts if isinstance(mtp_weights.moe.experts, GgufExperts) else None,
             hyperconnection_lowrank=mtp_weights.module.hyper_connection_mixer.input_mix_weight_down.weight.shape[0])
         # Feedback is consumed before the MTP mixer writes normalized activations.
         self.feedback_hidden = self.mtp_scratch.hyperconnection.normalized

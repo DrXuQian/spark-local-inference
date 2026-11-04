@@ -23,7 +23,7 @@ def _costs(state_row_bytes, page_layer_bytes, graph_bytes, *, speculating):
 
 
 def prepare(snapshot, plan, *, compile_forwards, kernel_cache, progress, retain_graphs=False, package_storage=None,
-            ranks=None):
+            ranks=None, gguf_inputs=None):
     """Prepare the plan's catalog and speculation settings on process-local GPUs 0 through N-1.
 
     With `ranks`, rank zero's multi-host rendezvous, each rank uses its own host's GPU 0.
@@ -36,6 +36,7 @@ def prepare(snapshot, plan, *, compile_forwards, kernel_cache, progress, retain_
         "speculative_widths": speculation.widths, "speculative_token_capacity": plan.speculative_token_capacity,
         "speculative_fixed_width": speculation.fixed_width}
     config = PreparationConfig(collective_tuning=plan.collective_tuning, collective_ladder=plan.collective_ladder, prompt_logprobs=plan.prompt_logprobs,
+        gguf_inputs=gguf_inputs,
         compile_workers=plan.compile_workers, autotune_effort=plan.autotune_effort, tuning_replica=plan.tuning_replica,
         native_dense_activations=plan.native_dense_activations,
         shard_hyperconnections=plan.shard_hyperconnections,
@@ -98,3 +99,26 @@ RECIPE = Recipe(
     }),
     max_images=4, image_bytes=32 << 20, mixed_prefill=True,
 )
+
+
+def prepare_gguf(snapshot, plan, **kwargs):
+    from ignition.preparation.qwen38_gguf import GgufInputs
+
+    return prepare(snapshot, plan, gguf_inputs=GgufInputs.read(snapshot), **kwargs)
+
+
+def gguf_recipe(manifest, directory):
+    """Local input bundles use measured checkpoint geometry for memory planning."""
+    from dataclasses import replace
+    from ignition.preparation.qwen38 import ARCHITECTURE
+    from ignition.preparation.qwen38_gguf import device_weight_bytes
+
+    draft = device_weight_bytes(manifest.draft)
+    checkpoint = Checkpoint(alias='qwen3.8-flash-gguf', repository=str(directory),
+        revision=manifest.headers_sha256[:40], architecture=ARCHITECTURE,
+        stored_bytes=sum(shard.file_size for checkpoint in (manifest, manifest.draft) for shard in checkpoint.shards),
+        device_bytes=device_weight_bytes(manifest) + draft, draft_bytes=draft,
+        mapped_host_bytes=manifest.tensors['per_layer_token_embd.weight'].nbytes)
+    return replace(RECIPE, name='qwen38_gguf', prepare=prepare_gguf, checkpoints=(checkpoint,),
+        concurrency=1, max_concurrency=1, max_images=0, image_bytes=0,
+        ranks=MappingProxyType({1: RECIPE.ranks[1]}), plain_ranks=MappingProxyType({1: RECIPE.plain_ranks[1]}))

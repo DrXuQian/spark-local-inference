@@ -72,6 +72,11 @@ def _csf_stored_bytes(container, snapshot):
 def _snapshot_cached(snapshot: Path) -> bool:
     """Report whether the index and every tensor file it names are present."""
     try:
+        if _gguf_input_bundle(snapshot):
+            from ignition.preparation.qwen38_gguf import GgufInputs, inspect_qwen38_gguf
+
+            inspect_qwen38_gguf(GgufInputs.read(snapshot))
+            return True
         if _csf_container(snapshot) is not None:
             from ignition.preparation.checkpoint import inspect_indexed_checkpoint
 
@@ -84,6 +89,14 @@ def _snapshot_cached(snapshot: Path) -> bool:
         return all((snapshot / shard).is_file() for shard in set(index["weight_map"].values()))
     except (OSError, ValueError, KeyError, AttributeError, TypeError):
         return False
+
+
+def _gguf_input_bundle(directory):
+    path = directory / 'manifest.json'
+    if not path.is_file():
+        return False
+    value = json.loads(path.read_text())
+    return isinstance(value, dict) and value.get('schema') == 'qwen38-gguf/1'
 
 
 @dataclass(frozen=True)
@@ -117,6 +130,11 @@ class ResolvedModel:
         """Check index metadata; recipes validate tensor storage and geometry."""
         snapshot = self.snapshot(hub_cache)
         try:
+            if _gguf_input_bundle(snapshot):
+                from ignition.preparation.qwen38_gguf import GgufInputs, inspect_qwen38_gguf
+
+                inspect_qwen38_gguf(GgufInputs.read(snapshot))
+                return
             container = _csf_container(snapshot)
             if container is not None:
                 _csf_stored_bytes(container, snapshot)
@@ -205,6 +223,12 @@ def resolve(model: str, hub_cache: Path | None = None) -> ResolvedModel:
     directory = Path(model).expanduser()
     if directory.is_dir():
         directory = directory.resolve()
+        if _gguf_input_bundle(directory):
+            from ignition.preparation.qwen38_gguf import GgufInputs, inspect_qwen38_gguf
+            from .qwen38.recipe import gguf_recipe
+
+            recipe = gguf_recipe(inspect_qwen38_gguf(GgufInputs.read(directory)), directory)
+            return ResolvedModel(recipe, recipe.checkpoints[0], directory)
         try:
             container = _csf_container(directory)
         except (OSError, ValueError) as error:

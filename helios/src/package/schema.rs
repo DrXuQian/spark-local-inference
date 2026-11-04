@@ -341,7 +341,16 @@ fn validate_engram(engram: &wire::Engram, ranks: u32, catalog: &Catalog) -> Resu
             return Err(invalid("engram table has no rows or width"));
         }
         bounded_name(&table.weight_buffer, 64, "engram weight buffer")?;
-        bounded_name(&table.scale_buffer, 64, "engram scale buffer")?;
+        let inline_scales = table.encoding == wire::engram_table::Encoding::GgufIq4Nl as i32;
+        if inline_scales {
+            if !table.scale_buffer.is_empty() || table.scales.is_some()
+                || table.shards.iter().any(|shard| shard.scales.is_some())
+                || !table.embedding_width.is_multiple_of(32) || table.scale_block != 32 || table.global_scale != 0.0 {
+                return Err(invalid("invalid GGUF IQ4_NL interleaved table layout"));
+            }
+        } else {
+            bounded_name(&table.scale_buffer, 64, "engram scale buffer")?;
+        }
         let hash = table
             .hash
             .as_ref()
@@ -370,7 +379,7 @@ fn validate_engram(engram: &wire::Engram, ranks: u32, catalog: &Catalog) -> Resu
             return Err(invalid("engram hash head arrays disagree"));
         }
         if table.shards.is_empty() {
-            for (plane, label) in [(&table.weights, "weights"), (&table.scales, "scales")] {
+            for (plane, label) in [(&table.weights, "weights"), (&table.scales, "scales")].into_iter().take(if inline_scales { 1 } else { 2 }) {
                 let plane = plane
                     .as_ref()
                     .ok_or_else(|| invalid(format!("engram table has no {label} plane")))?;
@@ -395,7 +404,7 @@ fn validate_engram(engram: &wire::Engram, ranks: u32, catalog: &Catalog) -> Resu
                 if end > table.rows {
                     return Err(invalid("engram partition exceeds table rows"));
                 }
-                for (plane, label) in [(&shard.weights, "weights"), (&shard.scales, "scales")] {
+                for (plane, label) in [(&shard.weights, "weights"), (&shard.scales, "scales")].into_iter().take(if inline_scales { 1 } else { 2 }) {
                     let plane = plane
                         .as_ref()
                         .ok_or_else(|| invalid(format!("engram partition has no {label} plane")))?;
@@ -1663,6 +1672,32 @@ mod tests {
         mapped_xor.tables[0].hash.as_mut().unwrap().method =
             wire::engram_hash::Method::XorModulo as i32;
         assert!(validate_engram(&mapped_xor, 1, &catalog).is_ok());
+
+        let mut interleaved = engram.clone();
+        let table = &mut interleaved.tables[0];
+        table.encoding = wire::engram_table::Encoding::GgufIq4Nl as i32;
+        table.scale_block = 32;
+        table.global_scale = 0.0;
+        table.scale_buffer.clear();
+        table.scales = None;
+        assert!(validate_engram(&interleaved, 1, &catalog).is_ok());
+        for width in [32, 160, 256] {
+            interleaved.tables[0].embedding_width = width;
+            assert!(validate_engram(&interleaved, 1, &catalog).is_ok());
+        }
+        let invalid_cases: [fn(&mut wire::EngramTable); 6] = [
+            |table| table.embedding_width = 159,
+            |table| table.scale_block = 16,
+            |table| table.global_scale = 1.0,
+            |table| table.scale_buffer = "scales".into(),
+            |table| table.scales = table.weights.clone(),
+            |table| table.weights = None,
+        ];
+        for invalidate in invalid_cases {
+            let mut broken = interleaved.clone();
+            invalidate(&mut broken.tables[0]);
+            assert!(validate_engram(&broken, 1, &catalog).is_err());
+        }
     }
 
     #[test]

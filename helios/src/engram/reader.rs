@@ -312,6 +312,11 @@ impl Resident {
         if seals < 0 || seals & RESIDENT_SEALS != RESIDENT_SEALS {
             return Err("resident embedding table must have immutable size and contents".into());
         }
+        // Some Linux kernels reject MAP_SHARED on a sealed memfd opened O_RDWR
+        // even for PROT_READ. Reopen our still-owned descriptor read-only; the
+        // sealed inode, physical RAM and lifetime remain shared across ranks.
+        let file = File::open(format!("/proc/self/fd/{}", file.as_raw_fd()))
+            .map_err(|error| format!("reopen sealed embedding table read-only: {error}"))?;
         let skip = (plane.offset % BLOCK as u64) as usize;
         let extent = plane.resident_bytes()?;
         if file
@@ -354,7 +359,7 @@ impl Drop for Aligned {
 pub(crate) struct DiskReader {
     // Destroying the ring cancels and drains outstanding I/O before the buffers are freed.
     #[cfg(unix)]
-    ring: IoUring,
+    ring: Option<IoUring>,
     #[cfg(windows)]
     windows: windows::Readers,
     #[cfg(unix)]
@@ -400,15 +405,25 @@ impl DiskReader {
         let staging = Aligned::new(DEPTH * CHUNK)?;
         #[cfg(unix)]
         let ring = {
-            let ring = IoUring::new(DEPTH as u32).map_err(|e| format!("Engram io_uring: {e}"))?;
+            let ring = match IoUring::new(DEPTH as u32) {
+                Ok(ring) => Some(ring),
+                Err(error) if matches!(error.raw_os_error(), Some(libc::EPERM | libc::EACCES | libc::ENOSYS)) => {
+                    static NOTICE: std::sync::Once = std::sync::Once::new();
+                    NOTICE.call_once(|| eprintln!("Flare embedding reader: io_uring unavailable ({error}); using positioned O_DIRECT reads"));
+                    None
+                }
+                Err(error) => return Err(format!("Engram io_uring: {error}").into()),
+            };
             let buffers: Vec<_> = (0..DEPTH)
                 .map(|i| libc::iovec {
                     iov_base: staging.at(i).cast(),
                     iov_len: CHUNK,
                 })
                 .collect();
-            unsafe { ring.submitter().register_buffers(&buffers) }
-                .map_err(|e| format!("register Engram staging: {e}"))?;
+            if let Some(ring) = &ring {
+                unsafe { ring.submitter().register_buffers(&buffers) }
+                    .map_err(|e| format!("register Engram staging: {e}"))?;
+            }
             ring
         };
         #[cfg(windows)]
@@ -429,7 +444,7 @@ impl DiskReader {
         })
     }
 
-    pub fn gather(&mut self, planes: &[Plane; 2], ids: &[i64], output: &mut [u8]) -> Result<()> {
+    pub fn gather(&mut self, planes: &[Plane], ids: &[i64], output: &mut [u8]) -> Result<()> {
         let mut timing = DiskTimings {
             stats: &self.stats,
             plan: 0,
@@ -497,6 +512,34 @@ impl DiskReader {
         timing.plan = begin.elapsed().as_nanos() as u64;
         #[cfg(unix)]
         for batch in self.reads.chunks(DEPTH) {
+            let Some(ring) = self.ring.as_mut() else {
+                for (slot, read) in batch.iter().enumerate() {
+                    let begin = Instant::now();
+                    let count = loop {
+                        // Same aligned staging and O_DIRECT file as the ring path.
+                        let result = unsafe { crate::os::read_at_raw(&self.files[read.file],
+                            self.staging.at(slot), read.nbytes, read.offset) };
+                        match result {
+                            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                            result => break result.map_err(|error| format!("positioned Engram read: {error}"))?,
+                        }
+                    };
+                    timing.wait += begin.elapsed().as_nanos() as u64;
+                    self.stats.disk_reads.fetch_add(1, Ordering::Relaxed);
+                    self.stats.disk_bytes.fetch_add(read.nbytes as u64, Ordering::Relaxed);
+                    if count < read.required {
+                        return Err(format!("Engram read at {} returned {count}, requires {} bytes", read.offset, read.required).into());
+                    }
+                    let begin = Instant::now();
+                    for fragment in &self.fragments[read.fragments.clone()] {
+                        let source = unsafe { std::slice::from_raw_parts(
+                            self.staging.at(slot).add((fragment.source - read.offset) as usize), fragment.nbytes) };
+                        output[fragment.destination..fragment.destination + fragment.nbytes].copy_from_slice(source);
+                    }
+                    timing.complete += begin.elapsed().as_nanos() as u64;
+                }
+                continue;
+            };
             let begin = Instant::now();
             for (slot, read) in batch.iter().enumerate() {
                 let entry = opcode::ReadFixed::new(
@@ -508,7 +551,7 @@ impl DiskReader {
                 .offset(read.offset)
                 .build()
                 .user_data(slot as u64);
-                unsafe { self.ring.submission().push(&entry) }
+                unsafe { ring.submission().push(&entry) }
                     .map_err(|_| "Engram submission queue full")?;
             }
             self.stats
@@ -523,7 +566,7 @@ impl DiskReader {
             let mut failure = None;
             while completed < batch.len() {
                 let begin = Instant::now();
-                let result = self.ring.submit_and_wait(1);
+                let result = ring.submit_and_wait(1);
                 timing.wait += begin.elapsed().as_nanos() as u64;
                 match result {
                     Ok(_) => {}
@@ -531,7 +574,7 @@ impl DiskReader {
                     Err(error) => return Err(format!("submit Engram reads: {error}").into()),
                 }
                 let begin = Instant::now();
-                for entry in self.ring.completion() {
+                for entry in ring.completion() {
                     completed += 1;
                     let slot = entry.user_data() as usize;
                     let read = &batch[slot];
@@ -581,7 +624,7 @@ struct CachedReader {
 }
 
 impl CachedReader {
-    fn new(disk: DiskReader, planes: &[Plane; 2], budget: usize, max_rows: usize) -> Result<Self> {
+    fn new(disk: DiskReader, planes: &[Plane], budget: usize, max_rows: usize) -> Result<Self> {
         if max_rows == 0 {
             return Err("embedding row cache requires a nonzero gather capacity".into());
         }
@@ -640,11 +683,12 @@ impl CachedReader {
         })
     }
 
-    fn gather(&mut self, planes: &[Plane; 2], ids: &[i64], output: &mut [u8]) -> Result<()> {
+    fn gather(&mut self, planes: &[Plane], ids: &[i64], output: &mut [u8]) -> Result<()> {
         if ids.len() > self.max_rows {
             return Err("embedding gather exceeds the row cache workspace capacity".into());
         }
-        let [weights, scales] = planes.map(|plane| plane.row_bytes);
+        let weights = planes[0].row_bytes;
+        let scales = planes.get(1).map_or(0, |plane| plane.row_bytes);
         let scale_base = ids.len() * weights;
         self.requests.clear();
         self.miss_ids.clear();
@@ -717,7 +761,7 @@ impl CachedReader {
 
 enum Data {
     Disk(DiskReader),
-    Ram([Arc<Resident>; 2]),
+    Ram(Vec<Arc<Resident>>),
     Cached(Box<CachedReader>),
 }
 
@@ -741,7 +785,7 @@ impl Reader {
     #[cfg(test)]
     fn open(
         path: &Path,
-        planes: &[Plane; 2],
+        planes: &[Plane],
         resident: bool,
         cache_bytes: usize,
         max_rows: usize,
@@ -760,7 +804,7 @@ impl Reader {
     }
     pub fn from_files(
         files: &[Arc<File>],
-        planes: &[Plane; 2],
+        planes: &[Plane],
         resident: bool,
         cache_bytes: usize,
         max_rows: usize,
@@ -771,17 +815,21 @@ impl Reader {
         if resident && cache_bytes != 0 {
             return Err("embedding row cache requires disk table storage".into());
         }
+        if !(1..=2).contains(&planes.len()) || planes.iter().any(|plane| {
+            plane.row_bytes == 0 || plane.nbytes == 0 || plane.nbytes % plane.row_bytes != 0
+        }) || planes.iter().any(|plane| plane.nbytes / plane.row_bytes != planes[0].nbytes / planes[0].row_bytes) {
+            return Err("embedding table requires one or two complete planes with equal row counts".into());
+        }
         if planes.iter().any(|plane| plane.file >= files.len()) {
             return Err("embedding plane references an unknown file".into());
         }
         let data = if resident {
-            Data::Ram([
-                Arc::new(Resident::load(&files[planes[0].file], planes[0])?),
-                Arc::new(Resident::load(&files[planes[1].file], planes[1])?),
-            ])
+            Data::Ram(planes.iter().map(|plane| {
+                Resident::load(&files[plane.file], *plane).map(Arc::new)
+            }).collect::<Result<Vec<_>>>()?)
         } else {
             let mut disk = DiskReader::from_files(files, stats.clone(), workers)?;
-            if resident_scales {
+            if resident_scales && planes.len() == 2 {
                 disk.resident_scales = Some(Resident::load(&files[planes[1].file], planes[1])?);
                 stats.resident_scale_bytes.fetch_add(planes[1].resident_bytes()? as u64, Ordering::Relaxed);
             }
@@ -799,13 +847,13 @@ impl Reader {
         Ok(Self { data, stats })
     }
     #[cfg(unix)]
-    pub(super) fn resident(data: [Arc<Resident>; 2], stats: Arc<Stats>) -> Self {
+    pub(super) fn resident(data: impl Into<Vec<Arc<Resident>>>, stats: Arc<Stats>) -> Self {
         Self {
-            data: Data::Ram(data),
+            data: Data::Ram(data.into()),
             stats,
         }
     }
-    pub fn gather(&mut self, planes: &[Plane; 2], ids: &[i64], output: &mut [u8]) -> Result<()> {
+    pub fn gather(&mut self, planes: &[Plane], ids: &[i64], output: &mut [u8]) -> Result<()> {
         if output.len() != ids.len() * planes.iter().map(|p| p.row_bytes).sum::<usize>() {
             return Err("Engram staging size differs from row count".into());
         }
@@ -1178,7 +1226,7 @@ mod tests {
         let stats = Arc::new(Stats::default());
         let mut reader = Reader::open(&path, &planes, false, 65536, 32, stats.clone()).unwrap();
         assert!(stats.cache_bytes.load(Ordering::Relaxed) <= 65536);
-        fn check(reader: &mut Reader, planes: &[Plane; 2], bytes: &[u8], ids: &[i64]) {
+        fn check(reader: &mut Reader, planes: &[Plane], bytes: &[u8], ids: &[i64]) {
             let mut expected = Vec::new();
             for plane in planes {
                 for &id in ids {

@@ -68,8 +68,8 @@ class PreparedMixedRound:
                 prompt_residual=self.prompt_decoder.residual_output, decode_residual=decode_residual)
             sample_rows = batch * width + 1
             full_scratch = owner.scratch.rows(self.packing.tokens, sample_rows)
-            injection = MixedEmbeddingInjection(self.packing, features, self.prompt_state,
-                full_scratch.embedding, scratch.prompt_gdn.output[:prefill])
+            injection = (None if features is None else MixedEmbeddingInjection(self.packing, features, self.prompt_state,
+                full_scratch.embedding, scratch.prompt_gdn.output[:prefill]))
             self.decoder = PreparedDecoder(weights, full_scratch, state, cache, rotary, table, workspaces,
                 completion, frame, sequence, verification=True, embedding_injection=injection, **kwargs)
             self.prompt_sampler = PreparedSampling(full_scratch.logits[-1:], owner.requests,

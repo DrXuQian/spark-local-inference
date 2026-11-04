@@ -43,8 +43,12 @@ def _requests(token_ids: torch.Tensor, query_start: torch.Tensor, history: torch
               primes: torch.Tensor, offsets: torch.Tensor, ids: torch.Tensor,
               requests: torch.Tensor, mailbox: torch.Tensor, sequence: torch.Tensor,
               plan: int) -> None:
-    state = require_prepared(plan_from_handle(plan), "sequence.ple_embedding", ids.device)
-    state.hash_state.run_tensors(token_ids, query_start, history, num_seqs, num_tokens,
+    selected = plan_from_handle(plan)
+    if selected.component_id not in ('sequence.ple_embedding', 'sequence.ple_hash'):
+        raise ValueError('PLE requests require a prepared hash or embedding plan')
+    state = require_prepared(selected, selected.component_id, ids.device)
+    state = state.hash_state if selected.component_id == 'sequence.ple_embedding' else state
+    state.run_tensors(token_ids, query_start, history, num_seqs, num_tokens,
         multipliers, primes, offsets, ids, requests, token_count=ids.shape[0])
     _copy_requests[(triton.cdiv(ids.numel(), 256),)](ids, mailbox, ids.numel(), 256)
     _publish[(1,)](mailbox, sequence, mailbox.numel() - 1)
@@ -74,6 +78,13 @@ def _lookup_fake(source, weight, scales, scale, ids, count, out, timings, frame,
 
 
 class PreparedPLELookup:
+    def __new__(cls, table=None, *args, **kwargs):
+        if getattr(table, 'encoding', None) == 'GGUF_IQ4_NL':
+            from .gguf_ple import PreparedGgufPLELookup
+
+            return PreparedGgufPLELookup(table, *args, **kwargs)
+        return super().__new__(cls)
+
     def __init__(self, table, metadata, output, caps, *, session, name, runtime=None, coordinator=None):
         self.metadata, self.output = metadata, output
         self.geometry, self.scale = table.geometry, table.scale

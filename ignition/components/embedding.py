@@ -19,6 +19,15 @@ class PreparedEmbedding:
     replay. The fixed b12x kernel has no workspace or tuning candidates.
     """
 
+    def __new__(cls, weight=None, *args, **kwargs):
+        from .gguf_weights import GgufWeight
+
+        if isinstance(weight, GgufWeight):
+            from .gguf_embedding import PreparedGgufEmbedding
+
+            return PreparedGgufEmbedding(weight, *args, **kwargs)
+        return super().__new__(cls)
+
     def __init__(self, weight, ids, output, *, session, name, num_rows=None):
         self.weight, self.ids, self.output, self.num_rows = weight, ids, output, num_rows
         self.arguments = {"out": output, "num_rows": num_rows}

@@ -25,6 +25,9 @@ def test_recipe_declares_sources_storage_cursors_and_frontend(recipe, page, lag,
     signatures = {kind: GraphSignature(kind, 1, 4 if kind == "speculative" else 1,
         tuple(c.text_inputs(kind)), speculation_enabled=kind == "speculative")
         for kind in ("init", "restore", "snapshot", "prefill", "decode", "resume", "speculative")}
+    if recipe == 'qwen38':
+        signatures['vision'] = GraphSignature('vision', 1, 256,
+            ('vision_slot', 'vision_generation', 'vision_feature_slot'))
     pool = SimpleNamespace(pages={}, layout=SimpleNamespace(row_bytes=32,
         region=lambda name: SimpleNamespace(offset=24, nbytes=8)))
     contract = module.prepare(signatures, {"page_tables": None, "draft_page_tables": None}, pool,
@@ -63,6 +66,26 @@ def test_device_pending_token_has_read_and_producer_declarations():
     assert pending["buffer"] == "request_pending_token"
     for graph in value["graphs"]:
         assert any(s["view"] == pending and s["access"] in (p.WRITE, p.READ_WRITE) for s in graph["state"])
+
+
+def test_qwen_text_only_inputs_do_not_read_an_image_admission():
+    from ignition.recipes.qwen38.contract import prepare
+
+    pool = SimpleNamespace(layout=SimpleNamespace(row_bytes=32,
+        region=lambda _: SimpleNamespace(offset=0, nbytes=8)))
+    text = {'prefill': GraphSignature('prefill', 1, 64,
+        ('token_ids', 'vision_token_indices', 'vision_feature_slot'))}
+    plain = ParseDict(prepare(text, {}, pool, page_tokens=64, draft_lag=None), p.ModelContract())
+    assert plain.vision.max_images == 0 and not plain.frontend.HasField('image_layout')
+    indices = next(value for value in plain.graphs[0].inputs if value.buffer == 'vision_token_indices')
+    assert indices.source == p.CONSTANT and indices.value_offset == indices.padding == -1
+    assert indices.indexing == p.SUBMISSION_ROW
+    vision = {**text, 'vision256': GraphSignature('vision', 1, 256,
+        ('vision_slot', 'vision_generation', 'vision_feature_slot'))}
+    enabled = ParseDict(prepare(vision, {}, pool, page_tokens=64, draft_lag=None), p.ModelContract())
+    assert enabled.vision.max_images == 4 and enabled.frontend.image_layout == p.QWEN_IMAGE_LAYOUT
+    prefill = next(graph for graph in enabled.graphs if graph.kind == p.PREFILL)
+    assert next(value for value in prefill.inputs if value.buffer == 'vision_token_indices').source == p.IMAGE_FEATURE_INDEX
 
 
 def test_glm_vision_uses_shared_feature_bindings_and_preserves_text_only_contract():

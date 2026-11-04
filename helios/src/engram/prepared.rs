@@ -37,7 +37,7 @@ pub struct PlaneSource {
 /// Table geometry and the prepared buffers consumed by native row delivery.
 #[derive(Clone, Debug)]
 pub struct TableSource {
-    pub planes: [PlaneSource; 2],
+    pub planes: Vec<PlaneSource>,
     pub heads: usize,
     pub weights: String,
     pub scales: String,
@@ -50,7 +50,7 @@ pub struct TableSource {
 /// delivery staging and CUDA events belong to each rank's native binding.
 pub struct PreparedTables {
     index: Arc<Index>,
-    data: Vec<[Arc<reader::Resident>; 2]>,
+    data: Vec<Vec<Arc<reader::Resident>>>,
 }
 
 impl PreparedTables {
@@ -67,8 +67,11 @@ impl PreparedTables {
                 || source.heads > 64
                 || source.event.is_empty()
                 || !events.insert(source.event.clone())
-                || [&source.weights, &source.scales, &source.hashes]
+                || !(1..=2).contains(&source.planes.len())
+                || (source.planes.len() == 1) != source.scales.is_empty()
+                || [&source.weights, &source.hashes]
                     .into_iter()
+                    .chain((source.planes.len() == 2).then_some(&source.scales))
                     .chain(source.request.iter())
                     .any(|name| name.is_empty() || !names.insert(name.clone()))
             {
@@ -116,7 +119,7 @@ impl PreparedTables {
                 });
             }
             tables.push(Table {
-                planes: [planes[0], planes[1]],
+                planes,
                 heads: source.heads,
                 weights: source.weights.clone(),
                 scales: source.scales.clone(),
@@ -135,7 +138,7 @@ impl PreparedTables {
         let mut data = Vec::new();
         for (source, table) in sources.iter().zip(&index.tables) {
             let mut planes = Vec::new();
-            for (source, plane) in source.planes.iter().zip(table.planes) {
+            for (source, plane) in source.planes.iter().zip(table.planes.iter().copied()) {
                 let segments = source
                     .segments
                     .iter()
@@ -147,7 +150,7 @@ impl PreparedTables {
                     .collect::<Result<Vec<_>>>()?;
                 planes.push(Arc::new(reader::Resident::load_segments(plane, &segments)?));
             }
-            data.push([planes.remove(0), planes.remove(0)]);
+            data.push(planes);
         }
         Ok(Self { index, data })
     }
@@ -160,13 +163,14 @@ impl PreparedTables {
         descriptors: &[i32],
     ) -> Result<Self> {
         let index = Self::index(vocabulary, sources)?;
-        if descriptors.len() != index.tables.len() * 2 {
+        if descriptors.len() != index.tables.iter().map(|table| table.planes.len()).sum::<usize>() {
             return Err("shared embedding descriptor count differs from its catalog".into());
         }
         let mut data = Vec::new();
-        for (table, handles) in index.tables.iter().zip(descriptors.chunks_exact(2)) {
+        let mut descriptors = descriptors.iter();
+        for table in &index.tables {
             let mut planes = Vec::new();
-            for (plane, descriptor) in table.planes.into_iter().zip(handles) {
+            for (plane, descriptor) in table.planes.iter().copied().zip(descriptors.by_ref().take(table.planes.len())) {
                 let owned = unsafe { libc::fcntl(*descriptor, libc::F_DUPFD_CLOEXEC, 0) };
                 if owned < 0 {
                     return Err(format!(
@@ -178,7 +182,7 @@ impl PreparedTables {
                 let file = unsafe { File::from_raw_fd(owned) };
                 planes.push(Arc::new(reader::Resident::from_shared(file, plane)?));
             }
-            data.push([planes.remove(0), planes.remove(0)]);
+            data.push(planes);
         }
         Ok(Self { index, data })
     }
@@ -234,9 +238,9 @@ impl PreparedTables {
                     rows,
                     table.planes[0].row_bytes,
                 ),
-                (&table.scales, Dtype::Uint8, rows, table.planes[1].row_bytes),
+                (&table.scales, Dtype::Uint8, rows, table.planes.get(1).map_or(0, |plane| plane.row_bytes)),
                 (&table.hashes, Dtype::Int64, tokens, table.heads),
-            ] {
+            ].into_iter().filter(|(_, _, _, width)| *width != 0) {
                 let buffer = manifest.buffer(name)?;
                 if buffer.dtype != dtype
                     || buffer.shape.len() != 2
@@ -300,6 +304,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn interleaved_rows_use_one_shared_descriptor_and_preserve_block_bytes() {
+        let root = std::env::temp_dir().join(format!("helios-iq4-rows-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("rows.gguf");
+        let bytes: Vec<_> = (0..37 + 33 * 90).map(|i| (i * 17 + i / 90) as u8).collect();
+        std::fs::write(&path, &bytes).unwrap();
+        let sources = [TableSource {
+            planes: vec![PlaneSource { segments: vec![SourceSegment {
+                path, offset: 37, nbytes: 33 * 90,
+            }], row_bytes: 90 }],
+            heads: 16, weights: "rows".into(), scales: String::new(), hashes: "hashes".into(),
+            event: "ready".into(), request: Some("requests".into()),
+        }];
+        let owner = PreparedTables::load(248320, &sources).unwrap();
+        assert_eq!(owner.nbytes(), 33 * 90);
+        assert_eq!(owner.descriptors().len(), 1);
+        let peer = PreparedTables::from_shared(248320, &sources, &owner.descriptors()).unwrap();
+        assert!(PreparedTables::from_shared(248320, &sources, &[]).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+        drop(owner);
+        let mut reader = reader::Reader::resident(peer.data[0].clone(), Arc::default());
+        let mut output = vec![0; 4 * 90];
+        reader.gather(&peer.index.tables[0].planes, &[32, -1, 0, 32], &mut output).unwrap();
+        assert_eq!(&output[..90], &bytes[37 + 32 * 90..]);
+        assert_eq!(&output[90..180], &[0; 90]);
+        assert_eq!(&output[180..270], &bytes[37..37 + 90]);
+        assert_eq!(&output[270..], &bytes[37 + 32 * 90..]);
+        for id in [-2, 33, i64::MAX] {
+            assert!(reader.gather(&peer.index.tables[0].planes, &[id], &mut [0; 90]).is_err());
+        }
+        let mut bad = sources.clone();
+        bad[0].scales = "unexpected".into();
+        assert!(PreparedTables::index(248320, &bad).is_err());
+        bad[0].planes.clear();
+        assert!(PreparedTables::index(248320, &bad).is_err());
+    }
+
+    #[test]
     fn separate_checkpoint_planes_are_shared_without_reopening_sources() {
         let root =
             std::env::temp_dir().join(format!("helios-embedding-sources-{}", std::process::id()));
@@ -311,7 +353,7 @@ mod tests {
         std::fs::write(&first, &weights).unwrap();
         std::fs::write(&second, &scales).unwrap();
         let sources = [TableSource {
-            planes: [
+            planes: vec![
                 PlaneSource {
                     segments: vec![
                         SourceSegment {

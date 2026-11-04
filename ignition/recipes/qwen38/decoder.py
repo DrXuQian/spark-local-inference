@@ -46,12 +46,19 @@ class ModelWeights:
     vision: VisionWeights
     allocated_bytes: int
     shard: TensorParallelShard = TensorParallelShard(0, 1)
+    embedding: object = None
+
+    @property
+    def embedding_weight(self):
+        return self.tree.model.language_model.embed_tokens.weight if self.embedding is None else self.embedding
 
     @classmethod
     def load(cls, manifest: CheckpointManifest, device: torch.device,
              *, progress: Callable[[str], None] | None = None,
              shard: TensorParallelShard = TensorParallelShard(0, 1),
              shard_hyperconnections: bool = False) -> ModelWeights:
+        from ignition.preparation.qwen38_gguf import QwenGgufCheckpoint
+
         device = torch.device(device)
         if device.type != "cuda":
             raise ValueError("model weights require a CUDA device")
@@ -59,11 +66,22 @@ class ModelWeights:
         if torch.cuda.get_device_capability(device) not in SUPPORTED_CAPABILITIES:
             raise ValueError(f"the Qwen recipe requires {SUPPORTED_ARCHITECTURES}")
         free_bytes, _ = device_memory_info(device)
-        stored = sum(tensor.nbytes for tensor in manifest.tensors.values()
-                     if tensor.component not in ("mtp", "ple_tables"))
+        if isinstance(manifest, QwenGgufCheckpoint):
+            from ignition.preparation.qwen38_gguf import device_weight_bytes
+
+            if shard_hyperconnections or shard.world_size != 1:
+                raise ValueError('GGUF model preparation currently requires one CUDA device')
+            stored = device_weight_bytes(manifest)
+        else:
+            stored = sum(tensor.nbytes for tensor in manifest.tensors.values()
+                         if tensor.component not in ("mtp", "ple_tables"))
         # Additional layouts, state, graph memory, and cache pages are planned separately.
         if free_bytes < stored // shard.world_size + (8 << 30):
             raise MemoryError(f"model weight loading requires at least {stored // shard.world_size + (8 << 30)} free CUDA bytes; found {free_bytes}")
+        if isinstance(manifest, QwenGgufCheckpoint):
+            from .gguf_weights import load_model
+
+            return load_model(manifest, device, progress=progress, shard=shard)
         tree = create_model_tree(manifest)
         before = torch.cuda.memory_allocated(device)
         layers = []
@@ -144,10 +162,11 @@ class DecoderScratch:
     ple: object
     moe: object
     local_logits: torch.Tensor | None = None
+    gguf_experts: object = None
 
     @classmethod
     def allocate(cls, tokens: int, device, *, sample_rows: int = 4, world_size: int = 1, buffers=None,
-                 hyperconnection_lowrank: int = 320):
+                 hyperconnection_lowrank: int = 320, gguf_experts=None):
         if type(tokens) is not int or tokens <= 0:
             raise ValueError("decoder token capacity must be a positive integer")
         if type(sample_rows) is not int or sample_rows <= 0:
@@ -178,10 +197,16 @@ class DecoderScratch:
         qsa = QSAScratch.allocate(tokens, device, world_size=world_size, buffers=stages[1], output=block_output)
         moe = QwenMoeScratch.allocate(tokens, device, intermediate=640 // world_size,
                                     buffers=stages[3], output=block_output)
+        expert_workspace = None
+        if gguf_experts is not None:
+            from ignition.components.gguf_moe import GgufMoeWorkspace
+
+            expert_workspace = GgufMoeWorkspace.allocate(gguf_experts, chunk_rows=min(tokens, 8),
+                                                        top_k=10, buffers=stages[3])
         hc = HyperconnectionScratch.allocate(tokens, device, buffers=stages[4],
                                             projected=projected, block_input=block_input, lowrank=hyperconnection_lowrank)
         buffers.join(*stages)
-        return cls(embedding, residual, hidden, sample_hidden, logits, hc, gdn, qsa, ple, moe, local_logits)
+        return cls(embedding, residual, hidden, sample_hidden, logits, hc, gdn, qsa, ple, moe, local_logits, expert_workspace)
 
     def rows(self, tokens: int, sequences: int):
         if (type(tokens) is not int or type(sequences) is not int
@@ -195,7 +220,7 @@ class DecoderScratch:
         return type(self)(self.embedding[:tokens], self.residual[:tokens], self.hidden[:tokens],
             self.sample_hidden[:sequences], self.logits[:sequences], self.hyperconnection.rows(tokens),
             self.gdn.rows(tokens), self.qsa.rows(tokens), rows(self.ple), self.moe.rows(tokens),
-            None if self.local_logits is None else self.local_logits[:sequences])
+            None if self.local_logits is None else self.local_logits[:sequences], self.gguf_experts)
 
 
 class PreparedDecoder:
@@ -248,7 +273,7 @@ class PreparedDecoder:
         self.workspaces, self.ple_table, self.qsa_states = workspaces, ple_table, qsa_states
         source = scratch.hyperconnection.block_input
         language = weights.tree.model.language_model
-        self.embedding = PreparedEmbedding(language.embed_tokens.weight, state.ple.token_ids,
+        self.embedding = PreparedEmbedding(weights.embedding_weight, state.ple.token_ids,
             scratch.embedding, num_rows=state.gdn.num_tokens, session=session, name=f"{name}.embedding")
         self.layers, self.reductions = [], []
         for index, (module, layer_weights) in enumerate(zip(language.layers, weights.layers, strict=True)):
@@ -272,7 +297,7 @@ class PreparedDecoder:
                     records=None if gdn_records is None else gdn_records[index], in_place=gdn_in_place,
                     partitions=getattr(state, "gdn_partitions", None))
             moe = PreparedQwenMoe(source, layer_weights.moe, session=session, name=f"{prefix}.moe",
-                scratch=scratch.moe, workspace=workspaces,
+                scratch=scratch.moe, workspace=workspaces if scratch.gguf_experts is None else scratch.gguf_experts,
                 projection_workspace=workspaces)
             self.layers.append((attn_hc, attention, mlp_hc, moe))
             if runtime is not None:

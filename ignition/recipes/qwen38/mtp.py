@@ -38,10 +38,11 @@ class MTPScratch:
     qsa: QSAScratch
     moe: QwenMoeScratch
     local_logits: torch.Tensor | None = None
+    gguf_experts: object = None
 
     @classmethod
     def allocate(cls, tokens: int, output_rows: int, device, *, world_size=1, buffers=None,
-                 hyperconnection_lowrank=320):
+                 hyperconnection_lowrank=320, gguf_experts=None):
         if (type(tokens) is not int or type(output_rows) is not int
                 or not 0 < output_rows <= tokens):
             raise ValueError("MTP requires positive output rows no greater than token capacity")
@@ -63,10 +64,16 @@ class MTPScratch:
         qsa = QSAScratch.allocate(tokens, device, world_size=world_size, buffers=attention, output=block_output)
         moe = QwenMoeScratch.allocate(tokens, device, intermediate=640 // world_size,
                                     buffers=experts, output=block_output)
+        expert_workspace = None
+        if gguf_experts is not None:
+            from ignition.components.gguf_moe import GgufMoeWorkspace
+
+            expert_workspace = GgufMoeWorkspace.allocate(gguf_experts, chunk_rows=min(tokens, 8),
+                                                        top_k=10, buffers=experts)
         hc = HyperconnectionScratch.allocate(tokens, device, buffers=mixer,
                                             projected=projected, block_input=block_input, lowrank=hyperconnection_lowrank)
         buffers.join(attention, experts, mixer)
-        return cls(ids, embedding, residual, hidden, selected, logits, hc, qsa, moe, local_logits)
+        return cls(ids, embedding, residual, hidden, selected, logits, hc, qsa, moe, local_logits, expert_workspace)
 
     def rows(self, tokens: int, output_rows: int):
         if (type(tokens) is not int or type(output_rows) is not int
@@ -77,7 +84,7 @@ class MTPScratch:
         return type(self)(self.embedding_ids[:tokens], self.embedding[:tokens], self.residual[:tokens],
             self.hidden[:tokens], self.selected_hidden[:output_rows], self.logits[:output_rows],
             self.hyperconnection.rows(tokens), qsa, self.moe.rows(tokens),
-            None if self.local_logits is None else self.local_logits[:output_rows])
+            None if self.local_logits is None else self.local_logits[:output_rows], self.gguf_experts)
 
 
 @dataclass(frozen=True)
@@ -188,7 +195,8 @@ class PreparedMTP:
             priming_state=scratch.residual, session=session, name=f"{name}.mlp_hc",
             runtime=runtime, coordinator=coordinator)
         self.moe = PreparedQwenMoe(source, weights.moe, session=session, name=f"{name}.moe",
-            scratch=scratch.moe, workspace=workspace, projection_workspace=workspace)
+            scratch=scratch.moe, workspace=workspace if scratch.gguf_experts is None else scratch.gguf_experts,
+            projection_workspace=workspace)
         self.final_mixer = PreparedHyperconnection(weights.module.hyper_connection_mixer,
             replace(scratch.hyperconnection, block_input=scratch.hidden),
             priming_state=scratch.residual, session=session, name=f"{name}.final_mixer",

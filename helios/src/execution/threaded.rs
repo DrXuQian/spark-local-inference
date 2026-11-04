@@ -672,7 +672,7 @@ mod tests {
                                     offset: rank as u64 * 4096,
                                     nbytes: (100 + rank) * row_bytes,
                                     row_bytes,
-                                }),
+                                }).to_vec(),
                                 heads: 24,
                                 weights: "weights".into(),
                                 scales: "scales".into(),
@@ -778,7 +778,7 @@ mod tests {
                         planes: [256, 8].map(|row_bytes| Plane {
                             file: rank, offset: rank as u64 * 4096,
                             nbytes: (100 + rank) * row_bytes, row_bytes,
-                        }),
+                        }).to_vec(),
                         heads: 24, weights: "weights".into(), scales: "scales".into(),
                         hashes: "hashes".into(), event: "ready".into(), request: Some("requests".into()),
                     }] }, if partitioned { 1 } else { 4 })

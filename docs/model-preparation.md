@@ -451,16 +451,120 @@ O_DIRECT reads, uses 8 MiB of pinned staging plus bounded read/conversion buffer
 and checks source identities and destination overlap. Existing default transport
 selection is unchanged; read errors never switch transport automatically.
 
-The file-to-projection and shared-workspace graph paths are development building
-blocks. GGUF model preparation and serving, routed-expert composition, host PLE
-lookup, and shared-Q8 MTP weight mapping are not yet connected to `ignition export`.
-Run their CUDA checks in the preparation environment with QUactlize installed:
+GGUF preparation now connects packed routed experts, packed token lookup,
+host-resident IQ4_NL PLE delivery, and the shared-Q8 MTP to the Qwen recipe.
+Dense matrices are expanded once during preparation; expert weights remain
+packed. The shared MTP uses the target embedding/head and ordinary attention
+(compression ratio zero). Target QSA uses compression ratio four. Vocabulary
+IDs, padding rows and BPE merges must match the pinned Flare frontend assets.
+
+For a complete local checkpoint, select a directory containing `manifest.json`:
+
+```json
+{
+  "schema": "qwen38-gguf/1",
+  "main": "/models/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
+  "mtp": "/models/MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf",
+  "frontend": "/models/frontend",
+  "read_mode": "pread"
+}
+```
+
+The full recipe requires all main shards and validates their declared tensor
+counts. It has not been qualified with the complete checkpoint. Do not rename
+partial downloads to satisfy this validation.
+
+The bounded development fixture uses complete blocks 44/47 from shard four,
+all 512 experts in each selected block, and the complete shared MTP. Its token
+embedding, output head and small PLE table are deterministic test data; generated
+text is not a language-model quality check. It exports ordinary and speculative
+graphs through the same sampling, commit, rollback and cache code:
 
 ```sh
-.venv/bin/python -m ignition.patches
-FLARE_RUN_CUDA_TESTS=1 FLARE_GGUF_MTP=/models/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf \
-  .venv/bin/python -m pytest -q tests/preparation/test_gguf_weights_cuda.py tests/preparation/test_pread_weights_cuda.py
+.venv/bin/python -m qualify.qwen38_gguf \
+  --target-shard /models/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf \
+  --metadata /models/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf \
+  --mtp /models/MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf \
+  --frontend /models/frontend --output /models/qualification
 ```
+
+Only complete selected layers are accepted; this does not resume or load missing
+shards. Export staging currently needs roughly three times the final package
+size in free disk space. Remove an obsolete fixture package before re-exporting
+when space is limited. Serve the package using the native Rust CLI, after the
+preparation process exits. Use `--kv-cache-limit memory` to retain enough backing
+for hybrid prefix snapshots in this fixture. A successfully exported package
+alone does not qualify request behavior or absence of GPU idle intervals.
+
+Native RTX qualification uses batch one, context 1024, prefill 64, RAM table
+delivery and the exported package after Python exits. Eighteen fixed-MTP request
+cases and 50 ordinary/teacher-prefix cases pass, including cancellation, drained
+slot reuse, and rejection of invalid token IDs before admission. Within each fixed mode,
+restoring a cached prefix preserves generated IDs and logprobs exactly. Adaptive
+service exercises widths 1/2/4/6. The actual-weight GDN test additionally checks
+width 1/6 and committed prefixes 0–6 against Flare's existing checkpoint reference,
+retaining its FP32 state bound (rtol 1e-5, atol 1e-6) and gated-output checks.
+Cross-variant target scores are not bitwise identical: reconstructed raw-logit
+relative L2 is 0.00242 overall and at most 0.00742 per teacher-forced position.
+
+The fixed-width-six Nsight run contains 102 complete speculative rounds, each
+627 compute kernels under one graph launch. Median kernel span is 11.330 ms;
+consecutive-round gaps are median 15.553 us, p95 16.385 us, maximum 16.641 us.
+No GPU allocation, module load, recapture or out-of-graph compute kernel occurs
+during execution. Each round copies 8640 bytes of PLE rows plus small request
+metadata; expert weights remain resident. Kernel-to-kernel dependency gaps
+still exist. Three adaptive traces contain isolated submission gaps of
+132–368 us; two also contain external PLE readiness waits of 0.956/1.523 ms.
+The 3483-round repeat has 3420 consecutive width-one pairs: median 14.912 us,
+p95 16.096 us, maximum 132.031 us. Cgroup counters show no CPU throttling during
+that repeat. OSRT and thread schedstat records do not establish the cause of
+the tails; this container prohibits CPU context-switch profiling. Unprofiled
+tail/readiness attribution and a separate minimal-replay comparison remain open.
+These partial-model measurements do not establish full-model throughput or a
+zero-idle claim.
+
+Run request checks against an otherwise idle native service:
+
+```sh
+python -m qualify.qwen38_gguf_http --url http://127.0.0.1:18081 --output mtp-native.json
+# Restart the same package with --mtp-draft-tokens 0, then:
+python -m qualify.qwen38_gguf_http --url http://127.0.0.1:18081 \
+  --output ordinary-native.json --teacher mtp-native.json
+```
+
+### PPU port preparation
+
+The checked QUactlize interface is
+[`feat/ppu-flash-next` at 01810ca5](https://github.com/DrXuQian/QUactlize/tree/01810ca53f837cbab3c4770f0cfdd4b0d208ea44/quactlize/compat),
+not the older canonical-only API on `develop`. Its 203 host ABI, reader and
+shape cases pass. Both new CUDA-compatible translation units compile with
+SDK 2.1.1 for `ppu_10`; PPU device tests have not run here.
+The checked actlizeLA interface is
+[`feat/flare-gdn-qsa-mtp` at cbcb4b9](https://github.com/DrXuQian/actlizeLA/tree/cbcb4b9c9be5d8f38791a0955c8a11005670b5b7/actlize_la/serving).
+Its 44 host cases and 42 independent SM120 device cases pass. These are operator
+checks, not Flare package replay or PPU hardware qualification.
+
+| Operation | Required contract | Current PPU source and remaining work |
+| --- | --- | --- |
+| GGUF projections and MoE | Q5_1, Q8_0, Q2_K–Q6_K; H2560/I640; 512 experts, top10; BF16 operands/output, FP32 accumulation | New QU raw path admits these shapes. Canonical packing retains stricter alignment. Bind the new ABI with prepared custom ops and verify each capacity on the target. |
+| Expert workspace | Resident packed weights, bounded expansion, changing device IDs | New QU scratch is linear in routed rows; weight expansion is bounded by four experts × 512 output columns. M≤8 selects SIMT; larger M selects grouped TC. Do not reuse NVIDIA's eight-row prefill chunk without checking this route change. |
+| Router | FP32 route weights, original tie rule, inactive rows | New QU helper supports 512/top10, but ties prefer lower IDs; Flare prefers higher IDs. No live-count operand is supplied, so mask padded rows explicitly. |
+| SwiGLU | BF16 SiLU followed by multiply and BF16 output | New QU helper rounds only after multiplication. It is not equivalent to Qwen's `round_silu=True`. For BF16 gate −4.96875 and up 1.5, results are −0.051513671875 versus −0.0517578125. |
+| Token embedding / PLE | Device-indexed Q8_0 rows of width2560 and IQ4_NL rows of width160; inactive IDs and changing live counts | New PPU matmul dequant takes host row indices and does not admit IQ4_NL. A captured row-lookup interface remains necessary. NVIDIA compatibility already provides it. |
+| GDN | FP32 state `[slot,Hv,V,K]`, Hk16/Hv48, compact per-layer records, consumed-input commit count | actlizeLA provides decode/verify/prefill/commit. Preserve zero-prefix convolution rollback, device errors and each layer's retained records; bind through complete compiled forwards. |
+| QSA | Ratio4, 24 query/2 KV heads, D256, selected capacity2051, page64 | actlizeLA supplies append/compression/selection/attention with BF16 KV. Flare currently uses FP8 KV; change allocation, memory estimates, snapshots and restore together. Do not retain the old writer as well. |
+| Shared MTP attention | Ratio0, paged causal GQA, D256, page64, changing device lengths | Use ordinary FlashAttention. Local FA2 f600591 requires pages divisible by256; the narrow FA3 box build disables paging/append/D256. Qualify a matching FA3 build and prepared output/workspace ABI. |
+| Dense BF16 / HC projections | Preserve actual dimensions, strided outputs and FP32 accumulation | DeepGEMM provides BF16 kernels. Freeze plans and scratch before capture; its ordinary Python JIT entry is not a serving interface. |
+| RMSNorm / HC / ShortConv / RoPE / gating / sampling / state helpers | Exact dtype/rounding, inactive rows and complete mutable history | These exist in Flare through b12x and compiled tensor operations. QU/actlizeLA do not replace all of them; compile or bind external PPU implementations. No framework-owned kernel collection is added. |
+| Native graph export | Capture and export on the deployment platform; replay after Python exits | SDK2.1.1 declares graph/VMM/event APIs. Qualify the CUDA facade, module-image recorder, PPU ELF globals/parameters and relocations. Current export uses CUPTI and CUDA module metadata; API names alone do not prove this boundary. |
+
+`quactlize_ppu_matmul_run_v1` has sticky device error bits. The adapter must
+clear and consume them at the intended graph boundary, retain all buffers and
+handles, and propagate failures through existing request state. Never read
+routing decisions back to the host. actlizeLA's supported build targets are
+`ppu10`, `ppu15` and `cuda_sm120`; a PPU1.7 target is a separate qualification.
+
+### Native Qwen serving
 
 Enable hybrid history drafting at serving startup with
 `flare run PACKAGE --history-drafts`; disable it with `--no-history-drafts`.

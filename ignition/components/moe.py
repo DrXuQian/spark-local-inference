@@ -108,7 +108,10 @@ class PreparedRoutedExperts:
         # Experts loaded for SM103 execute through FlashInfer's native kernels. Unpickling, as compiler
         # workers do with a forward's metadata, creates the instance without arguments.
         from ignition.components.moe_sm103 import Sm103Experts, Sm103RoutedExperts
+        from ignition.components.gguf_moe import GgufExperts, PreparedGgufRoutedExperts
 
+        if isinstance(experts, GgufExperts):
+            return PreparedGgufRoutedExperts(source, experts, *args, **kwargs)
         if isinstance(experts, Sm103Experts):
             return Sm103RoutedExperts(source, experts, *args, **kwargs)
         return super().__new__(cls)

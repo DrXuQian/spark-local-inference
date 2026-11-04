@@ -38,13 +38,13 @@ fn sources(value: &Bound<'_, PyAny>) -> PyResult<(usize, Vec<TableSource>)> {
                 row_bytes: plane.get_item("row_bytes")?.extract()?,
             });
         }
-        if planes.len() != 2 {
+        if !(1..=2).contains(&planes.len()) {
             return Err(PyValueError::new_err(
-                "embedding table requires weight and scale planes",
+                "embedding table requires packed weights with an optional scale plane",
             ));
         }
         tables.push(TableSource {
-            planes: [planes.remove(0), planes.remove(0)],
+            planes,
             heads: table.get_item("heads")?.extract()?,
             weights: table.get_item("weights")?.extract()?,
             scales: table.get_item("scales")?.extract()?,

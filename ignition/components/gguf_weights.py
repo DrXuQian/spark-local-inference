@@ -86,6 +86,34 @@ class GgufWeightLoader(DirectWeightLoader):
     def load_quantized(self, name, *, rows=None, columns=None, experts=None):
         return self.load_quantized_group((name,), row_ranges=(rows,), columns=columns, experts=experts)
 
+    def load_dequantized(self, name, *, rows=None, columns=None, dtype=None):
+        """Expand one dense projection during preparation, never an expert/table set.
+
+        Recipes choose which small matrices to retain in 16-bit storage. The
+        external decoder performs one final FP16/BF16 rounding of GGUF values;
+        packed staging is released after the asynchronous conversion completes.
+        """
+        import torch
+        from quactlize.cuda_compat import gather_rows
+        from ignition.preparation import provenance
+
+        dtype = torch.bfloat16 if dtype is None else dtype
+        metadata = self.manifest.tensors[name]
+        if (len(metadata.shape) != 2 or metadata.component == 'ple_tables'
+                or dtype not in (torch.float16, torch.bfloat16)):
+            raise ValueError('dense GGUF expansion requires a projection and FP16/BF16 output')
+        weight = self.load_quantized(name, rows=rows, columns=columns)
+        sources = provenance.lookup(weight.raw)['sources']
+        output = torch.empty(weight.shape, device=self.device, dtype=dtype)
+        ids = torch.arange(weight.shape[0], device=self.device, dtype=torch.int64)
+        error = torch.empty((), device=self.device, dtype=torch.int32)
+        gather_rows(weight.raw, ids, output, None, error, weight.qtype, weight.shape[0])
+        if error.item():
+            raise RuntimeError(f'{name}: external GGUF decoder rejected dense row geometry')
+        provenance.record_sources(output, sources, packing='gguf_dequantized',
+            packing_parameters=dict(encoding=weight.encoding, dtype=str(dtype).removeprefix('torch.')))
+        return output
+
     def load_quantized_group(self, names, *, row_ranges=None, columns=None, experts=None):
         """Fuse output rows, separately within each expert when E is present."""
         import torch

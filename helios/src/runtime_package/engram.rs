@@ -27,7 +27,7 @@ pub(super) fn spans(
     for table in index.engram.iter().flat_map(|e| &e.tables) {
         validate_shards(table, world)?;
         if table.shards.is_empty() {
-            for span in [&table.weights, &table.scales] {
+            for span in [&table.weights, &table.scales].into_iter().take(plane_count(table)) {
                 result.push((
                     None,
                     span.as_ref()
@@ -37,7 +37,7 @@ pub(super) fn spans(
         } else {
             for shard in &table.shards {
                 if selected.is_none_or(|rank| rank == shard.rank as usize) {
-                    for span in [&shard.weights, &shard.scales] {
+                    for span in [&shard.weights, &shard.scales].into_iter().take(plane_count(table)) {
                         result.push((
                             Some(shard.rank as usize),
                             span.as_ref()
@@ -51,7 +51,15 @@ pub(super) fn spans(
     Ok(result)
 }
 
+fn plane_count(table: &wire::EngramTable) -> usize {
+    if table.encoding == wire::engram_table::Encoding::GgufIq4Nl as i32 { 1 } else { 2 }
+}
+
 fn validate_shards(table: &wire::EngramTable, world: usize) -> Result<()> {
+    if plane_count(table) == 1 && (!table.scale_buffer.is_empty() || table.scales.is_some()
+        || table.shards.iter().any(|shard| shard.scales.is_some())) {
+        return Err(invalid("interleaved GGUF scales cannot declare a separate plane or buffer"));
+    }
     if table.shards.is_empty() {
         return Ok(());
     }
@@ -72,7 +80,7 @@ fn validate_shards(table: &wire::EngramTable, world: usize) -> Result<()> {
         end = end
             .checked_add(shard.rows)
             .ok_or_else(|| invalid("embedding partition overflow"))?;
-        if shard.weights.is_none() || shard.scales.is_none() {
+        if shard.weights.is_none() || (plane_count(table) == 2 && shard.scales.is_none()) {
             return Err(invalid("missing embedding partition plane"));
         }
     }
@@ -115,6 +123,12 @@ pub(super) fn decode<F: super::payload::Files>(
             .map_err(|_| invalid("unknown n-gram encoding"))?;
         let (width, block, row_bytes, scale_bytes) = match encoding {
             wire::engram_table::Encoding::Fp8E4m3E8m0 => (256, 32, 256, 8),
+            wire::engram_table::Encoding::GgufIq4Nl
+                if table.global_scale == 0.0 && table.embedding_width > 0
+                    && table.embedding_width.is_multiple_of(32) =>
+            {
+                (table.embedding_width, 32, table.embedding_width as usize / 32 * 18, 0)
+            }
             wire::engram_table::Encoding::Nvfp4E4m3Global
                 if table.global_scale.is_finite() && table.global_scale > 0.0 =>
             {
@@ -138,13 +152,9 @@ pub(super) fn decode<F: super::payload::Files>(
             || table.scale_block != block
             || !events.insert(table.ready_event.clone())
             || table.ready_event.is_empty()
-            || [
-                &table.weight_buffer,
-                &table.scale_buffer,
-                &table.hash_buffer,
-            ]
-            .iter()
-            .any(|name| name.is_empty() || !buffers.insert((*name).clone()))
+            || [&table.weight_buffer, &table.hash_buffer].into_iter()
+                .chain((scale_bytes != 0).then_some(&table.scale_buffer))
+                .any(|name| name.is_empty() || !buffers.insert(name.clone()))
         {
             return Err(invalid("invalid Engram table encoding or bindings"));
         }
@@ -193,7 +203,10 @@ pub(super) fn decode<F: super::payload::Files>(
                 row_bytes,
             })
         };
-        let planes = [plane(weights, row_bytes)?, plane(scales, scale_bytes)?];
+        let mut planes = vec![plane(weights, row_bytes)?];
+        if scale_bytes != 0 {
+            planes.push(plane(scales, scale_bytes)?);
+        }
         for package in packages {
             if !package.events.contains(&table.ready_event) {
                 return Err(invalid("rank lacks Engram readiness event"));
@@ -218,7 +231,7 @@ pub(super) fn decode<F: super::payload::Files>(
                 (&table.weight_buffer, "uint8", row_bytes as u64),
                 (&table.scale_buffer, "uint8", scale_bytes as u64),
                 (&table.hash_buffer, "int64", heads as u64),
-            ] {
+            ].into_iter().filter(|(_, _, columns)| *columns != 0) {
                 let buffer = execution
                     .buffers
                     .iter()
@@ -298,6 +311,33 @@ pub(super) fn decode<F: super::payload::Files>(
 mod tests {
     use super::*;
     use prost::Message;
+
+    #[test]
+    fn interleaved_tables_authenticate_only_their_weight_plane() {
+        let mut table = partitioned();
+        table.encoding = wire::engram_table::Encoding::GgufIq4Nl as i32;
+        for shard in &mut table.shards {
+            shard.scales = None;
+            shard.weights.as_mut().unwrap().nbytes = shard.rows * 90;
+        }
+        assert!(validate_shards(&table, 4).is_ok());
+        let mut index = wire::ModelIndex {
+            ranks: vec![wire::BundleIndex::default(); 4],
+            engram: Some(wire::Engram { tables: vec![table.clone()], ..Default::default() }),
+            ..Default::default()
+        };
+        assert_eq!(spans(&index, None).unwrap().len(), 4);
+        assert_eq!(spans(&index, Some(2)).unwrap().len(), 1);
+        table.shards[0].scales = Some(wire::Span::default());
+        assert!(validate_shards(&table, 4).is_err());
+        table.shards[0].scales = None;
+        table.encoding = wire::engram_table::Encoding::Nvfp4E4m3Global as i32;
+        assert!(validate_shards(&table, 4).is_err());
+        let table = &mut index.engram.as_mut().unwrap().tables[0];
+        table.shards.clear();
+        table.weights = Some(wire::Span { nbytes: table.rows * 90, ..Default::default() });
+        assert_eq!(spans(&index, None).unwrap().len(), 1);
+    }
 
     fn partitioned() -> wire::EngramTable {
         wire::EngramTable {

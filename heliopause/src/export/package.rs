@@ -54,6 +54,17 @@ pub(crate) fn span_mut<'a>(index: &'a mut wire::ModelIndex, key: &SpanKey) -> &'
         }
     }
 }
+fn engram_plane_count(table: &wire::EngramTable) -> Result<usize> {
+    if table.encoding != wire::engram_table::Encoding::GgufIq4Nl as i32 {
+        return Ok(2);
+    }
+    if table.scales.is_some() || !table.scale_buffer.is_empty()
+        || table.shards.iter().any(|shard| shard.scales.is_some()) {
+        return Err(invalid("interleaved GGUF table cannot carry a separate scale plane"));
+    }
+    Ok(1)
+}
+
 pub(crate) fn roles(index: &wire::ModelIndex) -> Result<Vec<Role>> {
     let mut result = Vec::new();
     for (owner, rank) in index.ranks.iter().enumerate() {
@@ -124,7 +135,7 @@ pub(crate) fn roles(index: &wire::ModelIndex) -> Result<Vec<Role>> {
     if let Some(engram) = &index.engram {
         for table in &engram.tables {
             if table.shards.is_empty() {
-                for scales in [false, true] {
+                for scales in [false, true].into_iter().take(engram_plane_count(table)?) {
                     result.push(Role {
                         kind: 4,
                         owner: None,
@@ -146,7 +157,7 @@ pub(crate) fn roles(index: &wire::ModelIndex) -> Result<Vec<Role>> {
                     if shard.rank as usize >= index.ranks.len() {
                         return Err(invalid("embedding partition owner outside package ranks"));
                     }
-                    for scales in [false, true] {
+                    for scales in [false, true].into_iter().take(engram_plane_count(table)?) {
                         result.push(Role {
                             kind: 4,
                             owner: Some(shard.rank as usize),
@@ -439,7 +450,7 @@ pub(crate) fn combine(
                         (0..table.shards.len()).map(Some).collect()
                     };
                     for shard in shards {
-                        for scales in [false, true] {
+                        for scales in [false, true].into_iter().take(engram_plane_count(table)?) {
                             let key = SpanKey::Table(i, shard, scales);
                             let span = match (shard, scales) {
                                 (Some(j), true) => table.shards[j].scales.clone(),
@@ -1354,6 +1365,7 @@ fn package_engram(
     };
     let mut tables = Vec::new();
     for (index, table) in engram.tables.iter().enumerate() {
+        let plane_count = engram_plane_count(table)?;
         let (weights, scales, shards) = if table.shards.is_empty() {
             let weights = payload_source(
                 payload,
@@ -1364,16 +1376,14 @@ fn package_engram(
                 staging,
                 &format!("engram-{index}-w.payload"),
             )?;
-            let scales = payload_source(
-                payload,
-                table
-                    .scales
-                    .as_ref()
-                    .ok_or_else(|| invalid("engram table lacks scales"))?,
-                staging,
-                &format!("engram-{index}-s.payload"),
-            )?;
-            for (plane, materialized) in [("weights", &weights), ("scales", &scales)] {
+            let scales = table.scales.as_ref().map(|span| payload_source(
+                payload, span, staging, &format!("engram-{index}-s.payload"),
+            )).transpose()?;
+            if scales.is_none() && plane_count == 2 {
+                return Err(invalid("engram table lacks scales"));
+            }
+            for (plane, materialized) in [("weights", Some(&weights)), ("scales", scales.as_ref())]
+                .into_iter().filter_map(|(name, value)| value.map(|value| (name, value))) {
                 installed.push(helios_core::package::export::PublishPayload {
                     role: pwire::PayloadRole::Weights,
                     relative: format!("weights/engram-{index}-{plane}.safetensors"),
@@ -1384,7 +1394,7 @@ fn package_engram(
             }
             (
                 Some(use_of(&weights.0, weights.1)),
-                Some(use_of(&scales.0, scales.1)),
+                scales.as_ref().map(|value| use_of(&value.0, value.1)),
                 Vec::new(),
             )
         } else {
@@ -1411,16 +1421,14 @@ fn package_engram(
                     staging,
                     &format!("engram-{index}-shard-{position}-w.payload"),
                 )?;
-                let scales = payload_source(
-                    payload,
-                    shard
-                        .scales
-                        .as_ref()
-                        .ok_or_else(|| invalid("engram shard lacks scales"))?,
-                    staging,
-                    &format!("engram-{index}-shard-{position}-s.payload"),
-                )?;
-                for (plane, materialized) in [("weights", &weights), ("scales", &scales)] {
+                let scales = shard.scales.as_ref().map(|span| payload_source(
+                    payload, span, staging, &format!("engram-{index}-shard-{position}-s.payload"),
+                )).transpose()?;
+                if scales.is_none() && plane_count == 2 {
+                    return Err(invalid("engram shard lacks scales"));
+                }
+                for (plane, materialized) in [("weights", Some(&weights)), ("scales", scales.as_ref())]
+                    .into_iter().filter_map(|(name, value)| value.map(|value| (name, value))) {
                     installed.push(helios_core::package::export::PublishPayload {
                         role: pwire::PayloadRole::Weights,
                         relative: format!(
@@ -1436,7 +1444,7 @@ fn package_engram(
                     first_row: shard.first_row,
                     rows: shard.rows,
                     weights: Some(use_of(&weights.0, weights.1)),
-                    scales: Some(use_of(&scales.0, scales.1)),
+                    scales: scales.as_ref().map(|value| use_of(&value.0, value.1)),
                 });
             }
             (None, None, shards)
@@ -3831,6 +3839,7 @@ mod payload_export_tests {
         let sources = base.join("sources");
         let shared_weights = vec![0x11; 80];
         let shared_scales = vec![0x22; 10];
+        let interleaved_weights = vec![0x88; 90];
         let shard0_weights = vec![0x33; 256];
         let shard0_scales = vec![0x44; 8];
         let shard1_weights = vec![0x55; 256];
@@ -3842,6 +3851,7 @@ mod payload_export_tests {
             ("shard0-s.bin", &shard0_scales),
             ("shard1-w.bin", &shard1_weights),
             ("shard1-s.bin", &shard1_scales),
+            ("interleaved-w.bin", &interleaved_weights),
         ] {
             fs::write(sources.join(name), bytes).unwrap();
         }
@@ -3938,6 +3948,27 @@ mod payload_export_tests {
                 },
             ],
         });
+        rank.index.engram.as_mut().unwrap().tables.push(wire::EngramTable {
+            layer: 3,
+            rows: 1,
+            embedding_width: 160,
+            scale_block: 32,
+            weights: Some(wire::Span {
+                offset: 12976,
+                nbytes: interleaved_weights.len() as u64,
+                ..Default::default()
+            }),
+            hash: Some(wire::EngramHash {
+                method: wire::engram_hash::Method::XorModulo as i32,
+                ..Default::default()
+            }),
+            weight_buffer: "interleaved_weights".into(),
+            hash_buffer: "interleaved_hashes".into(),
+            ready_event: "interleaved_ready".into(),
+            request_buffer: "interleaved_requests".into(),
+            encoding: wire::engram_table::Encoding::GgufIq4Nl as i32,
+            ..Default::default()
+        });
         for (offset, name, nbytes) in [
             (12288, "shared-w.bin", shared_weights.len()),
             (12368, "shared-s.bin", shared_scales.len()),
@@ -3945,6 +3976,7 @@ mod payload_export_tests {
             (12704, "shard0-s.bin", shard0_scales.len()),
             (12712, "shard1-w.bin", shard1_weights.len()),
             (12968, "shard1-s.bin", shard1_scales.len()),
+            (12976, "interleaved-w.bin", interleaved_weights.len()),
         ] {
             rank.payload.push(FilePart {
                 offset,
@@ -3966,7 +3998,7 @@ mod payload_export_tests {
             &mut installed,
         )
         .unwrap();
-        assert_eq!(installed.len(), 6);
+        assert_eq!(installed.len(), 7);
         assert_eq!(fs::read_dir(&assembly).unwrap().count(), 0);
         for payload in &installed {
             assert_eq!(payload.source.digest().unwrap(), payload.id);
@@ -3991,11 +4023,44 @@ mod payload_export_tests {
         let deployment = pwire::DeploymentBody::decode(envelope.deployments[0].body.as_slice())
             .unwrap();
         let engram = deployment.engram.unwrap();
-        assert_eq!(engram.tables.len(), 2);
+        assert_eq!(engram.tables.len(), 3);
         let shared = &engram.tables[0];
         assert!(shared.weights.is_some() && shared.scales.is_some());
         assert!(shared.shards.is_empty());
         let partitioned = &engram.tables[1];
+        let interleaved = &engram.tables[2];
+        assert!(interleaved.weights.is_some() && interleaved.scales.is_none());
+        assert!(interleaved.scale_buffer.is_empty() && interleaved.shards.is_empty());
+        assert_eq!(interleaved.encoding, pwire::engram_table::Encoding::GgufIq4Nl as i32);
+        let source_publisher = publisher();
+        let signer = helios_core::runtime_package::Publisher {
+            name: "test".into(),
+            namespace: source_publisher.namespace.clone(),
+            public_key: source_publisher.public_key().try_into().unwrap(),
+            development: false,
+        };
+        let verified = helios_core::package::protection::verify(
+            &metadata.envelope,
+            &[signer],
+            helios_core::package::protection::Selection::Deployment {
+                deployment: 0,
+                rank: None,
+            },
+        )
+        .unwrap();
+        let required = helios_core::package::reader::required_payloads(&verified).unwrap();
+        let payloads = metadata.payloads(verified.catalog(), required.iter().map(Vec::as_slice)).unwrap();
+        payloads.verify().unwrap();
+        for table in &engram.tables {
+            for plane in [&table.weights, &table.scales].into_iter().flatten() {
+                payloads.get(&plane.slice.as_ref().unwrap().payload_id).unwrap();
+            }
+            for shard in &table.shards {
+                for plane in [&shard.weights, &shard.scales].into_iter().flatten() {
+                    payloads.get(&plane.slice.as_ref().unwrap().payload_id).unwrap();
+                }
+            }
+        }
         assert!(partitioned.weights.is_none() && partitioned.scales.is_none());
         assert_eq!(partitioned.shards.len(), 2);
         assert_eq!(
@@ -4038,6 +4103,7 @@ mod payload_export_tests {
             assert_eq!(locations[0].file, format!("weights/engram-0-{plane}.safetensors"));
         }
         assert_eq!(read_use(shared.weights.as_ref().unwrap()), shared_weights);
+        assert_eq!(read_use(interleaved.weights.as_ref().unwrap()), interleaved_weights);
         assert_eq!(read_use(shared.scales.as_ref().unwrap()), shared_scales);
         assert_eq!(
             read_use(partitioned.shards[0].weights.as_ref().unwrap()),

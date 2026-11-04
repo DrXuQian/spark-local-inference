@@ -355,7 +355,7 @@ class PreparedPLE:
                 raise ValueError("canonical PLE parameters must share the graph device")
         sequences = metadata.query_start_loc.numel() - 1
         caps = _caps(table.config, self.device, self.tokens, sequences,
-                     rank=table.layout.caps.tp_rank, world_size=table.layout.caps.tp_size)
+                     rank=getattr(table.layout.caps, 'tp_rank', 0), world_size=getattr(table.layout.caps, 'tp_size', 1))
         from ignition.components.ngram_delivery import PreparedPLELookup
 
         self.embedding_lookup = PreparedPLELookup(table, metadata, scratch.embedding, caps,

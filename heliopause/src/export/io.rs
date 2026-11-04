@@ -467,6 +467,8 @@ pub(crate) struct Identity {
     #[cfg(unix)]
     pub(crate) inode: u64,
     #[cfg(unix)]
+    links: u64,
+    #[cfg(unix)]
     pub(crate) modified: (i64, i64),
     #[cfg(unix)]
     pub(crate) changed: (i64, i64),
@@ -507,6 +509,7 @@ impl Identity {
                 size: info.len(),
                 device: info.dev(),
                 inode: info.ino(),
+                links: info.nlink(),
                 modified: (info.mtime(), info.mtime_nsec()),
                 changed: (info.ctime(), info.ctime_nsec()),
             })
@@ -807,7 +810,15 @@ fn direct_reopen(file: &File, write: bool) -> Result<File> {
 fn transfer_batch(file: &File, jobs: &[(*mut u8, usize, u64, usize)], write: bool) -> Result<()> {
     use io_uring::{IoUring, opcode, types};
     use std::os::fd::AsRawFd;
-    let mut ring = IoUring::new(jobs.len().next_power_of_two() as u32)?;
+    let mut ring = match IoUring::new(jobs.len().next_power_of_two() as u32) {
+        Ok(ring) => ring,
+        Err(error) if matches!(error.raw_os_error(), Some(libc::EPERM | libc::EACCES | libc::ENOSYS)) => {
+            static NOTICE: std::sync::Once = std::sync::Once::new();
+            NOTICE.call_once(|| eprintln!("Flare export: io_uring unavailable ({error}); using positioned O_DIRECT transfers"));
+            return transfer_positioned(file, jobs, write);
+        }
+        Err(error) => return Err(error.into()),
+    };
     let mut done = vec![0usize; jobs.len()];
     for (i, &(pointer, length, offset, _)) in jobs.iter().enumerate() {
         let entry = if write {
@@ -909,6 +920,37 @@ fn transfer_batch(file: &File, jobs: &[(*mut u8, usize, u64, usize)], write: boo
     }
     if let Some(error) = failure {
         return Err(error.into());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn transfer_positioned(file: &File, jobs: &[(*mut u8, usize, u64, usize)], write: bool) -> Result<()> {
+    use std::os::fd::AsRawFd;
+
+    for &(pointer, length, offset, required) in jobs {
+        let mut done = 0usize;
+        while done < required {
+            // Buffers and the O_DIRECT descriptor remain owned by this batch;
+            // successful return or error leaves no submitted operation in flight.
+            let count = unsafe {
+                if write {
+                    libc::pwrite(file.as_raw_fd(), pointer.add(done).cast(), length - done, (offset + done as u64) as libc::off_t)
+                } else {
+                    libc::pread(file.as_raw_fd(), pointer.add(done).cast(), length - done, (offset + done as u64) as libc::off_t)
+                }
+            };
+            if count < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted { continue; }
+                return Err(error.into());
+            }
+            if count == 0 { return Err("truncated positioned direct export transfer".into()); }
+            done += count as usize;
+            if done > length || (done < required && done % ALIGNMENT != 0) {
+                return Err("unaligned partial positioned direct export transfer".into());
+            }
+        }
     }
     Ok(())
 }

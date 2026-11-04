@@ -161,7 +161,7 @@ pub enum Storage {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Table {
-    pub(crate) planes: [Plane; 2],
+    pub(crate) planes: Vec<Plane>,
     pub(crate) heads: usize,
     pub(crate) weights: String,
     pub(crate) scales: String,
@@ -413,7 +413,7 @@ impl Shared {
             );
             let (sender, receiver) = mpsc::sync_channel::<Job>(STAGING_FRAMES);
             let buffers = staging.clone();
-            let planes = table.planes;
+            let planes = table.planes.clone();
             let row_bytes = planes.iter().map(|p| p.row_bytes).sum::<usize>();
             let cancelled = Arc::new(AtomicBool::new(false));
             let stop = cancelled.clone();
@@ -598,7 +598,7 @@ impl Transfers {
                 stream,
                 flags,
                 weights: manifest.buffer(&table.weights)?.address,
-                scales: manifest.buffer(&table.scales)?.address,
+                scales: if table.planes.len() == 2 { manifest.buffer(&table.scales)?.address } else { 0 },
                 event: binding.events[i],
                 request,
             });
@@ -691,12 +691,14 @@ impl Transfers {
                     0,
                     rows * table.planes[0].row_bytes,
                 )?;
-                transfer.stream.upload(
-                    transfer.scales,
-                    &staging.data,
-                    rows * table.planes[0].row_bytes,
-                    rows * table.planes[1].row_bytes,
-                )?;
+                if let Some(scales) = table.planes.get(1) {
+                    transfer.stream.upload(
+                        transfer.scales,
+                        &staging.data,
+                        rows * table.planes[0].row_bytes,
+                        rows * scales.row_bytes,
+                    )?;
+                }
                 // The consumer is enqueued before a following submission re-records this event.
                 transfer.stream.record_borrowed(transfer.event)?;
             }
@@ -738,7 +740,7 @@ mod tests {
     #[test]
     fn staging_budget_covers_two_payloads_and_ready_flags_per_table() {
         let table = Table {
-            planes: [Plane { file: 0, offset: 0, nbytes: 1024, row_bytes: 64 },
+            planes: vec![Plane { file: 0, offset: 0, nbytes: 1024, row_bytes: 64 },
                 Plane { file: 0, offset: 1024, nbytes: 128, row_bytes: 8 }],
             heads: 4, weights: "weights".into(), scales: "scales".into(),
             hashes: "hashes".into(), event: "ready".into(), request: None,

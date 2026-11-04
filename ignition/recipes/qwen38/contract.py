@@ -19,6 +19,8 @@ FRONTEND = c.frontend(tools=p.QWEN_CODER, wrapping_newlines=1, terminal_markers=
 
 
 def prepare(signatures, buffers, pool, *, image_slots=4, page_tokens, draft_lag, rows=1, embedding_tables=(), regions=()):
+    vision = {**VISION, 'feature_slots': image_slots} if any(s.kind == 'vision' for s in signatures.values()) else None
+    frontend = FRONTEND if vision is not None else dict(FRONTEND, image_tokens=None, image_preparation=None, image_layout=None)
     inputs = {kind: c.text_inputs(kind) for kind in {s.kind for s in signatures.values()} if kind != "vision"}
     inputs["vision"] = c.vision_inputs({field for s in signatures.values() if s.kind == "vision" for field in s.inputs})
     continuation = c.state_view("state_pool", pool.layout.row_bytes)
@@ -27,6 +29,9 @@ def prepare(signatures, buffers, pool, *, image_slots=4, page_tokens, draft_lag,
         offset=consumed.offset, nbytes=consumed.nbytes), lag_tokens=draft_lag)
     pending = c.state_view("request_pending_token", 8)
     for kind, values in inputs.items():
+        if vision is None and 'vision_token_indices' in values:
+            values['vision_token_indices'] = c.binding('vision_token_indices', p.CONSTANT,
+                offset=-1, padding=-1)
         if kind in ("decode", "speculative"):
             values.pop("token_ids", None)
         if kind == "mixed":
@@ -48,4 +53,4 @@ def prepare(signatures, buffers, pool, *, image_slots=4, page_tokens, draft_lag,
         page_tokens=page_tokens, page_tables=[dict(buffer="page_tables", page_offset=0),
             *([dict(buffer="draft_page_tables", page_offset=1)] if "draft_page_tables" in buffers else [])],
         regions=[dict(kind=p.CONTINUATION_STATE, storage=continuation, tokens_per_record=1, window_tokens=0), *regions],
-        graphs=graphs, vision={**VISION, "feature_slots": image_slots}, frontend=FRONTEND)
+        graphs=graphs, vision=vision, frontend=frontend)

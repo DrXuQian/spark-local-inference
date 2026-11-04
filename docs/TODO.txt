@@ -1,3 +1,84 @@
+[x] Qualify the Qwen GGUF integration on RTX with complete downloaded target
+    blocks 44/47 (optionally 44-47) and shared-Q8 MTP; do not resume the incomplete main shards.
+    Use unchanged Flare speculative commit, rollback, prefix restore and native
+    graph execution. Text quality and full-model throughput are outside this
+    qualification; retain exact graph and state checks.
+
+[x] Check updated QUactlize feat/ppu-flash-next (01810ca5): 203 host ABI,
+    raw/canonical reader and true-shape cases pass; compat/runtime.cu and
+    helpers.cu compile with the real SDK 2.1.1 for ppu_10. The new raw path
+    admits Q5_1, N640/K640 and BF16 endpoints. PPU device execution is unrun.
+
+[x] Check actlizeLA feat/flare-gdn-qsa-mtp (cbcb4b9): 44 host contract cases
+    and 42 SM120 device cases pass, including GDN prefix commit, convolution
+    rollback and paged QSA replay. This does not qualify PPU hardware or
+    Flare's compiled-forward/package boundary.
+
+[ ] QUactlize PPU: add device-indexed Q8_0/IQ4_NL row lookup for token
+    embedding/PLE. The new host-indexed dequant range API cannot implement
+    captured lookup with changing token IDs. Preserve original GGUF bytes.
+
+[ ] QUactlize PPU: match Qwen BF16 SiLU rounding and Flare router ties.
+    The new SwiGLU rounds only the final product; round_silu=True also rounds
+    SiLU before multiplication. New router ties prefer lower expert IDs;
+    Flare's route_topk prefers higher IDs. Preserve inactive-row masking and
+    adapt sticky device errors into the existing request failure path.
+
+[ ] QUactlize PPU: bind the new native ABI as prepared custom operations,
+    with declared mutations, handle rebinding and caller-owned scratch. Use
+    the raw layout for unsupported canonical shapes. Query every capacity;
+    M<=8 selects SIMT, so do not carry the NVIDIA prefill chunk of eight into
+    the PPU grouped-TC path without measuring complete forwards.
+
+[ ] actlizeLA PPU: carry explicit BF16 KV through allocation, memory planning,
+    snapshots, restore and attention bindings. Current Flare pools use FP8.
+    Ratio-zero shared MTP uses ordinary attention; ratio-four QSA uses
+    actlizeLA. Retain each layer's verification records, commit consumed
+    input counts and handle zero-prefix convolution rollback exactly once.
+
+[x] Inspect remaining PPU seams: FA2 paged KV requires a multiple of 256,
+    while current Flare uses 64; the available narrow FA3 build disables
+    D256, paging and append. DeepGEMM has native BF16 projections but needs
+    prepared plans/workspace. RMSNorm/HC, ShortConv, RoPE/gating, sampling,
+    state/PLE hash helpers still need PPU equivalents or target compilation.
+
+[ ] PPU export: confirm target chip and matching SDK. Native graph APIs are
+    declared in SDK 2.1.1, but qualify the CUDA facade, CUPTI-equivalent image
+    recording, native ELF globals/parameters, VMM, event/wait and relocation
+    behavior. Export on PPU; NVIDIA cubins are not PPU artifacts. See
+    model-preparation.md#ppu-port-preparation for the concrete operator table.
+
+[x] Export and serve the partial GGUF package after Python exits. Eighteen
+    fixed-MTP HTTP cases and 50 ordinary-decode/teacher-prefix cases pass;
+    seeded output and scores survive exact prefix restore in each fixed mode,
+    including after streaming cancellation and slot reuse. Invalid token IDs
+    are rejected before admission. Adaptive service executes widths 1/2/4/6. Actual GGUF GDN decode and prefix
+    commits 0..6 match Flare's checkpoint reference with its unchanged bounds.
+
+[x] Trace native replay on RTX: all compute kernels belong to exported graphs;
+    no execution-time GPU allocation, recapture or module loading. Across 102
+    fixed-width-six rounds, median kernel span is 11.330 ms; consecutive-round
+    gaps are median 15.553 us, p95 16.385 us, maximum 16.641 us. PLE transfers
+    8640 bytes per such round; expert weights stay resident. See model-preparation.md.
+
+[ ] Attribute and remove avoidable PLE delivery/submission tails. Three adaptive
+    Nsight runs show isolated inter-round gaps of 367.513, 141.311 and 132.031 us.
+    The last two also show a 1.523/0.956 ms external PLE readiness wait. In the
+    3483-round repeat, 3420 consecutive width-one pairs have median 14.912 us
+    and p95 16.096 us; cgroup counters show no CPU throttling. CPU context-switch
+    profiling is unavailable in this container; OSRT and schedstat observations
+    do not establish the cause. Compare unprofiled readiness/tail records next.
+
+[ ] Measure the native service against a minimal replay floor for the same
+    graph sequence and PLE inputs. Kernel-node timelines alone do not qualify
+    the separate native-overhead limit or full-model serving performance.
+
+[ ] Extend conditional-score comparison to the complete model when available.
+    The partial fixture's teacher-forced MTP versus ordinary raw-logit relative
+    L2 is 0.00242 aggregate, 0.00742 maximum per position; scores are not bitwise
+    identical across graph variants. Prefix restore within each fixed variant
+    is exact, and actual-weight GDN state/reference tests pass independently.
+
 [ ] Expose the selected deployment's rebuild metadata in flare inspect --json.
     Payload packages report rebuild: null even when DeploymentBody.rebuild is present.
 

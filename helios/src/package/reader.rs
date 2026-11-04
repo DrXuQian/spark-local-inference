@@ -196,14 +196,21 @@ pub fn required_payloads(package: &VerifiedPackage) -> Result<BTreeSet<Vec<u8>>>
         .and_then(|deployment| deployment.engram.as_ref())
     {
         for table in &engram.tables {
+            let planes = if table.encoding == wire::engram_table::Encoding::GgufIq4Nl as i32 {
+                1
+            } else {
+                2
+            };
             if table.shards.is_empty() {
-                add(table.weights.as_ref())?;
-                add(table.scales.as_ref())?;
+                for plane in [&table.weights, &table.scales].into_iter().take(planes) {
+                    add(plane.as_ref())?;
+                }
             } else {
                 for shard in &table.shards {
                     if package.rank(shard.rank).is_some() {
-                        add(shard.weights.as_ref())?;
-                        add(shard.scales.as_ref())?;
+                        for plane in [&shard.weights, &shard.scales].into_iter().take(planes) {
+                            add(plane.as_ref())?;
+                        }
                     }
                 }
             }

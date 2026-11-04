@@ -86,7 +86,7 @@ def create_mtp_modules(manifest: CheckpointManifest):
     provenance = json.loads(distribution.read_text("direct_url.json") or "{}")
     if provenance.get("vcs_info", {}).get("commit_id") != TRANSFORMERS_REVISION:
         raise RuntimeError(f"MTP preparation requires Transformers {TRANSFORMERS_REVISION}")
-    raw = (manifest.snapshot / "config.json").read_bytes()
+    raw = (manifest.metadata_path / "config.json").read_bytes()
     if hashlib.sha256(raw).hexdigest() != manifest.metadata_sha256["config.json"]:
         raise CheckpointError("config.json changed after checkpoint inspection")
     from transformers import Qwen4ExpConfig
@@ -125,6 +125,31 @@ class MTPWeights:
     allocated_bytes: int
     shard: TensorParallelShard = TensorParallelShard(0, 1)
     draft_head: object | None = None
+
+    @classmethod
+    def load_gguf(cls, manifest, structure_manifest, device, *, embedding_weight, lm_head_weight,
+                  progress=None, read_mode=None, shard=TensorParallelShard(0, 1)):
+        from .gguf_weights import QwenGgufWeightLoader, _parameter
+
+        module = create_mtp_modules(structure_manifest)
+        before = torch.cuda.memory_allocated(device)
+        with QwenGgufWeightLoader(manifest, device, progress=progress, read_mode=read_mode, shard=shard) as loader:
+            prefix = 'blk.48.nextn'
+            _parameter(module, 'pre_fc_norm_embedding.weight', loader.load_norm_delta(f'{prefix}.enorm.weight', dtype=torch.bfloat16))
+            _parameter(module, 'pre_fc_norm_hidden.weight', loader.load_norm_delta(f'{prefix}.hnorm.weight', dtype=torch.bfloat16))
+            eh = loader.load_dense(f'{prefix}.eh_proj.weight')
+            _parameter(module, 'fc_embedding.weight', eh[:, :2560].contiguous())
+            _parameter(module, 'fc_hidden.weight', eh[:, 2560:].contiguous())
+            loader.load_hyperconnection(module.hyper_connection_mixer, f'{prefix}.hc_head')
+            layer = module.layers[0]
+            for label, field in (('attn', 'attn_hyper_connection'), ('ffn', 'mlp_hyper_connection')):
+                loader.load_hyperconnection(getattr(layer, field), f'blk.48.hc_{label}')
+            attention = loader.load_attention(layer.self_attn, 48)
+            moe = loader.load_moe(48, cache_shared=True)
+        torch.cuda.synchronize(device)
+        return cls(module, attention, moe, embedding_weight, lm_head_weight,
+                   sum(t.nbytes for t in manifest.tensors.values()),
+                   torch.cuda.memory_allocated(device) - before, shard)
 
     @classmethod
     def load(cls, manifest: CheckpointManifest, device, *, embedding_weight, lm_head_weight, progress=None,

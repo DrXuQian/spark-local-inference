@@ -60,6 +60,15 @@ class PreparedMLP:
 
         def projection(input, weight, out, suffix, bias):
             from ignition.components.block_fp8 import BlockFP8Projection, BlockFP8Weight
+            from ignition.components.gguf_weights import GgufWeight
+
+            if isinstance(weight, GgufWeight):
+                from ignition.components.linear import prepare_projection
+
+                if bias is not None:
+                    raise ValueError('GGUF MLP projections do not support bias')
+                return prepare_projection(input, weight, out, session=session, name=f'{name}.{suffix}',
+                                          workspace=workspace, activation_mode=activation_mode)
 
             if isinstance(weight, BlockFP8Weight):
                 if bias is not None:

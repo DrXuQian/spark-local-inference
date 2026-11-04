@@ -103,11 +103,21 @@ class PreparationConfig:
     # on an auxiliary stream; without overlap every branch runs serially on the main stream.
     stream_overlap: bool = True
     shard_hyperconnections: bool = False
+    gguf_inputs: object = None
 
     def __post_init__(self):
         from ignition.components.capacity import image_capacity
 
-        object.__setattr__(self, "image_concurrency", image_capacity(self.max_active, self.image_concurrency))
+        if self.gguf_inputs is None:
+            object.__setattr__(self, "image_concurrency", image_capacity(self.max_active, self.image_concurrency))
+        else:
+            from ignition.preparation.qwen38_gguf import GgufInputs
+
+            if not isinstance(self.gguf_inputs, GgufInputs) or self.image_concurrency not in (None, 0):
+                raise ValueError('GGUF text preparation requires explicit inputs and no image slots')
+            if self.shard_hyperconnections or len(self.devices or (self.device,)) != 1:
+                raise ValueError('GGUF model preparation currently requires one CUDA device')
+            object.__setattr__(self, 'image_concurrency', 0)
         from ignition.planning import host_shape_error
 
         error = host_shape_error(self.roce_ring, self.roce_chain, None if self.hosts is None else len(self.hosts))
@@ -209,7 +219,7 @@ def _identity(manifest, world_size=1):
     components = Path(__file__).parents[2] / "components"
     sources.update({f"components/{path.name}": hashlib.sha256(path.read_bytes()).hexdigest()
                     for path in sorted(components.glob("*.py"))})
-    value = {"checkpoint": REVISION, "headers": manifest.headers_sha256,
+    value = {"headers": manifest.headers_sha256,
              "config": manifest.metadata_sha256["config.json"], "recipe": sources, "kv_dtype": "float8_e4m3fn", "page_size": 64, "world_size": world_size}
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
@@ -263,7 +273,12 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
     device = torch.device("cuda", config.device if config.devices is None else config.devices[rank])
     torch.cuda.set_device(device)
     with phase(progress, "Inspect checkpoint"):
-        manifest = inspect_qwen38_checkpoint(snapshot)
+        if config.gguf_inputs is None:
+            manifest = inspect_qwen38_checkpoint(snapshot)
+        else:
+            from ignition.preparation.qwen38_gguf import inspect_qwen38_gguf
+
+            manifest = inspect_qwen38_gguf(config.gguf_inputs)
     # Loading, construction and tuning free most of what they allocate; a transient package pool returns
     # that memory to the device once tuning completes, before compiled forwards are bound.
     if package_storage is not None:
@@ -279,12 +294,22 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
     if has_mtp:
         from .mtp_weights import MTPWeights
 
-        mtp_weights = MTPWeights.load(manifest, device,
-            embedding_weight=weights.tree.model.language_model.embed_tokens.weight,
-            lm_head_weight=weights.tree.lm_head.weight, progress=progress, shard=shard,
-            shard_hyperconnections=config.shard_hyperconnections)
+        mtp_kwargs = dict(
+            embedding_weight=weights.embedding_weight,
+            lm_head_weight=weights.tree.lm_head.weight, progress=progress, shard=shard)
+        if config.gguf_inputs is None:
+            mtp_weights = MTPWeights.load(manifest, device,
+                shard_hyperconnections=config.shard_hyperconnections, **mtp_kwargs)
+        else:
+            mtp_weights = MTPWeights.load_gguf(manifest.draft, manifest, device,
+                read_mode=manifest.read_mode, **mtp_kwargs)
     host_storage = {} if package_storage is None else {"host_allocator": package_storage.host_allocate}
-    table = PLETable.load(manifest, device, tokens=config.token_capacity, progress=progress, **host_storage)
+    if config.gguf_inputs is None:
+        table = PLETable.load(manifest, device, tokens=config.token_capacity, progress=progress, **host_storage)
+    else:
+        from .gguf_ple import GgufPLETable
+
+        table = GgufPLETable.load(manifest, device, tokens=config.token_capacity, progress=progress, **host_storage)
     sample_rows = max(batch * width for batch, width in config.speculative_shapes) if config.mtp else config.request_capacity
     sample_rows += bool(config.mixed_shapes)
     coordinator = CollectivePreparation(group) if group is not None else None
@@ -304,7 +329,8 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
     session = preparation_session(
         compile_workers=config.compile_workers, collective_tuning=config.collective_tuning, collective_ladder=config.collective_ladder, autotune_effort=config.autotune_effort, tuning_replica=config.tuning_replica,
         native_dense_activations=config.native_dense_activations, lock_gpu_clocks=config.lock_gpu_clocks,
-        device=device, checkpoint=REVISION, coordinator=coordinator,
+        device=device, checkpoint=REVISION if config.gguf_inputs is None else manifest.headers_sha256,
+        coordinator=coordinator,
         namespace={"config": manifest.metadata_sha256["config.json"], "headers": manifest.headers_sha256, "world_size": shard.world_size,
                    "shard_hyperconnections": config.shard_hyperconnections},
         headroom_bytes=config.headroom_bytes, benchmark_storage=package_storage)
@@ -333,6 +359,7 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
             graph_buffers = GraphBufferPool(device, chunk_bytes=2 << 20)
             scratch = DecoderScratch.allocate(config.token_capacity, device, sample_rows=sample_rows,
                 world_size=shard.world_size, buffers=graph_buffers.cursor(),
+                gguf_experts=weights.layers[0].moe.experts if config.gguf_inputs is not None else None,
                 hyperconnection_lowrank=320 // shard.world_size if config.shard_hyperconnections else 320)
             workspaces = ScratchArena(device, overlap=config.stream_overlap)
             rotary = RotaryTables.allocate(weights.tree.config.text_config, config.context, device)
@@ -349,13 +376,13 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
             from ignition.components.readiness import ReadinessTimings
             table.timings = ReadinessTimings.allocate(frame, 1)
             completion = CompletionOutputs.allocate((2, slots, VECTOR_TOKENS_FIELD + config.completion_token_capacity), device=device)
-            features = VisionFeatureState.allocate(device, capacity=slots, image_slots=config.image_concurrency,
-                feature_slot=inputs.vision_feature_slot)
-            vision_inputs = VisionInputs.allocate(device)
+            features = (None if weights.vision is None else VisionFeatureState.allocate(device,
+                capacity=slots, image_slots=config.image_concurrency, feature_slot=inputs.vision_feature_slot))
+            vision_inputs = None if features is None else VisionInputs.allocate(device)
             vision_scratch = {}
             buffers = {**inputs.buffers(), **table.buffers(), **{name: getattr(admission, name) for name in admission.__dataclass_fields__},
                 **{f"state_{name}": getattr(transfer, name) for name in transfer.__dataclass_fields__},
-                **{name: getattr(vision_inputs, name) for name in vision_inputs.__dataclass_fields__},
+                **({} if vision_inputs is None else {name: getattr(vision_inputs, name) for name in vision_inputs.__dataclass_fields__}),
                 "frame_index": frame, "submission_sequence": sequence, **completion.buffers(),
                 "sampling_grammar_mask": requests.grammar_mask, "state_pool": state.backing, "memory_capacity": state.memory_capacity}
             functions, signatures, decoders, owners = {}, {}, [], []
@@ -374,7 +401,7 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
         scoring = PromptScoring.allocate(config, device, buffers, frame=frame, group=group, ipc=ipc,
             runtime=collective, coordinator=coordinator)
         serving_modes = (True, False) if config.mtp else (False,)
-        graph_count = (4 + len(serving_modes) * (prefill_graph_count(config.prefill_capacities, scoring)
+        graph_count = ((4 if features is not None else 0) + len(serving_modes) * (prefill_graph_count(config.prefill_capacities, scoring)
                                               + 4 * len(config.batch_capacities))
                        + len(config.batch_capacities) + (len(config.speculative_shapes) if config.mtp else 0)
                        + len(config.mixed_shapes))
@@ -388,8 +415,8 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
                                                   prefill_capacity=prefill_capacity)
                 stage.update(advance=1)
 
-            vision_fields = (*vision_inputs.__dataclass_fields__, "vision_feature_slot")
-            for capacity in (16384, 4096, 1024, 256):
+            vision_fields = () if vision_inputs is None else (*vision_inputs.__dataclass_fields__, "vision_feature_slot")
+            for capacity in (() if features is None else (16384, 4096, 1024, 256)):
                 cursor = graph_buffers.cursor()
                 s = vision_scratch[capacity] = VisionScratch.allocate(capacity, device, buffers=cursor)
                 handoff = PreparedVisionHandoff(vision_inputs, features, requests, s.output, completion, frame, sequence,
@@ -418,7 +445,7 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
                             maintain_draft_state=enabled)
                         s = scratch.rows(capacity, rows)
                         injection = None
-                        if mode == "prefill":
+                        if mode == "prefill" and features is not None:
                             injection = PreparedEmbeddingInjection(features, requests, inputs.vision_token_indices[:capacity],
                                 inputs.row_slot_ids, inputs.row_generations, inputs.query_lengths, inputs.live_rows,
                                 s.embedding, rows=rows)
@@ -583,16 +610,18 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
             for layer, value in (final_cache or cache).items()
             for name in ("main_k_cache", "main_v_cache", "compressed_k_cache")]
         buffers["request_pending_token"] = requests.pending_token
-        server_config = {"model_id": MODEL_ID, "identity": _identity(manifest, shard.world_size),
+        server_config = {"model_id": MODEL_ID if config.gguf_inputs is None else str(snapshot),
+            "identity": _identity(manifest, shard.world_size),
             "max_sequence_tokens": config.context, "prefill_chunk_size": config.prefill_chunk_size,
             "pages": page_capacity, "state_rows": state_rows, "snapshots": snapshots, "page_tokens": 64,
-            "frontend": prepare_frontend(manifest.snapshot, eos_token_ids=[248046, 248044], image_profile="qwen"),
+            "frontend": prepare_frontend(manifest.metadata_path, eos_token_ids=[248046, 248044],
+                                         image_profile="qwen" if features is not None else None),
             "sampling_defaults": RECIPE.sampling_defaults.as_dict(),
             "model_contract": prepare_contract(signatures, buffers, state, image_slots=config.image_concurrency, page_tokens=64, draft_lag=1 if has_mtp else None, embedding_tables=(0,), regions=cache_regions),
-            "assets": {name: {"path": str((manifest.snapshot / filename).resolve()), "sha256": digest}
+            "assets": {name: {"path": str((manifest.metadata_path / filename).resolve()), "sha256": digest}
                        for name, (filename, digest) in hashes.items()}}
         server_config["assets"]["chat_template"] = annotated_template_asset(
-            (manifest.snapshot / "chat_template.jinja").read_bytes(),
+            (manifest.metadata_path / "chat_template.jinja").read_bytes(),
             Path(__file__).with_name("assets") / "chat_template.patch.json")
         if speculation is not None:
             server_config.update(speculative_widths=config.speculative_widths,
@@ -611,6 +640,7 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
         export_zero_ranges = (*export_zero_ranges, *storage_ranges(graph_buffers.chunks))
         return PreparedModel(rebuild_weights=declare_weights({'weights': weights, 'mtp': mtp_weights}, components={
         'tree.model.language_model.embed_tokens': 'embedding',
+        'embedding': 'embedding',
         'tree.model.language_model.hyper_connection_mixer': 'hyper-connection',
         'tree.lm_head': 'head',
         'vision': 'vision',
