@@ -147,8 +147,10 @@ class PreparationConfig:
             raise TypeError("MTP and stream overlap switches must be booleans")
         if type(self.mixed_prefill) is not bool:
             raise TypeError("mixed_prefill must be a boolean")
+        if self.actlize is not None and self.mixed_shapes:
+            raise ValueError('actlizeLA GDN does not implement mixed prefill/decode partitions')
         minimum_snapshot = HybridStateLayout.build(speculative_tokens=7 if self.mtp else 0,
-            world_size=1 if self.devices is None else len(self.devices)).row_bytes
+            world_size=1 if self.devices is None else len(self.devices), kv_dtype=self.kv_dtype).row_bytes
         if self.snapshot_budget_bytes < minimum_snapshot or self.headroom_bytes < 0:
             raise ValueError("snapshot budget requires at least one state row; headroom must be nonnegative")
         widths = self.speculative_widths
@@ -159,6 +161,14 @@ class PreparationConfig:
         if self.speculative_fixed_width is not None and (
                 type(self.speculative_fixed_width) is not int or self.speculative_fixed_width not in widths):
             raise ValueError("fixed verification width must belong to the prepared catalog")
+
+    @property
+    def actlize(self):
+        return None if self.gguf_inputs is None else self.gguf_inputs.actlize
+
+    @property
+    def kv_dtype(self):
+        return torch.bfloat16 if self.actlize is not None else torch.float8_e4m3fn
 
     @property
     def preparation_pages(self):
@@ -213,7 +223,7 @@ class PreparationConfig:
         return max((width for _, width in self.speculative_shapes), default=1) if self.mtp else 1
 
 
-def _identity(manifest, world_size=1):
+def _identity(manifest, world_size=1, *, operators=None):
     sources = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
                for path in sorted(Path(__file__).parent.glob("*.py"))}
     components = Path(__file__).parents[2] / "components"
@@ -221,6 +231,8 @@ def _identity(manifest, world_size=1):
                     for path in sorted(components.glob("*.py"))})
     value = {"headers": manifest.headers_sha256,
              "config": manifest.metadata_sha256["config.json"], "recipe": sources, "kv_dtype": "float8_e4m3fn", "page_size": 64, "world_size": world_size}
+    if operators is not None:
+        value.update(operators=operators, kv_dtype=operators['kv_dtype'])
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -279,6 +291,11 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
             from ignition.preparation.qwen38_gguf import inspect_qwen38_gguf
 
             manifest = inspect_qwen38_gguf(config.gguf_inputs)
+    library = None if config.actlize is None else config.actlize.load(device)
+    attention_libraries = dict(actlize_library=library, actlize_qsa_library=library)
+    operators = None if config.actlize is None else config.actlize.identity()
+    if operators is not None:
+        report('actlizeLA GDN/QSA · BF16 KV and snapshots · cuda_sm120')
     # Loading, construction and tuning free most of what they allocate; a transient package pool returns
     # that memory to the device once tuning completes, before compiled forwards are bound.
     if package_storage is not None:
@@ -332,20 +349,22 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
         device=device, checkpoint=REVISION if config.gguf_inputs is None else manifest.headers_sha256,
         coordinator=coordinator,
         namespace={"config": manifest.metadata_sha256["config.json"], "headers": manifest.headers_sha256, "world_size": shard.world_size,
-                   "shard_hyperconnections": config.shard_hyperconnections},
+                   "shard_hyperconnections": config.shard_hyperconnections, "operators": operators},
         headroom_bytes=config.headroom_bytes, benchmark_storage=package_storage)
     session.__enter__()
     graphs = {}
     try:
         with phase(progress, "Allocate model state"):
             speculative_tokens = 7 if config.mtp else 0
-            layout = HybridStateLayout.build(speculative_tokens=speculative_tokens, world_size=shard.world_size)
+            layout = HybridStateLayout.build(speculative_tokens=speculative_tokens, world_size=shard.world_size,
+                kv_dtype=config.kv_dtype)
             snapshots = layout.snapshot_capacity(config.snapshot_budget_bytes)
             slots = config.request_capacity
             # Verification commits into each request's live row, so a request holds one row.
             state_rows = snapshots + slots
             state = HybridStatePool.allocate(state_rows + 1, device,
                 speculative_tokens=speculative_tokens, world_size=shard.world_size, storage=package_storage,
+                kv_dtype=config.kv_dtype,
                 backed_slots=(min(state_rows + 1, config.preparation_state_rows) if package_storage is not None else None))
             register_benchmark_state(
                 session, next(iter(state.gdn.values())).recurrent,
@@ -363,7 +382,8 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
                 hyperconnection_lowrank=320 // shard.world_size if config.shard_hyperconnections else 320)
             workspaces = ScratchArena(device, overlap=config.stream_overlap)
             rotary = RotaryTables.allocate(weights.tree.config.text_config, config.context, device)
-            cache = {index: QSAState.allocate(pages=1, slots=slots + 1, device=device, draft_tokens=speculative_tokens, kv_heads=max(1, 2 // shard.world_size))
+            cache = {index: QSAState.allocate(pages=1, slots=slots + 1, device=device, draft_tokens=speculative_tokens,
+                     kv_heads=max(1, 2 // shard.world_size), kv_dtype=config.kv_dtype)
                      for index in (*range(3, 48, 4), *((48,) if has_mtp else ()))}
             page_bytes = sum(sum(getattr(value, name).nbytes for name in
                 ("main_k_cache", "main_v_cache", "compressed_k_cache")) for value in cache.values())
@@ -396,7 +416,7 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
                     frame=frame, sequence=sequence, context=config.context,
                     prefill_capacity=config.token_capacity, max_cache_pages=planned_pages,
                     sampling_workspace=sampling_workspace, graph_buffers=graph_buffers,
-                    verification_width=max(config.speculative_widths), **collectives)
+                    verification_width=max(config.speculative_widths), **collectives, **attention_libraries)
                 buffers.update(speculation.buffers())
         scoring = PromptScoring.allocate(config, device, buffers, frame=frame, group=group, ipc=ipc,
             runtime=collective, coordinator=coordinator)
@@ -454,7 +474,7 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
                             completion, frame, sequence, session=session, name=name,
                             embedding_injection=injection, max_cache_pages=planned_pages,
                             sampling_workspace=sampling_workspace,
-                            scoring=scoring if kind == "scored_prefill" else None, **collectives)
+                            scoring=scoring if kind == "scored_prefill" else None, **collectives, **attention_libraries)
                         forward = speculation.prefill(decoder, name) if enabled else decoder
                         add(name, forward, kind, rows,
                             capacity if mode == "prefill" else 1,
@@ -598,6 +618,8 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
             "mixed_prefill": config.mixed_prefill,
             "compiled_decoder": compile_decoder, "rank": rank, "world_size": shard.world_size,
             "shard_hyperconnections": config.shard_hyperconnections}
+        if operators is not None:
+            memory['operators'] = operators
         if scoring is not None:
             memory.update(scoring.memory_report())
         if speculation is not None:
@@ -614,7 +636,7 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
             for name in ("main_k_cache", "main_v_cache", "compressed_k_cache")]
         buffers["request_pending_token"] = requests.pending_token
         server_config = {"model_id": MODEL_ID if config.gguf_inputs is None else str(snapshot),
-            "identity": _identity(manifest, shard.world_size),
+            "identity": _identity(manifest, shard.world_size, operators=operators),
             "max_sequence_tokens": config.context, "prefill_chunk_size": config.prefill_chunk_size,
             "pages": page_capacity, "state_rows": state_rows, "snapshots": snapshots, "page_tokens": 64,
             "frontend": prepare_frontend(manifest.metadata_path, eos_token_ids=[248046, 248044],

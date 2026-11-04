@@ -104,21 +104,44 @@ RECIPE = Recipe(
 def prepare_gguf(snapshot, plan, **kwargs):
     from ignition.preparation.qwen38_gguf import GgufInputs
 
-    return prepare(snapshot, plan, gguf_inputs=GgufInputs.read(snapshot), **kwargs)
+    inputs = GgufInputs.read(snapshot)
+    if inputs.actlize != plan.recipe.actlize:
+        raise ValueError('GGUF actlizeLA selection changed after memory planning')
+    return prepare(snapshot, plan, gguf_inputs=inputs, **kwargs)
+
+
+def gguf_cache_costs(*, speculating, bf16):
+    costs = (RECIPE.ranks if speculating else RECIPE.plain_ranks)[1]
+    if not bf16:
+        return costs
+    from dataclasses import replace
+
+    # Each K/V page adds one byte per element; MTP snapshots preserve two tails.
+    page_delta = 2 * 64 * 2 * 256
+    return replace(costs,
+        state_row_bytes=costs.state_row_bytes + (_TARGET_PAGE_LAYERS + 2 * int(speculating)) * page_delta,
+        page_bytes=costs.page_bytes + (_TARGET_PAGE_LAYERS + int(speculating)) * page_delta)
 
 
 def gguf_recipe(manifest, directory):
     """Local input bundles use measured checkpoint geometry for memory planning."""
     from dataclasses import replace
+    import hashlib
+    import json
     from ignition.preparation.qwen38 import ARCHITECTURE
     from ignition.preparation.qwen38_gguf import device_weight_bytes
 
     draft = device_weight_bytes(manifest.draft)
+    actlize = manifest.actlize
+    revision = manifest.headers_sha256
+    if actlize is not None:
+        revision = hashlib.sha256((revision + json.dumps(actlize.identity(), sort_keys=True)).encode()).hexdigest()
     checkpoint = Checkpoint(alias='qwen3.8-flash-gguf', repository=str(directory),
-        revision=manifest.headers_sha256[:40], architecture=ARCHITECTURE,
+        revision=revision[:40], architecture=ARCHITECTURE,
         stored_bytes=sum(shard.file_size for checkpoint in (manifest, manifest.draft) for shard in checkpoint.shards),
         device_bytes=device_weight_bytes(manifest) + draft, draft_bytes=draft,
         mapped_host_bytes=manifest.tensors['per_layer_token_embd.weight'].nbytes)
     return replace(RECIPE, name='qwen38_gguf', prepare=prepare_gguf, checkpoints=(checkpoint,),
-        concurrency=1, max_concurrency=1, max_images=0, image_bytes=0,
-        ranks=MappingProxyType({1: RECIPE.ranks[1]}), plain_ranks=MappingProxyType({1: RECIPE.plain_ranks[1]}))
+        concurrency=1, max_concurrency=1, max_images=0, image_bytes=0, actlize=actlize,
+        ranks=MappingProxyType({1: gguf_cache_costs(speculating=True, bf16=actlize is not None)}),
+        plain_ranks=MappingProxyType({1: gguf_cache_costs(speculating=False, bf16=actlize is not None)}))

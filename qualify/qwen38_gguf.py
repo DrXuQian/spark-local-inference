@@ -113,7 +113,8 @@ class PartialDecoder:
     """Real blocks with fixture endpoints; called by the existing round owner."""
     def __init__(self, weights, scratch, state, cache, rotary, table, workspace, completion, frame, sequence,
                  *, session, name, max_cache_pages, residual_output=None, verification=False,
-                 gdn_records=None, gdn_in_place=False, sampling_workspace=None, **collectives):
+                 gdn_records=None, gdn_in_place=False, sampling_workspace=None,
+                 actlize_library=None, actlize_qsa_library=None, **collectives):
         self.state, self.weights = state, weights
         self.scratch = s = replace(scratch, sample_hidden=scratch.hidden) if verification else scratch
         self.residual_output = residual_output
@@ -135,13 +136,13 @@ class PartialDecoder:
                 attention = PreparedAttention(module.self_attn, attention_weights, source, s.qsa,
                     cache[index], state.qsa, rotary, session=session, name=prefix + '.qsa',
                     workspace=workspace, projection_workspace=workspace, max_cache_pages=max_cache_pages, draft_tokens=7,
-                    actlize_library=weights.actlize_qsa_library, live_rows=state.gdn.num_seqs)
+                    actlize_library=actlize_qsa_library, live_rows=state.gdn.num_seqs)
             else:
                 attention = PreparedGDN(module.linear_attn, attention_weights, source, s.gdn,
                     state.pool.gdn[index], state.gdn, mode=state.mode, session=session, name=prefix + '.gdn',
                     checkpoint_export=False, workspace=workspace, projection_workspace=workspace,
                     records=None if gdn_records is None else gdn_records[index], in_place=gdn_in_place,
-                    actlize_library=weights.actlize_library)
+                    actlize_library=actlize_library)
                 self.gdn_operations[index] = attention
             moe = PreparedQwenMoe(source, moe_weights, session=session, name=prefix + '.moe',
                 scratch=s.moe, workspace=s.gguf_experts, projection_workspace=workspace)
@@ -263,17 +264,16 @@ def prepare(args):
         library = None
         operators = {'gdn': 'b12x'}
         if args.actlize_library is not None:
-            from actlize_la.serving import NativeLibrary
+            from ignition.preparation.actlize import ActlizeLibrarySpec
 
-            library = NativeLibrary(args.actlize_library, target='cuda_sm120')
-            with library.path.open('rb') as source:
-                operators = {'gdn': 'actlize', 'target': library.target,
-                             'library': hashlib.file_digest(source, 'sha256').hexdigest()}
+            library_spec = ActlizeLibrarySpec.read(args.actlize_library)
+            library = library_spec.load('cuda:0')
+            operators = library_spec.identity()
         kv_dtype = torch.bfloat16 if args.actlize_qsa else torch.float8_e4m3fn
         operators.update(qsa='actlize' if args.actlize_qsa else 'b12x', kv_dtype=str(kv_dtype))
+        attention_libraries = dict(actlize_library=library, actlize_qsa_library=library if args.actlize_qsa else None)
         weights = SimpleNamespace(blocks=tuple(blocks), embedding=embedding, head=head,
-            final_mixer=mtp.module.hyper_connection_mixer, ple_caps=ple_caps, shard=TensorParallelShard(0, 1),
-            actlize_library=library, actlize_qsa_library=library if args.actlize_qsa else None)
+            final_mixer=mtp.module.hyper_connection_mixer, ple_caps=ple_caps, shard=TensorParallelShard(0, 1))
         state = HybridStatePool.allocate(5, 'cuda:0', speculative_tokens=7, storage=storage, kv_dtype=kv_dtype)
         state = replace(state, gdn=MappingProxyType({i: state.gdn[i] for i in args.layers if i % 4 != 3}))
         requests = DeviceRequestState.allocate('cuda:0', capacity=1)
@@ -306,7 +306,7 @@ def prepare(args):
             speculation = SpeculativePreparation(weights=weights, mtp_weights=mtp, pool=state, requests=requests,
                 inputs=inputs, scratch=scratch, workspaces=workspace, rotary=rotary, cache=cache, table=table,
                 session=session, completion=completion, frame=frame, sequence=sequence, context=1024,
-                prefill_capacity=64, max_cache_pages=pages, verification_width=6)
+                prefill_capacity=64, max_cache_pages=pages, verification_width=6, **attention_libraries)
             buffers.update(speculation.buffers())
             fields = (*inputs.buffers(), 'sampling_grammar_mask', *speculation.buffers())
             def add(name, forward, kind, tokens, names, enabled=True):
@@ -319,7 +319,7 @@ def prepare(args):
                 add(name, op, 'speculative', width, fields)
             metadata = PreparedDecoderState(inputs, requests, state, tokens=64, rows=1, mode='prefill', maintain_draft_state=True)
             decoder = PartialDecoder(weights, scratch.rows(64, 1), metadata, cache, rotary, table, workspace,
-                completion, frame, sequence, session=session, name='prefill64', max_cache_pages=pages)
+                completion, frame, sequence, session=session, name='prefill64', max_cache_pages=pages, **attention_libraries)
             add('prefill64', speculation.prefill(decoder, 'prefill64'), 'prefill', 64, fields)
             plain_fields = (*inputs.buffers(), 'sampling_grammar_mask')
             for mode, tokens in (('prefill', 64), ('decode', 1)):
@@ -327,7 +327,8 @@ def prepare(args):
                     mode=mode, maintain_draft_state=False)
                 name = f'{mode}{tokens}' + ('-no-mtp' if mode == 'prefill' else '')
                 plain = PartialDecoder(weights, scratch.rows(tokens, 1), metadata, cache, rotary, table,
-                    workspace, completion, frame, sequence, session=session, name=name, max_cache_pages=pages)
+                    workspace, completion, frame, sequence, session=session, name=name, max_cache_pages=pages,
+                    **attention_libraries)
                 owners.append(plain)
                 add(name, plain, mode, tokens, plain_fields, enabled=False)
             resume = PreparedResume(inputs, requests, state, scratch.sample_hidden[:1], scratch.logits[:1], head,

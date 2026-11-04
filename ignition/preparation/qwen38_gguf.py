@@ -10,6 +10,7 @@ from pathlib import Path
 from types import MappingProxyType
 
 from .checkpoint import CheckpointError
+from .actlize import ActlizeLibrarySpec
 from .gguf import GgufCheckpoint, file_identity, inspect_gguf_checkpoint
 from .qwen38 import CONFIG_SHA256, FRONTEND_SHA256, GENERATION_SHA256
 
@@ -20,14 +21,17 @@ class GgufInputs:
     mtp: Path
     frontend: Path
     read_mode: str
+    actlize: ActlizeLibrarySpec | None = None
 
     @classmethod
     def read(cls, directory):
         directory = Path(directory).resolve()
         value = json.loads((directory / 'manifest.json').read_text())
-        if (not isinstance(value, dict) or set(value) != {'schema', 'main', 'mtp', 'frontend', 'read_mode'}
+        required = {'schema', 'main', 'mtp', 'frontend', 'read_mode'}
+        if (not isinstance(value, dict) or set(value) not in (required, required | {'actlize_library'})
                 or value['schema'] != 'qwen38-gguf/1'):
-            raise CheckpointError('GGUF input manifest requires schema, main, mtp, frontend and read_mode')
+            raise CheckpointError('GGUF input manifest requires schema, main, mtp, frontend and read_mode;'
+                                  ' actlize_library is optional')
         if value['read_mode'] not in ('auto', 'bounce', 'gds', 'pread'):
             raise CheckpointError('unknown GGUF checkpoint transport')
         paths = []
@@ -37,7 +41,12 @@ class GgufInputs:
             paths.append((directory / value[key]).resolve(strict=True))
         if not paths[0].is_file() or not paths[1].is_file() or not paths[2].is_dir():
             raise CheckpointError('GGUF input requires two files and a frontend directory')
-        return cls(*paths, value['read_mode'])
+        actlize = None
+        if 'actlize_library' in value:
+            if not isinstance(value['actlize_library'], str) or not value['actlize_library']:
+                raise CheckpointError('actlize_library requires a native library path')
+            actlize = ActlizeLibrarySpec.read(directory / value['actlize_library'])
+        return cls(*paths, value['read_mode'], actlize)
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +56,7 @@ class QwenGgufCheckpoint(GgufCheckpoint):
     metadata_sha256: object
     headers_sha256: str
     read_mode: str
+    actlize: ActlizeLibrarySpec | None = None
 
     @property
     def metadata_path(self):
@@ -129,7 +139,7 @@ def inspect_qwen38_gguf(inputs: GgufInputs):
     headers = hashlib.sha256(''.join(shard.header_sha256 for checkpoint in (main, draft)
                                      for shard in checkpoint.shards).encode()).hexdigest()
     return QwenGgufCheckpoint(main.snapshot, main.tensors, main.shards, main.metadata, main.vocab_size,
-                              draft, inputs.frontend, MappingProxyType(hashes), headers, inputs.read_mode)
+                              draft, inputs.frontend, MappingProxyType(hashes), headers, inputs.read_mode, inputs.actlize)
 
 
 def device_weight_bytes(checkpoint):

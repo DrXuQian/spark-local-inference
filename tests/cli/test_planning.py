@@ -667,6 +667,13 @@ def test_every_recipe_passes_collective_policy_to_preparation(monkeypatch, tmp_p
 
     world = min((size for size in recipe.tensor_parallel if size > 1), default=1)
     ladder = load("ignition/preparation/ladders/gb202_pcie_tp4.json") | {"world_size": world} if mode == "runtime" and world in (2, 3, 4, 6, 8, 10) else None
+    if ladder is not None and world in (3, 6):
+        # These ranks use the reduction profiles without an all-gather path.
+        ladder["all_gather"] = None
+    elif ladder is not None and world in (8, 10):
+        # The TP4 fixture's small word-exchange kernels cannot serve TP8/TP10.
+        ladder["all_gather"]["buckets"] = [row for row in ladder["all_gather"]["buckets"]
+                                            if row["implementation"] == "gather_selected_barrier"]
     devices = tuple(replace(gpu(i, 4096), total_bytes=4096 * GIB) for i in range(world))
     plan = replace(derive(model=recipe, gpus=devices, selected=tuple(range(world)), speculation=None), collective_tuning=mode, collective_ladder=ladder)
     original = bootstrap.PreparationConfig

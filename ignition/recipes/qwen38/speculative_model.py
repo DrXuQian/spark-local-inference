@@ -30,8 +30,9 @@ class SpeculativePreparation:
                  workspaces, rotary, cache, table, session, completion, frame, sequence,
                  context, prefill_capacity, max_cache_pages,
                  runtime=None, vocabulary_runtime=None, coordinator=None, verification_width=8,
-                 sampling_workspace=None, graph_buffers=None):
+                 sampling_workspace=None, graph_buffers=None, actlize_library=None, actlize_qsa_library=None):
         self.collectives = dict(runtime=runtime, vocabulary_runtime=vocabulary_runtime, coordinator=coordinator)
+        self.attention_libraries = dict(actlize_library=actlize_library, actlize_qsa_library=actlize_qsa_library)
         self.weights, self.mtp_weights, self.pool, self.requests = weights, mtp_weights, pool, requests
         self.inputs, self.scratch, self.workspaces, self.rotary = inputs, scratch, workspaces, rotary
         self.cache, self.table, self.session = cache, table, session
@@ -182,7 +183,8 @@ class PreparedSpeculativeRound:
             session=owner.session, name=f"{name}.target", max_cache_pages=owner.max_cache_pages,
             residual_output=self.target_residual, verification=True,
             gdn_records=owner.gdn_records if width > 1 else None,
-            gdn_in_place=width == 1 and owner.gdn_records is not None, **owner.collectives)
+            gdn_in_place=width == 1 and owner.gdn_records is not None,
+            **owner.collectives, **owner.attention_libraries)
         owner.decoders.append(getattr(self.decoder, "forward", self.decoder))
         self.draft_metadata = owner.draft_metadata(batch, batch)
         self.draft = owner.mtp(self.draft_metadata, f"{name}.draft") if width > 1 else None

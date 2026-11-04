@@ -486,6 +486,28 @@ For a complete local checkpoint, select a directory containing `manifest.json`:
 }
 ```
 
+On SM120, optionally add `"actlize_library": "/path/libactlize_la_serving.so"`
+to select external actlizeLA GDN and QSA in `ignition export INPUT_DIRECTORY`.
+Install its Python preparation package and build the native SM120 library first,
+as described under [PPU port preparation](#ppu-port-preparation). The explicit
+selection switches target and MTP KV pages and hybrid snapshots to BF16; MTP
+keeps ordinary attention. The default without this field keeps b12x and FP8.
+The plan reports the selected operators and budgets their actual page/snapshot
+bytes while preserving the checkpoint alias and its model settings. The library
+content and target enter the
+checkpoint/preparation identities and compilation namespace. Changes between
+planning and loading are rejected. Keep the input manifest and matching library
+available for re-export; native serving uses only the exported package.
+
+This selection currently requires SM120 and the existing single-GPU GGUF
+capacity; automatic device selection considers only GPUs matching the selected
+library. The external GDN ABI does not support mixed prefill/decode partitions;
+preparation rejects such a catalog. It preserves the existing graph families,
+sampling and native scheduling. Configuration, snapshot and page-budget tests
+cover the actual BF16 layouts, with 237 input/configuration/planning cases passing.
+The runtime qualification below remains partial
+because the complete main checkpoint is intentionally not downloaded.
+
 The full recipe requires all main shards and validates their declared tensor
 counts. It has not been qualified with the complete checkpoint. Do not rename
 partial downloads to satisfy this validation.
@@ -713,14 +735,16 @@ ordinary/teacher-prefix HTTP cases, including exact prefix restoration within
 each mode. Four queued/isolated native replay cases compare all 40 state/KV
 ranges exactly (207277056 bytes each). The additional 41811968 bytes follow
 from BF16 KV storage and the matching snapshot. Service/replay ratios are
-0.9978–1.0009, within the same 5% overhead limit. This does not assert bitwise
+0.9957–1.0005, within the same 5% overhead limit. Routing the operator choice
+through the shared MTP decoder factory preserves the previous partial package's
+68 request choices and all four native state fingerprints exactly. This does not assert bitwise
 equivalence to the FP8 package or full-model language quality.
 
 The combined fixed-width-six trace has 102 rounds, 676 kernels per round and
-11.639 ms median kernel span. Its 94 consecutive pairs have median 15.169 us,
-p95 16.352 us and maximum 16.512 us between rounds. Adaptive execution covers
+11.597 ms median kernel span. Its 94 consecutive pairs have median 15.296 us,
+p95 16.288 us and maximum 16.544 us between rounds. Adaptive execution covers
 546 rounds at widths 1/2/4/6 (515/29/1/1 rounds respectively); the 507 consecutive
-width-one pairs have median 15.296 us, p95 16.096 us and maximum 16.320 us.
+width-one pairs have median 15.296 us, p95 16.096 us and maximum 16.319 us.
 Both traces contain the external GDN/QSA kernels inside exported graphs, with
 no execution-time allocation, recapture, module loading or out-of-graph compute.
 These bounded partial-model traces do not establish literal zero idle, explain

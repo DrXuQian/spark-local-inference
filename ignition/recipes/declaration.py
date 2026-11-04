@@ -12,8 +12,12 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field, fields, replace
 import math
 from types import MappingProxyType
+from typing import TYPE_CHECKING
 
 from ignition.components.capacity import request_capacity
+
+if TYPE_CHECKING:
+    from ignition.preparation.actlize import ActlizeLibrarySpec
 
 @dataclass(frozen=True)
 class SamplingRange:
@@ -228,6 +232,8 @@ class Recipe:
     mla_compute_mode: str = "auto"
     expert_scale_compression: str | None = None
     export_repository: str = ""
+    # Explicit external GDN/QSA preparation dependency; native serving replays its kernels.
+    actlize: "ActlizeLibrarySpec | None" = None
     # Preparation overrides for vocabulary and transition projections used only by proposals.
     draft_head_quantizations: tuple[str, ...] = ()
     markov_head_quantizations: tuple[str, ...] = ()
@@ -243,6 +249,11 @@ class Recipe:
                                         speculation.token_capacity if enabled else None))
 
     def __post_init__(self):
+        if self.actlize is not None:
+            from ignition.preparation.actlize import ActlizeLibrarySpec
+
+            if self.name != 'qwen38_gguf' or not isinstance(self.actlize, ActlizeLibrarySpec):
+                raise ValueError('actlizeLA recipe selection requires explicit Qwen GGUF inputs')
         if self.export_repository:
             import re
             if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*', self.export_repository) or '..' in self.export_repository:

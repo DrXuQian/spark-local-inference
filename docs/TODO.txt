@@ -87,6 +87,17 @@
     gaps. BF16 is an explicit precision change; no cross-package bitwise
     equivalence or full-model/PPU qualification is claimed.
 
+[x] Connect explicit actlize_library GGUF inputs to normal recipe planning,
+    BF16 KV/snapshot allocation and the shared MTP decoder factory. Preserve
+    model aliases/settings, bind library contents into cache identities, and
+    reject a changed library or an incompatible GPU before weight loading.
+    All 237 input/layout/planning cases pass; the re-exported partial package
+    preserves all 68 request choices and four cases' 207277056-byte state
+    fingerprints exactly. Service/replay ratios are 0.9957-1.0005; fixed and
+    adaptive traces have no hot allocation, recapture, module load or
+    out-of-graph compute, with 16.544/16.319 us maximum consecutive-round gaps.
+    Full-checkpoint export remains unrun; the complete main shards are absent.
+
 [ ] Bind actlizeLA into complete PPU model preparation. Ratio-zero shared MTP
     requires ordinary attention; ratio-four QSA uses actlizeLA and explicit
     BF16 cache/snapshot dtypes. Retain per-layer verification records, commit
@@ -94,8 +105,9 @@
     once. The current Qwen decoder sets checkpoint_export=False; the external
     ABI's lack of intermediate prefill checkpoint exports does not block that
     path. Combined GDN/QSA composition now passes partial GGUF serving on
-    SM120. Production recipe selection, remaining PPU operators and target
-    export/replay still require the deployment stack.
+    SM120, including the shared MTP factory used by the normal GGUF recipe.
+    PPU operator selection, remaining operators and target export/replay still
+    require the deployment stack.
 
 [x] Inspect remaining PPU seams: FA2 paged KV requires a multiple of 256,
     while current Flare uses 64; the available narrow FA3 build disables
