@@ -43,11 +43,17 @@
     Flare's route_topk prefers higher IDs. Preserve inactive-row masking and
     adapt sticky device errors into the existing request failure path.
 
-[ ] QUactlize PPU: bind the new native ABI as prepared custom operations,
-    with declared mutations, handle rebinding and caller-owned scratch. Use
-    the raw layout for unsupported canonical shapes. Query every capacity;
-    M<=8 selects SIMT, so do not carry the NVIDIA prefill chunk of eight into
-    the PPU grouped-TC path without measuring complete forwards.
+[x] Add a separate raw-GGUF PPU projection preparation bridge using the new
+    QUactlize ABI's own declarations. Query each capacity, preserve element
+    strides and padded byte spans, declare output/scratch/sticky-error writes,
+    and warm with private initialized input/IDs. Thirty-one actual host-contract
+    and Torch fake-export checks pass; no PPU kernel is executed by those checks.
+
+[ ] Qualify that PPU bridge's prepare, changing addresses/IDs, numerical output,
+    compiled handle rebinding and native package replay on the target device.
+    Four explicit device tests are supplied but unrun. Bind the complete recipe
+    only after these boundaries pass. M<=8 selects SIMT; do not carry the NVIDIA
+    prefill chunk of eight into PPU grouped-TC without measuring full forwards.
 
 [x] Propagate external GGUF operator failures inside complete serving graphs.
     Preserve errors across repeated MTP calls and inspect them after final

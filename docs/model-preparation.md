@@ -778,6 +778,37 @@ the GGUF weight bytes remain unchanged. Prepared PPU custom operations must
 also preserve the explicit element strides and query the selected library's
 scratch requirements instead of reusing NVIDIA workspace assumptions.
 
+`ignition.components.ppu_gguf_projection` now provides that raw-GGUF preparation
+bridge using `quactlize.compat.native.Library` explicitly. It queries each shape
+through the PPU ABI, represents padded byte spans correctly, and exposes output,
+workspace and sticky-error mutations to compilation. Its owning rank retains
+the native handle; compilation workers receive only tensor metadata and the
+integer binding. The native `prepare` executes and synchronizes a warmup, so the
+bridge supplies private initialized input and route IDs before any graph is
+captured. The component exposes its sticky-error storage for the existing
+complete-round error guard; recipe integration remains pending.
+There is no NVIDIA fallback or framework-owned matmul kernel.
+
+Thirty-one checks pass against the actual QUactlize host contract and Torch
+fake export: Qwen expert/dense shapes, SIMT/TC capacity selection, padded strides,
+field-wise buffer extents, write alias rejection and all three mutable operands.
+These do not execute PPU kernels or prove compiled handle rebinding, target
+export or device numerical behavior. The bridge is not yet enabled in the model
+recipe. Four device cases are supplied for native preparation and captured
+replay with different addresses, duplicate/invalid/inactive IDs and sticky-error
+reset, using the existing GGUF projection numerical bound; they remain unrun.
+With the matching PPU Torch/QUactlize installation and assigned device, run:
+
+```sh
+FLARE_TEST_QUACTLIZE_PPU_SOURCE=/path/QUactlize \
+FLARE_TEST_PPU_SDK=/path/ppu-sdk \
+pytest tests/components/test_ppu_gguf_projection.py
+
+FLARE_RUN_CUDA_TESTS=1 CUDA_VISIBLE_DEVICES=0 \
+FLARE_TEST_PPU_MATMUL_LIBRARY=/path/libncp_quactlize.so \
+pytest tests/components/test_ppu_gguf_projection_cuda.py
+```
+
 A further SDK 2.1.1 host audit finds hg-prefixed declarations for all 66 entry
 names resolved unconditionally by the native package driver. Compiled header
 probes compare 70 structure sizes, alignments and field offsets with CUDA,
