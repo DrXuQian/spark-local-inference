@@ -76,14 +76,26 @@
     Thirty-four standalone native replays compare 4753040 bytes each exactly,
     with no CUDA allocation or Python/Torch/operator-host-library mapping.
 
+[x] Compose actlizeLA QSA and GDN in the partial GGUF serving package, with
+    BF16 KV pages and snapshots. Actual block-47 reference cases pass at
+    capacities 1/6/64, including context 2051 and page-pool rebinding; shared
+    Q8 MTP ordinary attention passes at 1/7/128 with BF16 pages. All 68 native
+    HTTP cases pass. Four queued/isolated replays preserve 207277056 bytes
+    each exactly; service/replay ratios are 0.9978-1.0009. Fixed/adaptive
+    traces have no hot allocation, recapture, module load or out-of-graph
+    compute, with 16.512/16.320 us maximum consecutive width-six/width-one
+    gaps. BF16 is an explicit precision change; no cross-package bitwise
+    equivalence or full-model/PPU qualification is claimed.
+
 [ ] Bind actlizeLA into complete PPU model preparation. Ratio-zero shared MTP
     requires ordinary attention; ratio-four QSA uses actlizeLA and explicit
     BF16 cache/snapshot dtypes. Retain per-layer verification records, commit
     consumed input counts and handle zero-prefix convolution rollback exactly
     once. The current Qwen decoder sets checkpoint_export=False; the external
     ABI's lack of intermediate prefill checkpoint exports does not block that
-    path. GDN composition now passes partial GGUF serving on SM120; QSA
-    substitution in that serving path and PPU target execution remain unrun.
+    path. Combined GDN/QSA composition now passes partial GGUF serving on
+    SM120. Production recipe selection, remaining PPU operators and target
+    export/replay still require the deployment stack.
 
 [x] Inspect remaining PPU seams: FA2 paged KV requires a multiple of 256,
     while current Flare uses 64; the available narrow FA3 build disables

@@ -134,7 +134,8 @@ class PartialDecoder:
             if index % 4 == 3:
                 attention = PreparedAttention(module.self_attn, attention_weights, source, s.qsa,
                     cache[index], state.qsa, rotary, session=session, name=prefix + '.qsa',
-                    workspace=workspace, projection_workspace=workspace, max_cache_pages=max_cache_pages, draft_tokens=7)
+                    workspace=workspace, projection_workspace=workspace, max_cache_pages=max_cache_pages, draft_tokens=7,
+                    actlize_library=weights.actlize_qsa_library, live_rows=state.gdn.num_seqs)
             else:
                 attention = PreparedGDN(module.linear_attn, attention_weights, source, s.gdn,
                     state.pool.gdn[index], state.gdn, mode=state.mode, session=session, name=prefix + '.gdn',
@@ -229,6 +230,8 @@ def prepare(args):
     output.mkdir(parents=True, exist_ok=True)
     if (output / 'package').exists():
         raise FileExistsError(output / 'package')
+    if args.actlize_qsa and args.actlize_library is None:
+        raise ValueError('--actlize-qsa requires an explicit --actlize-library')
     raw = (frontend / 'config.json').read_bytes()
     if hashlib.sha256(raw).hexdigest() != CONFIG_SHA256:
         raise ValueError('qualification requires the pinned Qwen frontend config')
@@ -266,10 +269,12 @@ def prepare(args):
             with library.path.open('rb') as source:
                 operators = {'gdn': 'actlize', 'target': library.target,
                              'library': hashlib.file_digest(source, 'sha256').hexdigest()}
+        kv_dtype = torch.bfloat16 if args.actlize_qsa else torch.float8_e4m3fn
+        operators.update(qsa='actlize' if args.actlize_qsa else 'b12x', kv_dtype=str(kv_dtype))
         weights = SimpleNamespace(blocks=tuple(blocks), embedding=embedding, head=head,
             final_mixer=mtp.module.hyper_connection_mixer, ple_caps=ple_caps, shard=TensorParallelShard(0, 1),
-            actlize_library=library)
-        state = HybridStatePool.allocate(5, 'cuda:0', speculative_tokens=7, storage=storage)
+            actlize_library=library, actlize_qsa_library=library if args.actlize_qsa else None)
+        state = HybridStatePool.allocate(5, 'cuda:0', speculative_tokens=7, storage=storage, kv_dtype=kv_dtype)
         state = replace(state, gdn=MappingProxyType({i: state.gdn[i] for i in args.layers if i % 4 != 3}))
         requests = DeviceRequestState.allocate('cuda:0', capacity=1)
         inputs = DecoderInputs.allocate('cuda:0', context=1024, tokens=64, capacity=1)
@@ -279,7 +284,7 @@ def prepare(args):
         # Snapshot rows borrow KV backing in native serving. Reserve enough
         # pages for the canonical full-state row even with only two live blocks.
         pages = 512
-        cache = {i: QSAState.allocate(pages=1, slots=2, device='cuda:0', draft_tokens=7)
+        cache = {i: QSAState.allocate(pages=1, slots=2, device='cuda:0', draft_tokens=7, kv_dtype=kv_dtype)
                  .resize_pages_for_preparation(pages, storage=storage, prefix=f'kv-{i}-', backed_pages=64)
                  for i in (*range(3, 48, 4), 48)}
         state.memory_capacity[1] = 64
@@ -395,4 +400,6 @@ if __name__ == '__main__':
     parser.add_argument('--layers', type=int, nargs='+', default=[44, 47])
     parser.add_argument('--actlize-library', type=Path,
                         help='qualify the actlizeLA SM120 GDN library inside complete serving graphs')
+    parser.add_argument('--actlize-qsa', action='store_true',
+                        help='also bind external QSA, with BF16 KV pages and matching snapshots')
     prepare(parser.parse_args())

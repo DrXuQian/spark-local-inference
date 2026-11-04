@@ -98,13 +98,14 @@ def test_shared_q8_feedback(checkpoint, tmp_path):
 
 
 @pytest.mark.parametrize('tokens', [1, 7, 128])
-def test_shared_q8_full_attention(checkpoint, tokens, tmp_path):
+@pytest.mark.parametrize('kv_dtype', [torch.float8_e4m3fn, torch.bfloat16], ids=['fp8', 'bf16'])
+def test_shared_q8_full_attention(checkpoint, tokens, tmp_path, kv_dtype):
     weights, expand = checkpoint
     module = weights.module.layers[0].self_attn
     assert module.compress_ratio == 0
     source = torch.zeros((tokens, 2560), dtype=torch.bfloat16, device='cuda')
     scratch = QSAScratch.allocate(tokens, 'cuda:0')
-    state = QSAState.allocate(pages=8, slots=2, device='cuda:0', draft_tokens=7)
+    state = QSAState.allocate(pages=8, slots=2, device='cuda:0', draft_tokens=7, kv_dtype=kv_dtype)
     metadata = QSAMetadata.allocate(tokens=tokens, batch=1, context=512, device='cuda:0')
     rotary = RotaryTables.allocate(module.config, 512, 'cuda:0')
     arena = ScratchArena('cuda:0')
@@ -156,8 +157,8 @@ def test_shared_q8_full_attention(checkpoint, tokens, tmp_path):
                 v = F.linear(source[:live], projections[2]).view(live, 2, 256)
                 cos, sin = rotary.gather(metadata.rope_positions[:live])
                 query, key = apply_rotary_pos_emb(rms(q[..., :256], qgain), rms(k, kgain), cos, sin, unsqueeze_dim=1)
-                all_k = torch.cat((key_before.flatten(0, 1)[:history].float(), key.to(torch.float8_e4m3fn).float()))
-                all_v = torch.cat((value_before.flatten(0, 1)[:history].float(), v.to(torch.float8_e4m3fn).float()))
+                all_k = torch.cat((key_before.flatten(0, 1)[:history].float(), key.to(kv_dtype).float()))
+                all_v = torch.cat((value_before.flatten(0, 1)[:history].float(), v.to(kv_dtype).float()))
                 logits = torch.einsum('thd,shd->hts', query.float(), all_k.repeat_interleave(12, dim=1)) / 16
                 mask = torch.arange(history + live, device='cuda')[None] > positions[:live, None]
                 logits.masked_fill_(mask[None], float('-inf'))

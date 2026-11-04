@@ -622,8 +622,10 @@ to select the checked SM120 GDN implementation inside complete serving graphs.
 Install the external Python package with `pip install --no-deps /path/actlizeLA`;
 its default Python-only installation does not build the native serving library.
 Build that library separately for the explicit target, as described by the
-operator package. The remaining projections, ShortConv, gated normalization,
-QSA and MTP attention still require their existing NVIDIA operators.
+operator package. This selects GDN alone by default; add `--actlize-qsa` to
+include the external QSA transaction and BF16 cache storage, as described below.
+Projections, ShortConv, gated normalization and MTP attention still use their
+existing NVIDIA operators in this qualification.
 
 `PreparedGDN` binds the supplied library during preparation. Transient operands
 reuse the shared scratch arena; each layer retains its correction records until
@@ -645,8 +647,8 @@ not a claim of bitwise arithmetic equivalence or full-model language quality.
 Four native queued/isolated replay cases match tokens, logprobs and all 40
 state/KV ranges exactly (165465088 bytes each). Service/replay ratios are
 0.9881–1.0085, within the 5% overhead limit. The Rust service has no Python,
-Torch or actlizeLA host library mapped. PPU execution and substitution of QSA
-in complete serving graphs still require qualification.
+Torch or actlizeLA host library mapped. These measurements cover the GDN-only
+substitution; PPU execution remains unqualified.
 
 Nsight confirms the external recurrence/commit kernels inside the exported
 graphs. The 102-round fixed-width-six trace has 679 kernels per round;
@@ -690,6 +692,40 @@ tensor bytes: BF16 adds 786432 bytes per ordinary hybrid snapshot, or 917504
 bytes with both MTP boundary pages. Twelve storage/maintenance tests pass,
 including capacity 2/32, scattered rows and exact target/MTP page restoration.
 
+For combined GDN/QSA qualification, add both
+`--actlize-library /path/libactlize_la_serving.so --actlize-qsa` to the partial
+GGUF export command. This binds the external append/compress/select/attention
+transaction once, after the existing projections, normalization and rotary
+operations. It does not also execute the old QSA KV writer. The selected
+positions and attention output use existing scratch views; transient operator
+workspace shares the preparation arena, while error flags remain persistent.
+Page-pool replacement rebinds the native handle before compilation and capture.
+Target QSA and ratio-zero MTP use BF16 pages with matching hybrid snapshots;
+MTP retains ordinary paged attention. The ordinary recipe default remains FP8.
+
+Three actual block-47 cases at capacities 1/6/64 compare the complete composed
+attention against independent compression, selection and sparse-attention
+references, including context 2051, scattered pages, page-pool replacement and
+inactive rows. Three actual shared-Q8 MTP attention cases pass at capacities
+1/7/128 with BF16 pages and changing live counts. Existing reference bounds
+remain unchanged. The combined exported package passes all 18 MTP and 50
+ordinary/teacher-prefix HTTP cases, including exact prefix restoration within
+each mode. Four queued/isolated native replay cases compare all 40 state/KV
+ranges exactly (207277056 bytes each). The additional 41811968 bytes follow
+from BF16 KV storage and the matching snapshot. Service/replay ratios are
+0.9978–1.0009, within the same 5% overhead limit. This does not assert bitwise
+equivalence to the FP8 package or full-model language quality.
+
+The combined fixed-width-six trace has 102 rounds, 676 kernels per round and
+11.639 ms median kernel span. Its 94 consecutive pairs have median 15.169 us,
+p95 16.352 us and maximum 16.512 us between rounds. Adaptive execution covers
+546 rounds at widths 1/2/4/6 (515/29/1/1 rounds respectively); the 507 consecutive
+width-one pairs have median 15.296 us, p95 16.096 us and maximum 16.320 us.
+Both traces contain the external GDN/QSA kernels inside exported graphs, with
+no execution-time allocation, recapture, module loading or out-of-graph compute.
+These bounded partial-model traces do not establish literal zero idle, explain
+earlier isolated tails, or qualify the remaining PPU operators and target export.
+
 | Operation | Required contract | Current PPU source and remaining work |
 | --- | --- | --- |
 | GGUF projections and MoE | Q5_1, Q8_0, Q2_K–Q6_K; H2560/I640; 512 experts, top10; BF16 operands/output, FP32 accumulation | New QU raw path admits these shapes. Canonical packing retains stricter alignment. Bind the new ABI with prepared custom ops and verify each capacity on the target. |
@@ -698,8 +734,8 @@ including capacity 2/32, scattered rows and exact target/MTP page restoration.
 | SwiGLU | BF16 SiLU followed by multiply and BF16 output | New QU helper rounds only after multiplication. It is not equivalent to Qwen's `round_silu=True`. For BF16 gate −4.96875 and up 1.5, results are −0.051513671875 versus −0.0517578125. |
 | Token embedding / PLE | Device-indexed Q8_0 rows of width2560 and IQ4_NL rows of width160; inactive IDs and changing live counts | New PPU matmul dequant takes host row indices and does not admit IQ4_NL. A captured row-lookup interface remains necessary. NVIDIA compatibility already provides it. |
 | GDN | FP32 state `[slot,Hv,V,K]`, Hk16/Hv48, compact per-layer records, consumed-input commit count | actlizeLA provides decode/verify/prefill/commit. Preserve zero-prefix convolution rollback, device errors and each layer's retained records; bind through complete compiled forwards. |
-| QSA | Ratio4, 24 query/2 KV heads, D256, selected capacity2051, page64 | actlizeLA supplies append/compression/selection/attention with BF16 KV. Explicit BF16 allocation, snapshot/restore and component export are now qualified on SM120; complete PPU recipe binding remains. Do not retain the old writer as well. |
-| Shared MTP attention | Ratio0, paged causal GQA, D256, page64, changing device lengths | Use ordinary FlashAttention. Local FA2 f600591 requires pages divisible by256; the narrow FA3 box build disables paging/append/D256. Qualify a matching FA3 build and prepared output/workspace ABI. |
+| QSA | Ratio4, 24 query/2 KV heads, D256, selected capacity2051, page64 | actlizeLA supplies append/compression/selection/attention with BF16 KV. Combined GDN/QSA partial GGUF serving and snapshot/restore are qualified on SM120; complete PPU recipe binding remains. Do not retain the old writer as well. |
+| Shared MTP attention | Ratio0, paged causal GQA, D256, page64, changing device lengths | Ordinary NVIDIA attention passes actual shared-Q8 MTP tests at 1/7/128 with BF16 pages. Local PPU FA2 f600591 requires pages divisible by256; the narrow FA3 box build disables paging/append/D256. Qualify a matching FA3 build and prepared output/workspace ABI. |
 | Dense BF16 / HC projections | Preserve actual dimensions, strided outputs and FP32 accumulation | DeepGEMM provides BF16 kernels. Freeze plans and scratch before capture; its ordinary Python JIT entry is not a serving interface. |
 | RMSNorm / HC / ShortConv / RoPE / gating / sampling / state helpers | Exact dtype/rounding, inactive rows and complete mutable history | These exist in Flare through b12x and compiled tensor operations. QU/actlizeLA do not replace all of them; compile or bind external PPU implementations. No framework-owned kernel collection is added. |
 | Native graph export | Capture and export on the deployment platform; replay after Python exits | SDK2.1.1 declares graph/VMM/event APIs. Qualify the CUDA facade, module-image recorder, PPU ELF globals/parameters and relocations. Current export uses CUPTI and CUDA module metadata; API names alone do not prove this boundary. |

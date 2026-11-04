@@ -242,7 +242,7 @@ class PreparedDecoder:
                  max_cache_pages: int | None = None,
                  residual_output: torch.Tensor | None = None, verification: bool = False,
                  gdn_records=None, gdn_in_place: bool = False, runtime=None, vocabulary_runtime=None, coordinator=None,
-                 sampling_workspace=None, scoring=None, actlize_library=None):
+                 sampling_workspace=None, scoring=None, actlize_library=None, actlize_qsa_library=None):
         from ignition.components.embedding import PreparedEmbedding
         from ignition.components.linear import UnquantizedProjection
 
@@ -289,7 +289,8 @@ class PreparedDecoder:
                 attention = PreparedAttention(module.self_attn, layer_weights.attention, source,
                     scratch.qsa, qsa_states[index], state.qsa, rotary, session=session, name=f"{prefix}.qsa",
                     workspace=workspaces, projection_workspace=workspaces,
-                    max_cache_pages=max_cache_pages, draft_tokens=state.pool.layout.speculative_tokens)
+                    max_cache_pages=max_cache_pages, draft_tokens=state.pool.layout.speculative_tokens,
+                    actlize_library=actlize_qsa_library, live_rows=state.gdn.num_seqs)
             else:
                 attention = PreparedGDN(module.linear_attn, layer_weights.attention, source,
                     scratch.gdn, state.pool.gdn[index], state.gdn, mode=state.mode,

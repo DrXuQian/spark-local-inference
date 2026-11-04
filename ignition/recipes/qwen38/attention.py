@@ -197,6 +197,9 @@ class PreparedAttention:
         if getattr(module, 'compress_ratio', 4) == 0:
             from .full_attention import PreparedFullAttention
 
+            if kwargs.pop('actlize_library', None) is not None:
+                raise ValueError('ratio-zero MTP requires ordinary attention, not the QSA operator')
+            kwargs.pop('live_rows', None)
             return PreparedFullAttention(module, *args, **kwargs)
         return super().__new__(cls)
 
@@ -205,7 +208,8 @@ class PreparedAttention:
                  rotary: RotaryTables, *, session: PreparationSession, name: str,
                  draft_tokens: int = 0, workspace: ScratchArena | torch.Tensor | None = None,
                  projection_workspace: ScratchArena | torch.Tensor | None = None,
-                 max_cache_pages: int | None = None, cache_only: bool = False) -> None:
+                 max_cache_pages: int | None = None, cache_only: bool = False,
+                 actlize_library=None, live_rows=None) -> None:
         self.q_heads, self.kv_heads = scratch.query.shape[1], scratch.key.shape[1]
         self.cache_only = cache_only
         self.module, self.scratch, self.state = module, scratch, state
@@ -222,19 +226,6 @@ class PreparedAttention:
         if type(cache_pages) is not int or cache_pages < state.main_k_cache.shape[0]:
             raise ValueError("planned QSA page capacity must cover the bound page pools")
         self.cache_page_capacity = cache_pages
-        # On SM103 one score workspace covers every representative group of a
-        # prefill chunk, so selection makes a single pass instead of one per 128 MiB.
-        score_workspace = self.tokens * (context // 4) * 4 if sm103.is_sm103(source.device) else None
-        caps = qsa.Caps(device=source.device, max_batch=batch, kv_dtype=state.main_k_cache.dtype,
-                        max_raw_state_slots=state.raw_k_ring.shape[0], max_q_rows=self.tokens,
-                        max_seq_len=context, num_main_cache_pages=cache_pages,
-                        num_compressed_cache_pages=cache_pages,
-                        main_page_size=page_size, compressed_page_size=page_size // 4,
-                        max_speculative_tokens=draft_tokens, position_axes=3,
-                        q_heads=self.q_heads, kv_heads=self.kv_heads,
-                        mrope_sections=(11, 11, 10), mrope_interleaved=True,
-                        rms_norm_eps=module.config.rms_norm_eps,
-                        score_workspace_bytes=max(score_workspace, 128 << 20) if score_workspace else None)
         if rotary.cos.shape[0] < context:
             raise ValueError("rotary table capacity must cover the admitted context")
         self.projections = {}
@@ -259,6 +250,32 @@ class PreparedAttention:
             "index_k_norm_weight": module.indexer.k_layernorm.weight.detach().float(),
             "rope_cos": rotary.cos, "rope_sin": rotary.sin,
         }
+        self.actlize = None
+        if actlize_library is not None:
+            from ignition.components.actlize_qsa import PreparedActlizeQSA
+
+            if cache_only or live_rows is None:
+                raise ValueError('actlizeLA QSA requires an attending forward and explicit live-row metadata')
+            self.actlize = PreparedActlizeQSA(actlize_library, scratch=scratch, state=state,
+                metadata=metadata, rotary=rotary, live_rows=live_rows,
+                query_weight=self.binding_kwargs['index_q_norm_weight'],
+                key_weight=self.binding_kwargs['index_k_norm_weight'],
+                epsilon=module.config.rms_norm_eps, workspace=workspace)
+            self.concurrent = self.sparse = None
+            return
+        # On SM103 one score workspace covers every representative group of a
+        # prefill chunk, so selection makes a single pass instead of one per 128 MiB.
+        score_workspace = self.tokens * (context // 4) * 4 if sm103.is_sm103(source.device) else None
+        caps = qsa.Caps(device=source.device, max_batch=batch, kv_dtype=state.main_k_cache.dtype,
+                        max_raw_state_slots=state.raw_k_ring.shape[0], max_q_rows=self.tokens,
+                        max_seq_len=context, num_main_cache_pages=cache_pages,
+                        num_compressed_cache_pages=cache_pages,
+                        main_page_size=page_size, compressed_page_size=page_size // 4,
+                        max_speculative_tokens=draft_tokens, position_axes=3,
+                        q_heads=self.q_heads, kv_heads=self.kv_heads,
+                        mrope_sections=(11, 11, 10), mrope_interleaved=True,
+                        rms_norm_eps=module.config.rms_norm_eps,
+                        score_workspace_bytes=max(score_workspace, 128 << 20) if score_workspace else None)
         operands = {**self.binding_kwargs, "request_ids": metadata.request_ids,
                     "rope_positions": metadata.rope_positions, "index_query": self.index_query,
                     "raw_index_key": self.index_key}
@@ -332,8 +349,11 @@ class PreparedAttention:
                     or before.dtype != after.dtype or before.device != after.device):
                 raise ValueError("page rebinding must preserve the prepared cache ABI")
             self.binding_kwargs[name] = after
-        self.binding = qsa.bind(self.plan, scratch=self.workspace, **self.binding_kwargs)
-        self.write_kwargs.update(k_cache=state.main_k_cache, v_cache=state.main_v_cache)
+        if self.actlize is not None:
+            self.actlize.rebind(state)
+        else:
+            self.binding = qsa.bind(self.plan, scratch=self.workspace, **self.binding_kwargs)
+            self.write_kwargs.update(k_cache=state.main_k_cache, v_cache=state.main_v_cache)
         self.state = state
 
     def __call__(self, source: torch.Tensor) -> torch.Tensor | None:
@@ -351,11 +371,14 @@ class PreparedAttention:
                                          unsqueeze_dim=1)
         s.query.copy_(query)
         s.key.copy_(key)
-        paged_kv_write.run(self.writer, **self.write_kwargs)
+        if self.actlize is None:
+            paged_kv_write.run(self.writer, **self.write_kwargs)
         if self.cache_only:
             qsa.run(self.binding, **self.dynamic(), cache_only=True)
             return None
-        if self.sparse is not None:
+        if self.actlize is not None:
+            attention = self.actlize()
+        elif self.sparse is not None:
             qsa.run(self.binding, **self.dynamic(), selection_only=True)
             attention = self.sparse(self.state.main_k_cache, self.state.main_v_cache)
         elif self.concurrent is None:
@@ -366,3 +389,7 @@ class PreparedAttention:
         output = self.projections["o_proj"](s.gated)
         output.masked_fill_((self.metadata.request_ids < 0)[:, None], 0)
         return output
+
+    @property
+    def device_errors(self):
+        return () if self.actlize is None else self.actlize.device_errors
