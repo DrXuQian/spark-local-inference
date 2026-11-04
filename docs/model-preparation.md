@@ -758,14 +758,32 @@ A further SDK 2.1.1 host audit finds hg-prefixed declarations for all 66 entry
 names resolved unconditionally by the native package driver. Compiled header
 probes compare 70 structure sizes, alignments and field offsets with CUDA,
 including graph kernel/copy parameters, VMM properties and profiling callbacks;
-all match on x86-64. This does not establish shared-library symbol availability
-or device behavior. The shipped profiling library exports `hgpti*`, not the
-`cupti*` names currently consumed by the recorder. Of its 46 enabled driver
-callback IDs, 45 retain the corresponding name; ID 742 (`cuFuncLoad`) is absent
-from the inspected HGPTI callback header even though `hgFuncLoad` is declared.
-Export naming also requires an NVML PCI-ID mapping whose current table admits
-only NVIDIA GB10/GB202. Resolve these bindings against the deployment stack;
-do not label a PPU artifact as one of those NVIDIA platforms.
+all match on x86-64. Thirty-five driver and callback constants also agree with
+the native runtime's values. These checks do not establish device behavior.
+
+The SDK's `CUDA_SDK/targets/x86_64-linux/lib` does contain `libcuda.so.1` and
+`libcupti.so` facades. They forward to `libhggc.so` and `libhgpti.so`; the former
+is absent from this local SDK installation. The facade exports all 66 package
+driver entry names and all 49 names used by the asynchronous runtime. This
+resolves the library-name question but does not qualify the underlying driver.
+The checked HGPTI library requires GLIBC 2.38; a private compatible loader was
+used for its host API checks without replacing system libraries.
+
+Actual `cuptiGetCallbackName` calls through that facade return 45 expected
+`hg*` names unchanged. The recorder now normalizes those names before its
+existing module, nested-callback and allocation-lifetime handling. Fourteen
+host recorder tests pass, including HG-named nested materialization, unload,
+failed allocations and mapped-host lifetimes. After rebuilding the extension,
+four RTX tests pass for real driver allocations/context destruction and native
+graph export. This is not PPU graph replay qualification.
+
+Callback 742 (`cuFuncLoad`) returns `INVALID_PARAMETER` through the actual
+HGPTI facade, consistent with its absence from the header, even though
+`hgFuncLoad` is declared. Unsupported callback registration remains fatal;
+its error now identifies the callback domain and ID. Resolve this requirement
+with the deployment's profiling library before target export. Export naming
+also requires an NVML PCI-ID mapping whose current table admits only NVIDIA
+GB10/GB202; do not label a PPU artifact as one of those platforms.
 
 Native PPU ELF global discovery is now prepared for the observed machine 270
 format. The old CUDA section-name filter returned no globals for a real PPU

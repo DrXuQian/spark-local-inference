@@ -111,12 +111,21 @@
 
 [x] Check the SDK 2.1.1 export ABI and native ELF data discovery. All 66
     runtime driver entry names have hg-prefixed header declarations; 70 host
-    structure sizes/alignments/offsets match CUDA. This is not symbol resolution
-    or device execution. Fix missing globals in actual machine-270 ELF .data,
+    structure sizes/alignments/offsets match CUDA. Fix missing globals in actual machine-270 ELF .data,
     .bss and .rodata sections; 11 host parser checks preserve code, metadata and
     pointer relocations. Retain all discovered state, including local objects.
-    HGPTI symbol names, the absent cuFuncLoad callback ID 742, actual module
-    global lookup and NVIDIA-only PCI platform naming still need target binding.
+    Actual module global lookup and NVIDIA-only PCI platform naming still need
+    target binding.
+
+[x] Locate SDK 2.1.1's CUDA_SDK libcuda/libcupti facades and accept their hg*
+    callback names in the existing native recorder. Both driver symbol sets
+    (66 package-loader and 49 asynchronous-runtime names) are present in the
+    facade, and 35 driver/callback constants match. Actual HGPTI queries return
+    45 expected hg* names; callback 742 returns INVALID_PARAMETER. Fourteen
+    recorder host tests and four RTX allocation/graph-export tests pass after
+    rebuilding the extension. Missing callbacks remain fatal with domain/ID
+    diagnostics. Supply the real libhggc driver and compatible HGPTI (the checked
+    library needs GLIBC 2.38); resolve callback 742 before target export.
 
 [x] Export and serve the partial GGUF package after Python exits. Eighteen
     fixed-MTP HTTP cases and 50 ordinary-decode/teacher-prefix cases pass;

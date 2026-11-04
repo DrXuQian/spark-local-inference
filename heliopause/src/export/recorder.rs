@@ -279,6 +279,9 @@ impl State {
             return Err(invalid("CUPTI returned a driver callback without a name"));
         }
         let name = unsafe { CStr::from_ptr(call.name) }.to_str()?;
+        // The PPU SDK's CUDA facade forwards HGPTI callback names unchanged.
+        let translated = name.strip_prefix("hg").map(|suffix| format!("cu{suffix}"));
+        let name = translated.as_deref().unwrap_or(name);
         let thread = std::thread::current().id();
         let mut images = Vec::new();
         if materializer(name) {
@@ -586,7 +589,7 @@ impl Recorder {
         self.check("cuptiSubscribe", status)?;
         let result = (|| {
             for id in [2, 6, 7] {
-                self.check("cuptiEnableCallback", unsafe {
+                self.check(&format!("cuptiEnableCallback(domain=3, id={id})"), unsafe {
                     enable(1, self.subscriber, 3, id)
                 })?;
             }
@@ -595,7 +598,7 @@ impl Recorder {
                 452, 543, 675, 676, 307, 442, 477, 478, 481, 652, 653, 243, 245, 38, 39, 271, 294,
                 301, 302, 379, 551, 552, 598, 599, 600, 601, 611, 612,
             ] {
-                self.check("cuptiEnableCallback", unsafe {
+                self.check(&format!("cuptiEnableCallback(domain=1, id={id})"), unsafe {
                     enable(1, self.subscriber, 1, id)
                 })?;
             }
@@ -1084,6 +1087,67 @@ mod tests {
             8192
         );
         call(&owner, "cuMemUnmap", 1, &[address, 8192], 0, 0x1000);
+        assert!(owner.state.lock().unwrap().allocations.is_empty());
+    }
+    #[test]
+    fn hgpti_names_preserve_nested_materialization_and_unload() {
+        let owner = CallbackState::new();
+        call(&owner, "hgLaunchKernel", 0, &[], 0, 0x1000);
+        call(&owner, "hgFuncGetAttribute", 0, &[], 0, 0x1000);
+        resource(&owner, 0x1000, 7, 6, b"queried PPU image");
+        call(&owner, "hgFuncGetAttribute", 1, &[0, 0, 0x11], 1, 0x1000);
+        resource(&owner, 0x1000, 9, 6, b"launched PPU image");
+        call(&owner, "hgLaunchKernel", 1, &[0x22], 0, 0x1000);
+        {
+            let state = owner.state.lock().unwrap();
+            assert!(state.error.is_none(), "{:?}", state.error);
+            assert!(state.pending.is_empty());
+            assert_eq!(&*state.functions[&0x11].cubin, b"queried PPU image");
+            assert_eq!(&*state.functions[&0x22].cubin, b"launched PPU image");
+        }
+        resource(&owner, 0x1000, 7, 7, &[]);
+        {
+            let state = owner.state.lock().unwrap();
+            assert!(!state.functions.contains_key(&0x11));
+            assert_eq!(state.functions[&0x22].module_id, 9);
+        }
+        resource(&owner, 0x1000, 0, 2, &[]);
+        let state = owner.state.lock().unwrap();
+        assert!(state.images.is_empty());
+        assert!(state.functions.is_empty());
+    }
+    #[test]
+    fn hgpti_names_preserve_allocation_lifetimes_and_failed_calls() {
+        let owner = CallbackState::new();
+        let device = 0x8000usize;
+        let params = [&device as *const _ as usize, 4096];
+        call(&owner, "hgMemAlloc_v2", 1, &params, 1, 0x1000);
+        assert!(owner.state.lock().unwrap().allocations.is_empty());
+        call(&owner, "hgMemAlloc_v2", 1, &params, 0, 0x1000);
+        {
+            let state = owner.state.lock().unwrap();
+            assert_eq!(state.allocations[&0x8000].nbytes, 4096);
+            assert_eq!(state.allocations[&0x8000].context, Some(0x1000));
+        }
+        let host = 0x9000usize;
+        call(
+            &owner,
+            "hgMemHostAlloc",
+            1,
+            &[&host as *const _ as usize, 8192],
+            0,
+            0x1000,
+        );
+        call(&owner, "hgMemFreeAsync_ptsz", 1, &[device, 0], 0, 0x1000);
+        resource(&owner, 0x1000, 0, 2, &[]);
+        {
+            let state = owner.state.lock().unwrap();
+            assert!(state.error.is_none(), "{:?}", state.error);
+            assert_eq!(state.allocations.len(), 1);
+            assert_eq!(state.allocations[&0x9000].memory, "mapped_host");
+            assert_eq!(state.allocations[&0x9000].context, None);
+        }
+        call(&owner, "hgMemFreeHost", 1, &[host], 0, 0x1000);
         assert!(owner.state.lock().unwrap().allocations.is_empty());
     }
     #[test]
