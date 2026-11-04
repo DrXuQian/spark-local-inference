@@ -30,9 +30,11 @@ class SpeculativePreparation:
                  workspaces, rotary, cache, table, session, completion, frame, sequence,
                  context, prefill_capacity, max_cache_pages,
                  runtime=None, vocabulary_runtime=None, coordinator=None, verification_width=8,
-                 sampling_workspace=None, graph_buffers=None, actlize_library=None, actlize_qsa_library=None):
+                 sampling_workspace=None, graph_buffers=None, actlize_library=None, actlize_qsa_library=None,
+                 gguf_projection_library=None):
         self.collectives = dict(runtime=runtime, vocabulary_runtime=vocabulary_runtime, coordinator=coordinator)
         self.attention_libraries = dict(actlize_library=actlize_library, actlize_qsa_library=actlize_qsa_library)
+        self.gguf_projection_library = gguf_projection_library
         self.weights, self.mtp_weights, self.pool, self.requests = weights, mtp_weights, pool, requests
         self.inputs, self.scratch, self.workspaces, self.rotary = inputs, scratch, workspaces, rotary
         self.cache, self.table, self.session = cache, table, session
@@ -51,6 +53,7 @@ class SpeculativePreparation:
         self.mtp_scratch = MTPScratch.allocate(prefill_capacity, requests.capacity, device, world_size=weights.shard.world_size,
             buffers=None if graph_buffers is None else graph_buffers.cursor(),
             gguf_experts=mtp_weights.moe.experts if isinstance(mtp_weights.moe.experts, GgufExperts) else None,
+            gguf_projection_library=gguf_projection_library,
             hyperconnection_lowrank=mtp_weights.module.hyper_connection_mixer.input_mix_weight_down.weight.shape[0])
         # Feedback is consumed before the MTP mixer writes normalized activations.
         self.feedback_hidden = self.mtp_scratch.hyperconnection.normalized
@@ -87,7 +90,8 @@ class SpeculativePreparation:
         module = PreparedMTP(self.mtp_weights, self.mtp_scratch.rows(metadata.tokens, metadata.rows),
             metadata.token_ids, metadata.hidden, self.cache[48], metadata.qsa, self.rotary,
             self.workspaces, output_indices=metadata.output_indices, session=self.session,
-            name=name, draft_tokens=7, max_cache_pages=self.max_cache_pages, cache_only=cache_only, **self.collectives)
+            name=name, draft_tokens=7, max_cache_pages=self.max_cache_pages, cache_only=cache_only,
+            gguf_projection_library=self.gguf_projection_library, **self.collectives)
         self.mtp_modules.append(module)
         return module
 
@@ -184,7 +188,7 @@ class PreparedSpeculativeRound:
             residual_output=self.target_residual, verification=True,
             gdn_records=owner.gdn_records if width > 1 else None,
             gdn_in_place=width == 1 and owner.gdn_records is not None,
-            **owner.collectives, **owner.attention_libraries)
+            **owner.collectives, **owner.attention_libraries, gguf_projection_library=owner.gguf_projection_library)
         owner.decoders.append(getattr(self.decoder, "forward", self.decoder))
         self.draft_metadata = owner.draft_metadata(batch, batch)
         self.draft = owner.mtp(self.draft_metadata, f"{name}.draft") if width > 1 else None

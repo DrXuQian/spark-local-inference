@@ -42,7 +42,7 @@ class MTPScratch:
 
     @classmethod
     def allocate(cls, tokens: int, output_rows: int, device, *, world_size=1, buffers=None,
-                 hyperconnection_lowrank=320, gguf_experts=None):
+                 hyperconnection_lowrank=320, gguf_experts=None, gguf_projection_library=None):
         if (type(tokens) is not int or type(output_rows) is not int
                 or not 0 < output_rows <= tokens):
             raise ValueError("MTP requires positive output rows no greater than token capacity")
@@ -69,7 +69,7 @@ class MTPScratch:
             from ignition.components.gguf_moe import GgufMoeWorkspace
 
             expert_workspace = GgufMoeWorkspace.allocate(gguf_experts, chunk_rows=min(tokens, 8),
-                                                        top_k=10, buffers=experts)
+                                                        top_k=10, buffers=experts, projection_library=gguf_projection_library)
         hc = HyperconnectionScratch.allocate(tokens, device, buffers=mixer,
                                             projected=projected, block_input=block_input, lowrank=hyperconnection_lowrank)
         buffers.join(attention, experts, mixer)
@@ -155,7 +155,7 @@ class PreparedMTP:
     def __init__(self, weights: MTPWeights, scratch: MTPScratch, token_ids, target_hidden,
                  qsa_state, metadata, rotary, workspace: ScratchArena, *, output_indices,
                  session, name: str, draft_tokens: int = 7, max_cache_pages=None, cache_only: bool = False,
-                 runtime=None, vocabulary_runtime=None, coordinator=None):
+                 runtime=None, vocabulary_runtime=None, coordinator=None, gguf_projection_library=None):
         tokens, device = scratch.residual.shape[0], scratch.residual.device
         if (target_hidden.shape != (tokens, 10240) or target_hidden.dtype != torch.bfloat16
                 or target_hidden.device != device or not target_hidden.is_contiguous()):
@@ -197,7 +197,7 @@ class PreparedMTP:
             runtime=runtime, coordinator=coordinator)
         self.moe = PreparedQwenMoe(source, weights.moe, session=session, name=f"{name}.moe",
             scratch=scratch.moe, workspace=workspace if scratch.gguf_experts is None else scratch.gguf_experts,
-            projection_workspace=workspace)
+            projection_workspace=workspace, gguf_projection_library=gguf_projection_library)
         self.final_mixer = PreparedHyperconnection(weights.module.hyper_connection_mixer,
             replace(scratch.hyperconnection, block_input=scratch.hidden),
             priming_state=scratch.residual, session=session, name=f"{name}.final_mixer",

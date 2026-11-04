@@ -166,7 +166,7 @@ class DecoderScratch:
 
     @classmethod
     def allocate(cls, tokens: int, device, *, sample_rows: int = 4, world_size: int = 1, buffers=None,
-                 hyperconnection_lowrank: int = 320, gguf_experts=None):
+                 hyperconnection_lowrank: int = 320, gguf_experts=None, gguf_projection_library=None):
         if type(tokens) is not int or tokens <= 0:
             raise ValueError("decoder token capacity must be a positive integer")
         if type(sample_rows) is not int or sample_rows <= 0:
@@ -202,7 +202,7 @@ class DecoderScratch:
             from ignition.components.gguf_moe import GgufMoeWorkspace
 
             expert_workspace = GgufMoeWorkspace.allocate(gguf_experts, chunk_rows=min(tokens, 8),
-                                                        top_k=10, buffers=stages[3])
+                                                        top_k=10, buffers=stages[3], projection_library=gguf_projection_library)
         hc = HyperconnectionScratch.allocate(tokens, device, buffers=stages[4],
                                             projected=projected, block_input=block_input, lowrank=hyperconnection_lowrank)
         buffers.join(*stages)
@@ -242,7 +242,8 @@ class PreparedDecoder:
                  max_cache_pages: int | None = None,
                  residual_output: torch.Tensor | None = None, verification: bool = False,
                  gdn_records=None, gdn_in_place: bool = False, runtime=None, vocabulary_runtime=None, coordinator=None,
-                 sampling_workspace=None, scoring=None, actlize_library=None, actlize_qsa_library=None):
+                 sampling_workspace=None, scoring=None, actlize_library=None, actlize_qsa_library=None,
+                 gguf_projection_library=None):
         from ignition.components.embedding import PreparedEmbedding
         from ignition.components.linear import UnquantizedProjection
 
@@ -301,7 +302,7 @@ class PreparedDecoder:
                 self.gdn_operations[index] = attention
             moe = PreparedQwenMoe(source, layer_weights.moe, session=session, name=f"{prefix}.moe",
                 scratch=scratch.moe, workspace=workspaces if scratch.gguf_experts is None else scratch.gguf_experts,
-                projection_workspace=workspaces)
+                projection_workspace=workspaces, gguf_projection_library=gguf_projection_library)
             self.layers.append((attn_hc, attention, mlp_hc, moe))
             if runtime is not None:
                 from ignition.components.collectives import PreparedAllReduce

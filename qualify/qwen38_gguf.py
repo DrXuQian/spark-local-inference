@@ -114,7 +114,7 @@ class PartialDecoder:
     def __init__(self, weights, scratch, state, cache, rotary, table, workspace, completion, frame, sequence,
                  *, session, name, max_cache_pages, residual_output=None, verification=False,
                  gdn_records=None, gdn_in_place=False, sampling_workspace=None,
-                 actlize_library=None, actlize_qsa_library=None, **collectives):
+                 actlize_library=None, actlize_qsa_library=None, gguf_projection_library=None, **collectives):
         self.state, self.weights = state, weights
         self.scratch = s = replace(scratch, sample_hidden=scratch.hidden) if verification else scratch
         self.residual_output = residual_output
@@ -145,7 +145,8 @@ class PartialDecoder:
                     actlize_library=actlize_library)
                 self.gdn_operations[index] = attention
             moe = PreparedQwenMoe(source, moe_weights, session=session, name=prefix + '.moe',
-                scratch=s.moe, workspace=s.gguf_experts, projection_workspace=workspace)
+                scratch=s.moe, workspace=s.gguf_experts, projection_workspace=workspace,
+                gguf_projection_library=gguf_projection_library)
             ah.prepare_combine_norm(mh, priming_state=s.residual, session=session, name=prefix + '.attn_combine')
             self.layers.append((ah, attention, mh, moe))
         self.final = PreparedHyperconnection(weights.final_mixer, replace(s.hyperconnection, block_input=s.hidden),
@@ -272,13 +273,25 @@ def prepare(args):
         kv_dtype = torch.bfloat16 if args.actlize_qsa else torch.float8_e4m3fn
         operators.update(qsa='actlize' if args.actlize_qsa else 'b12x', kv_dtype=str(kv_dtype))
         attention_libraries = dict(actlize_library=library, actlize_qsa_library=library if args.actlize_qsa else None)
+        projection_library = None
+        if args.quactlize_abi_library is not None:
+            from quactlize.cuda_compat import CudaPpuMatmulLibrary
+
+            if torch.cuda.get_device_capability(0) != (12, 0):
+                raise ValueError('the NVIDIA implementation of the PPU ABI is qualified on SM120')
+            projection_library = CudaPpuMatmulLibrary(args.quactlize_abi_library)
+            with args.quactlize_abi_library.open('rb') as source:
+                operators['matmul'] = dict(abi='qpm_v1', target='nvidia',
+                    library=hashlib.file_digest(source, 'sha256').hexdigest())
+        attention_libraries['gguf_projection_library'] = projection_library
         weights = SimpleNamespace(blocks=tuple(blocks), embedding=embedding, head=head,
             final_mixer=mtp.module.hyper_connection_mixer, ple_caps=ple_caps, shard=TensorParallelShard(0, 1))
         state = HybridStatePool.allocate(5, 'cuda:0', speculative_tokens=7, storage=storage, kv_dtype=kv_dtype)
         state = replace(state, gdn=MappingProxyType({i: state.gdn[i] for i in args.layers if i % 4 != 3}))
         requests = DeviceRequestState.allocate('cuda:0', capacity=1)
         inputs = DecoderInputs.allocate('cuda:0', context=1024, tokens=64, capacity=1)
-        scratch = DecoderScratch.allocate(64, torch.device('cuda:0'), sample_rows=8, gguf_experts=blocks[0][3].experts)
+        scratch = DecoderScratch.allocate(64, torch.device('cuda:0'), sample_rows=8, gguf_experts=blocks[0][3].experts,
+            gguf_projection_library=projection_library)
         workspace = ScratchArena('cuda:0')
         rotary = RotaryTables.allocate(config, 1024, 'cuda:0')
         # Snapshot rows borrow KV backing in native serving. Reserve enough
@@ -403,4 +416,6 @@ if __name__ == '__main__':
                         help='qualify the actlizeLA SM120 GDN library inside complete serving graphs')
     parser.add_argument('--actlize-qsa', action='store_true',
                         help='also bind external QSA, with BF16 KV pages and matching snapshots')
+    parser.add_argument('--quactlize-abi-library', type=Path,
+                        help='qualify the explicit NVIDIA implementation of PPU matmul records')
     prepare(parser.parse_args())

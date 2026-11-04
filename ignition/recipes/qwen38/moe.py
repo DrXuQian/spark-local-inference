@@ -173,7 +173,7 @@ class PreparedQwenMoe:
 
     def __init__(self, source, weights: QwenMoeWeights, *, session: PreparationSession, name: str,
                  scratch: QwenMoeScratch | None = None, workspace: ScratchArena | torch.Tensor | None = None,
-                 projection_workspace: ScratchArena | torch.Tensor | None = None):
+                 projection_workspace: ScratchArena | torch.Tensor | None = None, gguf_projection_library=None):
         if (weights.experts.num_experts, weights.experts.hidden_size) != (512, 2560):
             raise ValueError("Qwen MoE requires all 512 experts with hidden size 2560")
         if tuple(weights.router.shape) != (512, 2560):
@@ -195,7 +195,8 @@ class PreparedQwenMoe:
             scratch=scratch.shared, projection_workspace=projection_workspace)
         self.experts = PreparedRoutedExperts(source, weights.experts, self.router.ids,
             self.router.weights, self.routed_output, session=session, name=f"{name}.experts", workspace=workspace,
-            router_plan=self.routing.plan)
+            router_plan=self.routing.plan,
+            **({'projection_library': gguf_projection_library} if gguf_projection_library is not None else {}))
         self.concurrent_shared = None
         if (source.shape[0] <= 256 and isinstance(workspace, ScratchArena) and workspace is projection_workspace
                 and workspace.overlap):

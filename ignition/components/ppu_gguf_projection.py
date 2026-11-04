@@ -2,9 +2,9 @@
 
 """Preparation bridge to QUactlize's distinct PPU raw-GGUF matmul ABI.
 
-This component requires an explicitly loaded quactlize.compat.native.Library.
-It does not select a device backend or substitute NVIDIA operators. Complete
-PPU recipe/export qualification remains required before enabling it in a recipe.
+The caller supplies quactlize.compat.native.Library or the explicitly selected
+NVIDIA implementation of those same records. Each library supplies its own
+workspace query. Physical PPU recipe/export qualification remains required.
 """
 
 import ctypes as C
@@ -80,7 +80,7 @@ def _buffers(source, raw, ids, output, workspace, error, stream):
 
 
 def projection_sizes(library, source, weight: GgufWeight, output, *, ids=None):
-    """Query the actual PPU capacity/route; never borrow NVIDIA scratch sizes."""
+    """Query the selected implementation's capacity, route and scratch sizes."""
     from quactlize.compat.native import Sizes
 
     problem = _problem(source, weight, output, ids)

@@ -49,6 +49,26 @@
     and warm with private initialized input/IDs. Thirty-one actual host-contract
     and Torch fake-export checks pass; no PPU kernel is executed by those checks.
 
+[x] Qualify the PPU matmul records through an explicitly selected NVIDIA
+    QUactlize implementation. The companion feat/nvidia-ppu-matmul-abi branch
+    preserves the old API and original weight bytes. All 132 CUDA operator
+    cases and four Flare capture cases pass; isolated wheel installation
+    includes the native records and headers. Actual block-44 Q5_1 down experts
+    pass 18 padded-stride/AOT-rebinding cases at capacities 1/2/4/6/9/64.
+    Thirty-six standalone Rust replays compare 6571524 bytes each exactly,
+    without replay allocation or Python/Torch/operator-host-library mapping.
+    This is NVIDIA boundary validation, not PPU grouped-TC qualification.
+
+[x] Compose the new QUactlize records with external GDN/QSA in target blocks
+    44/47 plus shared-Q8 MTP. All 68 native request choices and four cases'
+    207277056-byte state fingerprints match the preceding package exactly.
+    Service/replay ratios are 0.9720-0.9757. Fixed/adaptive traces have no hot
+    allocation, recapture, module loading, synchronization API or out-of-graph
+    compute; maximum consecutive-round gaps are 16.480/16.320 us. Fixed rounds
+    retain 676 kernels and take 12.248 ms median in this trace; this is not an
+    operator-speed improvement over the previous 11.597 ms trace. The normal
+    recipe does not yet select the PPU library; actual target export is unrun.
+
 [ ] Qualify that PPU bridge's prepare, changing addresses/IDs, numerical output,
     compiled handle rebinding and native package replay on the target device.
     Four explicit device tests are supplied but unrun. Bind the complete recipe

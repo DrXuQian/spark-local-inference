@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Replay external actlizeLA kernels after preparation and Python have exited.
+//! Replay external operator kernels after preparation and Python have exited.
 
 mod allocation_watch;
 
@@ -93,7 +93,8 @@ fn main() -> Result<()> {
     let count = match expected.kind.as_str() {
         "actlize-gdn-export-v1" => 15,
         "actlize-qsa-export-v1" => 17,
-        _ => return Err("unknown actlize qualification fixture".into()),
+        "quactlize-ppu-abi-nvidia-v1" => 18,
+        _ => return Err("unknown external operator qualification fixture".into()),
     };
     assert_eq!(expected.cases.len(), count);
     let allocations = allocation_watch::AllocationWatch::new()?;
@@ -143,6 +144,8 @@ fn main() -> Result<()> {
         !maps.contains("libpython")
             && !maps.contains("libtorch")
             && !maps.contains("libactlize_la_serving")
+            && !maps.contains("_cuda_compat")
+            && !maps.contains("libncp_quactlize")
     );
     println!(
         "{} native {} replays passed; no Python, Torch or operator host library",

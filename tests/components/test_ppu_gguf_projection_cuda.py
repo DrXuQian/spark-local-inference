@@ -24,6 +24,10 @@ pytestmark = pytest.mark.skipif(
 @pytest.mark.parametrize('m', [1, 9])
 def test_native_prepare_and_replay_with_changing_routes_and_addresses(qtype, m):
     library = native.Library(os.environ['FLARE_TEST_PPU_MATMUL_LIBRARY'])
+    check_captured_projection(library, qtype, m)
+
+
+def check_captured_projection(library, qtype, m):
     kind = gguf.GGMLQuantizationType(qtype)
     block, size = gguf.GGML_QUANT_SIZES[kind]
     n = k = 640

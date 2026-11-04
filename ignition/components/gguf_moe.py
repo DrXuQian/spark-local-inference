@@ -58,7 +58,7 @@ class GgufMoeWorkspace:
     projected: torch.Tensor
 
     @classmethod
-    def allocate(cls, experts: GgufExperts, *, chunk_rows: int, top_k: int, buffers=None):
+    def allocate(cls, experts: GgufExperts, *, chunk_rows: int, top_k: int, buffers=None, projection_library=None):
         if (type(chunk_rows) is not int or chunk_rows < 1 or type(top_k) is not int
                 or not 0 < top_k <= experts.num_experts):
             raise ValueError('GGUF expert workspace requires positive rows and valid top-k')
@@ -71,8 +71,14 @@ class GgufMoeWorkspace:
         # Query uses geometry only, including these small temporary token/ID views.
         source = torch.empty((chunk_rows, hidden), dtype=torch.bfloat16, device=device)
         ids = torch.empty((chunk_rows, top_k), dtype=torch.int32, device=device)
-        required = max(projection_workspace_bytes(source, experts.gate_up, ids=ids),
-                       projection_workspace_bytes(intermediate, experts.down, ids=ids))
+        if projection_library is None:
+            required = max(projection_workspace_bytes(source, experts.gate_up, ids=ids),
+                           projection_workspace_bytes(intermediate, experts.down, ids=ids))
+        else:
+            from .ppu_gguf_projection import projection_sizes
+
+            required = max(projection_sizes(projection_library, source, experts.gate_up, gate_up, ids=ids)[1].workspace_bytes,
+                projection_sizes(projection_library, intermediate, experts.down, projected, ids=ids)[1].workspace_bytes)
         return cls(empty((required,), torch.uint8), gate_up, intermediate, projected)
 
     @property
@@ -85,7 +91,7 @@ class PreparedGgufRoutedExperts:
 
     def __init__(self, source, experts: GgufExperts, ids, weights, output, *, session, name,
                  workspace: GgufMoeWorkspace, router_plan=None,
-                 a4_prefill=False, routing=None, router=None, route_output=None):
+                 a4_prefill=False, routing=None, router=None, route_output=None, projection_library=None):
         if a4_prefill or routing is not None or router is not None or route_output is not None:
             raise ValueError('GGUF experts require external routing and 16-bit activations')
         if not isinstance(workspace, GgufMoeWorkspace):
@@ -117,10 +123,18 @@ class PreparedGgufRoutedExperts:
             end = min(start + capacity, tokens)
             count = end - start
             if count not in prepared:
-                up = PreparedGgufProjection(source[start:end], experts.gate_up, workspace.gate_up[:count],
-                    workspace=workspace.matmul, ids=ids[start:end])
-                down = PreparedGgufProjection(workspace.intermediate[:count], experts.down,
-                    workspace.projected[:count], workspace=workspace.matmul, ids=ids[start:end])
+                if projection_library is None:
+                    up = PreparedGgufProjection(source[start:end], experts.gate_up, workspace.gate_up[:count],
+                        workspace=workspace.matmul, ids=ids[start:end])
+                    down = PreparedGgufProjection(workspace.intermediate[:count], experts.down,
+                        workspace.projected[:count], workspace=workspace.matmul, ids=ids[start:end])
+                else:
+                    from .ppu_gguf_projection import PreparedPpuGgufProjection
+
+                    up = PreparedPpuGgufProjection(projection_library, source[start:end], experts.gate_up,
+                        workspace.gate_up[:count], workspace=workspace.matmul, ids=ids[start:end])
+                    down = PreparedPpuGgufProjection(projection_library, workspace.intermediate[:count], experts.down,
+                        workspace.projected[:count], workspace=workspace.matmul, ids=ids[start:end])
                 prepared[count] = up, down
             self.calls.append((start, end, *prepared[count]))
         self.activation_plan = hyperconnection.plan(hyperconnection.Caps(device=source.device,

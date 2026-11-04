@@ -752,7 +752,7 @@ earlier isolated tails, or qualify the remaining PPU operators and target export
 
 | Operation | Required contract | Current PPU source and remaining work |
 | --- | --- | --- |
-| GGUF projections and MoE | Q5_1, Q8_0, Q2_K–Q6_K; H2560/I640; 512 experts, top10; BF16 operands/output, FP32 accumulation | New QU raw path admits these shapes. Canonical packing retains stricter alignment. Bind the new ABI with prepared custom ops and verify each capacity on the target. |
+| GGUF projections and MoE | Q5_1, Q8_0, Q2_K–Q6_K; H2560/I640; 512 experts, top10; BF16 operands/output, FP32 accumulation | New QU raw path admits these shapes. Canonical packing retains stricter alignment. Prepared bindings and native replay pass with the explicit NVIDIA implementation of the new records; each capacity still needs PPU validation. |
 | Expert workspace | Resident packed weights, bounded expansion, changing device IDs | New QU scratch is linear in routed rows; weight expansion is bounded by four experts × 512 output columns. M≤8 selects SIMT; larger M selects grouped TC. Do not reuse NVIDIA's eight-row prefill chunk without checking this route change. |
 | Router | FP32 route weights, original tie rule, inactive rows | New QU helper supports 512/top10, but ties prefer lower IDs; Flare prefers higher IDs. No live-count operand is supplied, so mask padded rows explicitly. |
 | SwiGLU | BF16 SiLU followed by multiply and BF16 output | New QU helper rounds only after multiplication. It is not equivalent to Qwen's `round_silu=True`. For BF16 gate −4.96875 and up 1.5, results are −0.051513671875 versus −0.0517578125. |
@@ -786,17 +786,18 @@ the native handle; compilation workers receive only tensor metadata and the
 integer binding. The native `prepare` executes and synchronizes a warmup, so the
 bridge supplies private initialized input and route IDs before any graph is
 captured. The component exposes its sticky-error storage for the existing
-complete-round error guard; recipe integration remains pending.
-There is no NVIDIA fallback or framework-owned matmul kernel.
+complete-round error guard. An explicitly supplied projection library now reaches
+target and shared-MTP expert preparation, including each scratch query. Normal
+recipe inputs do not yet select the PPU implementation; target qualification
+remains required. There is no automatic fallback or framework-owned matmul kernel.
 
 Thirty-one checks pass against the actual QUactlize host contract and Torch
 fake export: Qwen expert/dense shapes, SIMT/TC capacity selection, padded strides,
 field-wise buffer extents, write alias rejection and all three mutable operands.
-These do not execute PPU kernels or prove compiled handle rebinding, target
-export or device numerical behavior. The bridge is not yet enabled in the model
-recipe. Four device cases are supplied for native preparation and captured
+These host checks do not execute PPU kernels or prove compiled handle rebinding,
+target export or device numerical behavior. Four device cases are supplied for native preparation and captured
 replay with different addresses, duplicate/invalid/inactive IDs and sticky-error
-reset, using the existing GGUF projection numerical bound; they remain unrun.
+reset, using the existing GGUF projection numerical bound; they remain unrun on PPU.
 With the matching PPU Torch/QUactlize installation and assigned device, run:
 
 ```sh
@@ -808,6 +809,49 @@ FLARE_RUN_CUDA_TESTS=1 CUDA_VISIBLE_DEVICES=0 \
 FLARE_TEST_PPU_MATMUL_LIBRARY=/path/libncp_quactlize.so \
 pytest tests/components/test_ppu_gguf_projection_cuda.py
 ```
+
+The separate QUactlize
+[`feat/nvidia-ppu-matmul-abi` branch](https://github.com/DrXuQian/QUactlize/tree/feat/nvidia-ppu-matmul-abi)
+provides `CudaPpuMatmulLibrary`: CUDA-named entry points consuming the exact
+88/120/152-byte PPU records, with field-wise conversion to NVIDIA execution.
+The existing NVIDIA API remains available. Both `setup.py` and `pyproject.toml`
+package the shared Python records and public headers; an isolated wheel install
+imports the new interface and queries it successfully. Its scratch query accounts
+for selected-slot dequantization and cuBLAS workspace. This does not model PPU
+grouped-TC memory or performance, and does not change the GGUF bytes.
+
+On SM120, 132 QUactlize CUDA cases and four Flare capture cases pass, including
+padded strides, changing addresses, repeated/invalid IDs and sticky errors. The
+`qualify.quactlize_abi_export` fixture loads all 512 actual block-44 Q5_1 down
+experts (600 MiB raw), with capacities 1/2/4/6/9/64 and padded input/ID/output
+rows. Eighteen cases retain the independent GGUF-to-BF16/CPU-FP64 bound after
+AOT cache reuse with fresh native handles. Thirty-six standalone Rust replays
+compare 6571524 bytes each exactly, with no replay allocation or Python, Torch
+or operator host library loaded. This validates the records and framework
+boundary on NVIDIA; physical PPU execution remains unrun.
+
+To exercise the same records in the actual partial target plus shared-MTP
+package, pass `--quactlize-abi-library /path/_cuda_compat.so` to
+`qualify.qwen38_gguf`, with that QUactlize package installed. It is an explicit
+NVIDIA qualification option and composes with `--actlize-library` and
+`--actlize-qsa`. The existing NVIDIA expert chunk limit of eight remains;
+PPU M<=8 selects SIMT, so grouped-TC prefill needs its own complete-forward
+measurement before choosing a target chunk size.
+
+That combined package now preserves all 68 native HTTP choices and four native
+replay cases' complete 207277056-byte state fingerprints exactly against the
+preceding external-GDN/QSA package. Service/replay ratios are 0.9720–0.9757;
+both include the same completion boundary and stay within the 5% overhead
+limit. The fixed trace has 102 rounds, 676 kernels per round and 12.248 ms
+median kernel span. Its 94 consecutive pairs have median 15.488 us, p95
+16.352 us and maximum 16.480 us between rounds. Adaptive execution covers
+542 rounds at widths 1/2/4/6 (507/33/1/1); its 498 consecutive width-one pairs
+have median 15.296 us, p95 16.128 us and maximum 16.320 us. Both traces contain
+no execution-time allocation, recapture, module loading, synchronization API
+or out-of-graph compute. The graph interval remains close to the previous
+package, but the 12.248 ms kernel span is higher than its 11.597 ms trace;
+this qualification makes no operator-speed improvement claim. Full-model
+throughput, literal zero idle and physical PPU execution remain unqualified.
 
 A further SDK 2.1.1 host audit finds hg-prefixed declarations for all 66 entry
 names resolved unconditionally by the native package driver. Compiled header

@@ -63,7 +63,7 @@ def fixture(library):
 
 def save(root, name, tensor):
     path = name + '.bin'
-    (root / path).write_bytes(tensor.contiguous().view(torch.uint8).cpu().numpy().tobytes())
+    (root / path).write_bytes(tensor.contiguous().reshape(-1).view(torch.uint8).cpu().numpy().tobytes())
     return path
 
 
