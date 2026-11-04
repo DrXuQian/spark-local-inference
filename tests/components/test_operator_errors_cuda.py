@@ -14,7 +14,7 @@ import torch
 from ignition.components.completion import CompletionOutputs
 from ignition.components.gguf_embedding import PreparedGgufEmbedding
 from ignition.components.gguf_weights import GgufWeight
-from ignition.components.operator_errors import GuardedForward, OPERATOR_FAILURE, accumulate_errors
+from ignition.components.operator_errors import ErrorAccumulator, GuardedForward, OPERATOR_FAILURE, accumulate_errors
 from ignition.components.sampling import DeviceRequestState, PreparedSampling, RequestAdmission
 from ignition.preparation.aot import ForwardCache
 from ignition.preparation.execution import GraphSignature, PreparedExecution
@@ -23,11 +23,24 @@ from ignition.preparation.execution import GraphSignature, PreparedExecution
 pytestmark = pytest.mark.skipif(os.environ.get('FLARE_RUN_CUDA_TESTS') != '1', reason='explicit CUDA assignment required')
 
 
+class StickyLookup:
+    """Convert actual CUDA lookup faults to the PPU ABI's sticky bit semantics."""
+
+    def __init__(self, lookup):
+        self.lookup = lookup
+        self.device_errors = (torch.zeros_like(lookup.device_error),)
+
+    def __call__(self):
+        self.lookup()
+        accumulate_errors(self.lookup.device_errors, self.device_errors[0])
+
+
 class LateFailure:
     def __init__(self, sampler, lookup, ids):
         self.sampler, self.lookup, self.ids = sampler, lookup, ids
-        self.sticky = torch.zeros(1, dtype=torch.int32, device=ids.device)
-        self.device_errors = (self.sticky,)
+        self.errors = ErrorAccumulator(lookup)
+        self.device_errors = self.errors.device_errors
+        self.sticky = self.device_errors[0]
 
     def __call__(self):
         # The decoder normally consumes the pending token before sampling.
@@ -35,15 +48,16 @@ class LateFailure:
         state.pending_token.copy_(torch.where(state.status == 1, -1, state.pending_token))
         self.sampler()
         self.lookup()
-        accumulate_errors(self.lookup.device_errors, self.sticky)
+        self.errors()
         # A later valid call clears the native per-call flag. The first failure
         # must survive, just as it must across repeated learned draft calls.
         self.ids.zero_()
         self.lookup()
-        accumulate_errors(self.lookup.device_errors, self.sticky)
+        self.errors()
 
 
-def test_late_lookup_failure_survives_repeated_calls_and_slot_reuse(tmp_path):
+@pytest.mark.parametrize('sticky', [False, True])
+def test_late_lookup_failure_survives_repeated_calls_and_slot_reuse(tmp_path, sticky):
     device = torch.device('cuda:0')
     torch.cuda.set_device(device)
     state = DeviceRequestState.allocate(device, capacity=4, vocab_size=8)
@@ -62,7 +76,7 @@ def test_late_lookup_failure_survives_repeated_calls_and_slot_reuse(tmp_path):
     ids = torch.zeros(1, dtype=torch.int64, device=device)
     lookup = PreparedGgufEmbedding(weight, ids, torch.zeros(1, 32, dtype=torch.bfloat16, device=device),
         session=None, name='late-foreign-op')
-    body = LateFailure(sampler, lookup, ids)
+    body = LateFailure(sampler, StickyLookup(lookup) if sticky else lookup, ids)
     guarded = GuardedForward(body, state, completion, frame, sequence)
     cache = ForwardCache(namespace={'model': 'late-external-failure'}, device=device, root=tmp_path,
                          compile_workers=1)
@@ -128,6 +142,19 @@ def test_late_lookup_failure_survives_repeated_calls_and_slot_reuse(tmp_path):
             assert completion.records[0, 2, 2:4].tolist() == [6, 5]
             assert completion.records[0, 2, 5:7].tolist() == [terminal, 5 if terminal == 3 else 0]
             assert completion.records[0, 2, 8].item() == 0
+
+        # Preserve an earlier error produced in this same round, before the
+        # failing external operation, rather than replacing its diagnostic.
+        for slot in range(4):
+            state.admit(slot, RequestAdmission(35, 50 + slot, max_new_tokens=8, top_k=8), ())
+        epochs.fill_(35); live.fill_(2); ids.fill_(8); logits.fill_(torch.nan)
+        frame.fill_(0); sequence.fill_(160)
+        graph.replay(); torch.cuda.synchronize()
+        for slot in (0, 2):
+            assert completion.records[0, slot, 5:7].tolist() == [3, 1]
+            assert completion.records[0, slot, 2:4].eq(0).all().item()
+            assert completion.records[0, slot, 8].item() == 0
+        logits.zero_()
 
         # Use the actual native two-frame transport and completion validator.
         # A second queued graph must preserve a terminal error, then the same

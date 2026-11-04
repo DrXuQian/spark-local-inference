@@ -230,19 +230,15 @@ class PreparedMTP:
         self.attention.rebind_pages_for_preparation(state)
 
     def prepare_errors(self, *operators):
-        from ignition.components.operator_errors import device_errors
+        from ignition.components.operator_errors import ErrorAccumulator
 
-        self.error_inputs = device_errors(*operators)
-        self.device_errors = ((torch.zeros(1, dtype=torch.int32, device=self.scratch.residual.device),)
-                              if self.error_inputs else ())
+        self.errors = ErrorAccumulator(*operators)
+        self.device_errors = self.errors.device_errors
 
     def record_errors(self):
         # One proposal owner runs repeatedly in a round. Its ABI may clear a
         # per-call flag, so preserve every failure until the outer graph ends.
-        from ignition.components.operator_errors import accumulate_errors
-
-        if self.error_inputs:
-            accumulate_errors(self.error_inputs, self.device_errors[0])
+        self.errors()
 
     def __call__(self):
         s = self.scratch

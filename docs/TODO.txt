@@ -45,9 +45,14 @@
     Actual QU lookup faults pass AOT/capture and native two-frame validation,
     including a later successful call, queued terminal errors and slot reuse.
     Re-exported native serving preserves all 68 HTTP cases and four replay
-    cases' complete state exactly. Median GPU cost rises 0.51-0.64%; service
+    cases' complete state exactly. Median GPU cost rises 0.52-0.53%; service
     overhead remains within 5%, with no extra host wait or graph launch.
-    PPU adapters must still expose and reset their ABI's error storage.
+    Reset underlying sticky flags together with the MTP accumulator at each
+    new graph boundary; actual CUDA faults also exercise the PPU sticky-bit
+    contract. PPU adapters must expose all their ABI's error storage.
+    The latest fixed trace has 668 kernels per round and 15.697 us median /
+    16.577 us maximum inter-round gaps. Adaptive widths 1/2/4/6 also pass;
+    the isolated 108.259 us tail still needs attribution.
 
 [x] Add explicit BF16 cache and hybrid-snapshot storage for PPU preparation.
     Twelve storage/maintenance cases pass, including capacity 2/32, scattered
@@ -64,8 +69,9 @@
     requires ordinary attention; ratio-four QSA uses actlizeLA and explicit
     BF16 cache/snapshot dtypes. Retain per-layer verification records, commit
     consumed input counts and handle zero-prefix convolution rollback exactly
-    once. Intermediate prefill checkpoint exports remain unsupported by the
-    current external GDN ABI. Component export is not a complete-model adapter.
+    once. The current Qwen decoder sets checkpoint_export=False; the external
+    ABI's lack of intermediate prefill checkpoint exports does not block that
+    path. Component export is not a complete-model adapter.
 
 [x] Inspect remaining PPU seams: FA2 paged KV requires a multiple of 256,
     while current Flare uses 64; the available narrow FA3 build disables

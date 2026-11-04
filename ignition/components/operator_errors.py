@@ -23,6 +23,21 @@ def accumulate_errors(flags, output):
         output.logical_or_(flag.ne(0).any())
 
 
+class ErrorAccumulator:
+    """Retain repeated-call errors and expose every flag for round reset."""
+
+    def __init__(self, *operators):
+        self.inputs = device_errors(*operators)
+        # An ABI may retain its bits until the caller clears them. Exposing
+        # only our accumulator would leave those source flags stale next round.
+        self.device_errors = ((torch.zeros(1, dtype=torch.int32, device=self.inputs[0].device),
+                               *self.inputs) if self.inputs else ())
+
+    def __call__(self):
+        if self.inputs:
+            accumulate_errors(self.inputs, self.device_errors[0])
+
+
 class GuardedForward:
     """A batch-global error fails every live completion produced by this frame.
 

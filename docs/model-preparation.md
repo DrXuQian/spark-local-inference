@@ -469,6 +469,10 @@ the native scheduler drains and retires their state without publishing a prefix.
 This is request failure handling, not speculative rollback of a surviving request.
 No host flag polling or additional graph launch is required. Actual external
 lookup faults cover AOT, capture, two queued native frames and slot reuse.
+An MTP accumulator also exposes its source flags to the graph boundary reset.
+This handles sticky PPU errors without carrying a previous request's failure
+into a newly admitted generation. Both clearing and sticky-bit semantics are
+tested using actual CUDA lookup faults; this does not execute PPU kernels.
 
 For a complete local checkpoint, select a directory containing `manifest.json`:
 
@@ -550,15 +554,18 @@ After adding captured external-error handling, all 18 MTP and 50 ordinary
 request cases retain the baseline tokens and logprobs exactly. Four paired
 native replay cases retain identical completion records and SHA-256 fingerprints
 for all 40 state/KV ranges (165465088 bytes per case). Their median GPU-round
-cost increases by 0.51–0.64%. The updated service/replay ratios are
-0.9826–1.0057; all four remain within the 5% overhead limit. Hashing and state
-readback are outside the measured rounds. These comparisons use the same partial
+cost increases by 0.52–0.53% with sticky-source reset included. The updated
+service/replay ratios are 0.9953–1.0012; all four remain within the 5% overhead
+limit. Hashing and state readback are outside the measured rounds. These comparisons use the same partial
 checkpoint, graph capacities, fixed five drafts and RAM PLE configuration.
-The updated 102-round Nsight trace has 665 kernels per complete width-six graph.
-Across 94 consecutive pairs, inter-round gaps are median 15.136 us, p95
-16.256 us and maximum 16.352 us. There is no execution-time GPU allocation,
-recapture, module loading or out-of-graph compute. Internal dependency gaps
-remain; this does not assert literal zero idle or qualify other capacities.
+The updated 102-round Nsight trace has 668 kernels per complete width-six graph.
+Across 94 consecutive pairs, inter-round gaps are median 15.697 us, p95
+16.417 us and maximum 16.577 us. A separate adaptive trace exercises 573 rounds
+at widths 1/2/4/6. Its 560 consecutive width-one pairs have median 15.392 us,
+p95 16.160 us and maximum 108.259 us; this isolated tail remains unattributed.
+Neither trace has execution-time GPU allocation, recapture, module loading or
+out-of-graph compute. Internal dependency gaps remain; this does not assert
+literal zero idle or qualify other capacities.
 
 Run that comparison against a fresh service using `--mtp-draft-tokens 5
 --no-mtp-adaptive-verification`. The native tool explicitly trusts only the
@@ -606,6 +613,9 @@ reference bounds. After Python exits, 30 native replays compare 16024872 bytes
 per case exactly, with no execution allocation or Python, Torch or actlizeLA
 host library mappings. This qualifies that component boundary on SM120;
 it does not qualify complete-model actlizeLA substitution or PPU execution.
+The Qwen decoder explicitly disables intermediate prefill checkpoint exports,
+which the external GDN ABI does not implement. That missing feature is not a
+requirement of the current Qwen path; preserve the disabled setting when binding it.
 
 With the checked `actlize_la.serving` package installed and its separate SM120
 native library built, use an empty output directory:
@@ -659,6 +669,14 @@ clear and consume them at the intended graph boundary, retain all buffers and
 handles, and propagate failures through existing request state. Never read
 routing decisions back to the host. actlizeLA's supported build targets are
 `ppu10`, `ppu15` and `cuda_sm120`; a PPU1.7 target is a separate qualification.
+
+The current NVIDIA and new PPU matmul C ABIs require field-by-field bindings.
+Their problem records are 52 and 88 bytes, and their sizes records are 80 and
+120 bytes. Both buffer records are 152 bytes, but input/raw/ID/output byte-count
+fields have different offsets. Reinterpreting one as the other is invalid;
+the GGUF weight bytes remain unchanged. Prepared PPU custom operations must
+also preserve the explicit element strides and query the selected library's
+scratch requirements instead of reusing NVIDIA workspace assumptions.
 
 A further SDK 2.1.1 host audit finds hg-prefixed declarations for all 66 entry
 names resolved unconditionally by the native package driver. Compiled header
