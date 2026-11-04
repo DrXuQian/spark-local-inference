@@ -262,28 +262,20 @@ def prepare(args):
         frame = torch.zeros(1, dtype=torch.int32, device='cuda')
         sequence = torch.zeros(1, dtype=torch.int64, device='cuda')
         table, ple_caps = fixture_table(output, 64, storage, sequence, frame)
-        library = None
-        operators = {'gdn': 'b12x'}
-        if args.actlize_library is not None:
-            from ignition.preparation.actlize import ActlizeLibrarySpec
+        from ignition.preparation.actlize import ActlizeLibrarySpec
+        from ignition.preparation.quactlize import QuactlizeLibrarySpec
+        from ignition.preparation.qwen38_gguf import GgufInputs
 
-            library_spec = ActlizeLibrarySpec.read(args.actlize_library)
-            library = library_spec.load('cuda:0')
-            operators = library_spec.identity()
+        operator_inputs = GgufInputs(args.target_shard, args.mtp, args.frontend, 'pread',
+            None if args.actlize_library is None else ActlizeLibrarySpec.read(args.actlize_library),
+            None if args.quactlize_abi_library is None else QuactlizeLibrarySpec.read(args.quactlize_abi_library))
+        attention_libraries = operator_inputs.load_operators('cuda:0')
+        operators = operator_inputs.operator_identity() or {'gdn': 'b12x'}
         kv_dtype = torch.bfloat16 if args.actlize_qsa else torch.float8_e4m3fn
         operators.update(qsa='actlize' if args.actlize_qsa else 'b12x', kv_dtype=str(kv_dtype))
-        attention_libraries = dict(actlize_library=library, actlize_qsa_library=library if args.actlize_qsa else None)
-        projection_library = None
-        if args.quactlize_abi_library is not None:
-            from quactlize.cuda_compat import CudaPpuMatmulLibrary
-
-            if torch.cuda.get_device_capability(0) != (12, 0):
-                raise ValueError('the NVIDIA implementation of the PPU ABI is qualified on SM120')
-            projection_library = CudaPpuMatmulLibrary(args.quactlize_abi_library)
-            with args.quactlize_abi_library.open('rb') as source:
-                operators['matmul'] = dict(abi='qpm_v1', target='nvidia',
-                    library=hashlib.file_digest(source, 'sha256').hexdigest())
-        attention_libraries['gguf_projection_library'] = projection_library
+        if not args.actlize_qsa:
+            attention_libraries['actlize_qsa_library'] = None
+        projection_library = attention_libraries['gguf_projection_library']
         weights = SimpleNamespace(blocks=tuple(blocks), embedding=embedding, head=head,
             final_mixer=mtp.module.hyper_connection_mixer, ple_caps=ple_caps, shard=TensorParallelShard(0, 1))
         state = HybridStatePool.allocate(5, 'cuda:0', speculative_tokens=7, storage=storage, kv_dtype=kv_dtype)

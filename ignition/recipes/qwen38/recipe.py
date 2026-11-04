@@ -107,6 +107,8 @@ def prepare_gguf(snapshot, plan, **kwargs):
     inputs = GgufInputs.read(snapshot)
     if inputs.actlize != plan.recipe.actlize:
         raise ValueError('GGUF actlizeLA selection changed after memory planning')
+    if inputs.quactlize != plan.recipe.quactlize:
+        raise ValueError('GGUF QUactlize selection changed after memory planning')
     return prepare(snapshot, plan, gguf_inputs=inputs, **kwargs)
 
 
@@ -129,19 +131,21 @@ def gguf_recipe(manifest, directory):
     import hashlib
     import json
     from ignition.preparation.qwen38 import ARCHITECTURE
-    from ignition.preparation.qwen38_gguf import device_weight_bytes
+    from ignition.preparation.qwen38_gguf import device_weight_bytes, operator_identity
 
     draft = device_weight_bytes(manifest.draft)
     actlize = manifest.actlize
+    quactlize = manifest.quactlize
+    operators = operator_identity(actlize, quactlize)
     revision = manifest.headers_sha256
-    if actlize is not None:
-        revision = hashlib.sha256((revision + json.dumps(actlize.identity(), sort_keys=True)).encode()).hexdigest()
+    if operators is not None:
+        revision = hashlib.sha256((revision + json.dumps(operators, sort_keys=True)).encode()).hexdigest()
     checkpoint = Checkpoint(alias='qwen3.8-flash-gguf', repository=str(directory),
         revision=revision[:40], architecture=ARCHITECTURE,
         stored_bytes=sum(shard.file_size for checkpoint in (manifest, manifest.draft) for shard in checkpoint.shards),
         device_bytes=device_weight_bytes(manifest) + draft, draft_bytes=draft,
         mapped_host_bytes=manifest.tensors['per_layer_token_embd.weight'].nbytes)
     return replace(RECIPE, name='qwen38_gguf', prepare=prepare_gguf, checkpoints=(checkpoint,),
-        concurrency=1, max_concurrency=1, max_images=0, image_bytes=0, actlize=actlize,
+        concurrency=1, max_concurrency=1, max_images=0, image_bytes=0, actlize=actlize, quactlize=quactlize,
         ranks=MappingProxyType({1: gguf_cache_costs(speculating=True, bf16=actlize is not None)}),
         plain_ranks=MappingProxyType({1: gguf_cache_costs(speculating=False, bf16=actlize is not None)}))

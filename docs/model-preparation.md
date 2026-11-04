@@ -499,6 +499,17 @@ checkpoint/preparation identities and compilation namespace. Changes between
 planning and loading are rejected. Keep the input manifest and matching library
 available for re-export; native serving uses only the exported package.
 
+The NVIDIA implementation of QUactlize's PPU matmul records can also be selected
+with `"quactlize_abi_library": "/path/_cuda_compat.so"`, independently or with
+`actlize_library`. Install the `feat/nvidia-ppu-matmul-abi` package first. This
+selection reaches target and shared-MTP experts and their own workspace queries.
+It preserves the checkpoint's packed weight bytes and does not change the KV
+precision chosen by the attention library. Library content and the record ABI
+enter the reported plan, checkpoint revision and compilation namespace; changed
+libraries are rejected before weights load. The normal preparation flow and
+the bounded qualification command share the same explicit library loader.
+This selector is NVIDIA-only; it does not select a physical PPU implementation.
+
 This selection currently requires SM120 and the existing single-GPU GGUF
 capacity; automatic device selection considers only GPUs matching the selected
 library. The external GDN ABI does not support mixed prefill/decode partitions;
@@ -837,6 +848,13 @@ NVIDIA qualification option and composes with `--actlize-library` and
 `--actlize-qsa`. The existing NVIDIA expert chunk limit of eight remains;
 PPU M<=8 selects SIMT, so grouped-TC prefill needs its own complete-forward
 measurement before choosing a target chunk size.
+
+Normal GGUF input selection, planning, frontend and captured projection checks
+pass 181 focused cases, including four actual GPU cases through the manifest
+loader. A broader declaration/cleanup run has five failures also reproduced on
+the unmodified preceding commit (three Kimi declaration cases and two cleanup
+fixture cases), with 218 passing and 11 skipped; it is not reported as green.
+No complete-checkpoint export is claimed by these input tests.
 
 That combined package now preserves all 68 native HTTP choices and four native
 replay cases' complete 207277056-byte state fingerprints exactly against the

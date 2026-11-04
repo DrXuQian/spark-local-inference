@@ -291,11 +291,13 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
             from ignition.preparation.qwen38_gguf import inspect_qwen38_gguf
 
             manifest = inspect_qwen38_gguf(config.gguf_inputs)
-    library = None if config.actlize is None else config.actlize.load(device)
-    attention_libraries = dict(actlize_library=library, actlize_qsa_library=library)
-    operators = None if config.actlize is None else config.actlize.identity()
-    if operators is not None:
+    operator_libraries = (dict(actlize_library=None, actlize_qsa_library=None, gguf_projection_library=None)
+        if config.gguf_inputs is None else config.gguf_inputs.load_operators(device))
+    operators = None if config.gguf_inputs is None else config.gguf_inputs.operator_identity()
+    if config.actlize is not None:
         report('actlizeLA GDN/QSA · BF16 KV and snapshots · cuda_sm120')
+    if operator_libraries['gguf_projection_library'] is not None:
+        report('QUactlize PPU matmul records · explicit NVIDIA implementation · SM120')
     # Loading, construction and tuning free most of what they allocate; a transient package pool returns
     # that memory to the device once tuning completes, before compiled forwards are bound.
     if package_storage is not None:
@@ -379,6 +381,7 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
             scratch = DecoderScratch.allocate(config.token_capacity, device, sample_rows=sample_rows,
                 world_size=shard.world_size, buffers=graph_buffers.cursor(),
                 gguf_experts=weights.layers[0].moe.experts if config.gguf_inputs is not None else None,
+                gguf_projection_library=operator_libraries['gguf_projection_library'],
                 hyperconnection_lowrank=320 // shard.world_size if config.shard_hyperconnections else 320)
             workspaces = ScratchArena(device, overlap=config.stream_overlap)
             rotary = RotaryTables.allocate(weights.tree.config.text_config, config.context, device)
@@ -416,7 +419,7 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
                     frame=frame, sequence=sequence, context=config.context,
                     prefill_capacity=config.token_capacity, max_cache_pages=planned_pages,
                     sampling_workspace=sampling_workspace, graph_buffers=graph_buffers,
-                    verification_width=max(config.speculative_widths), **collectives, **attention_libraries)
+                    verification_width=max(config.speculative_widths), **collectives, **operator_libraries)
                 buffers.update(speculation.buffers())
         scoring = PromptScoring.allocate(config, device, buffers, frame=frame, group=group, ipc=ipc,
             runtime=collective, coordinator=coordinator)
@@ -474,7 +477,7 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
                             completion, frame, sequence, session=session, name=name,
                             embedding_injection=injection, max_cache_pages=planned_pages,
                             sampling_workspace=sampling_workspace,
-                            scoring=scoring if kind == "scored_prefill" else None, **collectives, **attention_libraries)
+                            scoring=scoring if kind == "scored_prefill" else None, **collectives, **operator_libraries)
                         forward = speculation.prefill(decoder, name) if enabled else decoder
                         add(name, forward, kind, rows,
                             capacity if mode == "prefill" else 1,

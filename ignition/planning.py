@@ -203,8 +203,9 @@ class Plan:
     benchmark_selection: BenchmarkSelection | None = None
 
     def __post_init__(self):
-        if self.recipe.actlize is not None and (self.world_size != 1 or self.gpus[0].capability != (12, 0)):
-            raise UsageError('the configured actlizeLA GGUF recipe requires one SM120 device')
+        if ((self.recipe.actlize is not None or self.recipe.quactlize is not None)
+                and (self.world_size != 1 or self.gpus[0].capability != (12, 0))):
+            raise UsageError('the configured external GGUF operators require one SM120 device')
         if self.benchmark_selection is not None:
             selection = self.benchmark_selection
             if not isinstance(selection, BenchmarkSelection):
@@ -340,7 +341,7 @@ class Plan:
         return {
             "alias": self.checkpoint.alias, "repository": self.checkpoint.repository,
             "revision": self.checkpoint.revision, "architecture": self.checkpoint.architecture,
-            **({"operators": self.recipe.actlize.identity()} if self.recipe.actlize is not None else {}),
+            **({"operators": self.recipe.operators} if self.recipe.operators is not None else {}),
             "gpus": [{"index": gpu.index, "name": gpu.name, "uuid": gpu.uuid, "free_bytes": gpu.free_bytes,
                       "total_bytes": gpu.total_bytes} for gpu in self.gpus],
             "tensor_parallel": self.world_size, "max_concurrency": self.concurrency,
@@ -532,8 +533,9 @@ def plan(recipe: Recipe, checkpoint: Checkpoint, gpus: tuple[Gpu, ...], *, selec
             raise UsageError("--vocabulary-parallel-sampling requires DeepSeek V4.1")
         world_sizes = tuple(size for size in world_sizes if size != 3)
     sizes = " or ".join(map(str, world_sizes))
-    supported = [gpu for gpu in gpus if gpu.supported and (recipe.actlize is None or gpu.capability == (12, 0))]
-    architectures = SUPPORTED_ARCHITECTURES if recipe.actlize is None else 'SM120 (actlizeLA)'
+    external_gguf = recipe.actlize is not None or recipe.quactlize is not None
+    supported = [gpu for gpu in gpus if gpu.supported and (not external_gguf or gpu.capability == (12, 0))]
+    architectures = 'SM120 (configured GGUF operators)' if external_gguf else SUPPORTED_ARCHITECTURES
     chosen = None
     if selected is not None:
         if any(index >= len(gpus) for index in selected):
@@ -548,8 +550,8 @@ def plan(recipe: Recipe, checkpoint: Checkpoint, gpus: tuple[Gpu, ...], *, selec
             example = format_gpus(range(first, first + size))
             raise CapacityError(f"{checkpoint.alias} needs {sizes} GPUs; {len(chosen)} selected; use --gpus {example}")
         for gpu in chosen:
-            if recipe.actlize is not None and gpu.capability != (12, 0):
-                raise CapacityError(f"GPU {gpu.index} ({gpu.name}) cannot use the configured SM120 actlizeLA library")
+            if external_gguf and gpu.capability != (12, 0):
+                raise CapacityError(f"GPU {gpu.index} ({gpu.name}) cannot use the configured SM120 GGUF operator libraries")
             if not gpu.supported:
                 raise CapacityError(f"GPU {gpu.index} ({gpu.name}) is not an {SUPPORTED_ARCHITECTURES} device")
     elif len(supported) < world_sizes[0]:

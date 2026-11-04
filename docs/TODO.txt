@@ -69,6 +69,17 @@
     operator-speed improvement over the previous 11.597 ms trace. The normal
     recipe does not yet select the PPU library; actual target export is unrun.
 
+[x] Select the explicit NVIDIA QUactlize record implementation through normal
+    GGUF manifest inputs and recipe preparation. Bind the library contents into
+    checkpoint/compilation identities; preserve attention precision, query
+    target/MTP scratch from that implementation and reject changed libraries
+    or incompatible GPUs before loading weights. The qualification command
+    uses the same loader. All 181 focused input/planning/frontend/capture cases
+    pass, including four GPU cases loaded through a manifest. Five broader
+    declaration/cleanup failures reproduce on the unmodified baseline; those
+    suites are not green. Physical PPU selection and full-checkpoint export
+    remain unrun.
+
 [ ] Qualify that PPU bridge's prepare, changing addresses/IDs, numerical output,
     compiled handle rebinding and native package replay on the target device.
     Four explicit device tests are supplied but unrun. Bind the complete recipe

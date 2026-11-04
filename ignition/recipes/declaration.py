@@ -18,6 +18,7 @@ from ignition.components.capacity import request_capacity
 
 if TYPE_CHECKING:
     from ignition.preparation.actlize import ActlizeLibrarySpec
+    from ignition.preparation.quactlize import QuactlizeLibrarySpec
 
 @dataclass(frozen=True)
 class SamplingRange:
@@ -234,9 +235,18 @@ class Recipe:
     export_repository: str = ""
     # Explicit external GDN/QSA preparation dependency; native serving replays its kernels.
     actlize: "ActlizeLibrarySpec | None" = None
+    quactlize: "QuactlizeLibrarySpec | None" = None
     # Preparation overrides for vocabulary and transition projections used only by proposals.
     draft_head_quantizations: tuple[str, ...] = ()
     markov_head_quantizations: tuple[str, ...] = ()
+
+    @property
+    def operators(self):
+        if self.actlize is None and self.quactlize is None:
+            return None
+        from ignition.preparation.qwen38_gguf import operator_identity
+
+        return operator_identity(self.actlize, self.quactlize)
 
     def mixed_shapes(self, concurrency, chunk, speculation):
         from ignition.components.capacity import mixed_shapes
@@ -249,6 +259,11 @@ class Recipe:
                                         speculation.token_capacity if enabled else None))
 
     def __post_init__(self):
+        if self.quactlize is not None:
+            from ignition.preparation.quactlize import QuactlizeLibrarySpec
+
+            if self.name != 'qwen38_gguf' or not isinstance(self.quactlize, QuactlizeLibrarySpec):
+                raise ValueError('QUactlize recipe selection requires explicit Qwen GGUF inputs')
         if self.actlize is not None:
             from ignition.preparation.actlize import ActlizeLibrarySpec
 

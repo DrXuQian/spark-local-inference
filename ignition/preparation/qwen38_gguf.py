@@ -11,6 +11,7 @@ from types import MappingProxyType
 
 from .checkpoint import CheckpointError
 from .actlize import ActlizeLibrarySpec
+from .quactlize import QuactlizeLibrarySpec
 from .gguf import GgufCheckpoint, file_identity, inspect_gguf_checkpoint
 from .qwen38 import CONFIG_SHA256, FRONTEND_SHA256, GENERATION_SHA256
 
@@ -22,16 +23,27 @@ class GgufInputs:
     frontend: Path
     read_mode: str
     actlize: ActlizeLibrarySpec | None = None
+    quactlize: QuactlizeLibrarySpec | None = None
+
+    def operator_identity(self):
+        return operator_identity(self.actlize, self.quactlize)
+
+    def load_operators(self, device):
+        attention = None if self.actlize is None else self.actlize.load(device)
+        projection = None if self.quactlize is None else self.quactlize.load(device)
+        return dict(actlize_library=attention, actlize_qsa_library=attention,
+                    gguf_projection_library=projection)
 
     @classmethod
     def read(cls, directory):
         directory = Path(directory).resolve()
         value = json.loads((directory / 'manifest.json').read_text())
         required = {'schema', 'main', 'mtp', 'frontend', 'read_mode'}
-        if (not isinstance(value, dict) or set(value) not in (required, required | {'actlize_library'})
+        optional = {'actlize_library', 'quactlize_abi_library'}
+        if (not isinstance(value, dict) or not required <= value.keys() <= required | optional
                 or value['schema'] != 'qwen38-gguf/1'):
             raise CheckpointError('GGUF input manifest requires schema, main, mtp, frontend and read_mode;'
-                                  ' actlize_library is optional')
+                                  ' actlize_library and quactlize_abi_library are optional')
         if value['read_mode'] not in ('auto', 'bounce', 'gds', 'pread'):
             raise CheckpointError('unknown GGUF checkpoint transport')
         paths = []
@@ -41,12 +53,20 @@ class GgufInputs:
             paths.append((directory / value[key]).resolve(strict=True))
         if not paths[0].is_file() or not paths[1].is_file() or not paths[2].is_dir():
             raise CheckpointError('GGUF input requires two files and a frontend directory')
-        actlize = None
-        if 'actlize_library' in value:
-            if not isinstance(value['actlize_library'], str) or not value['actlize_library']:
-                raise CheckpointError('actlize_library requires a native library path')
-            actlize = ActlizeLibrarySpec.read(directory / value['actlize_library'])
-        return cls(*paths, value['read_mode'], actlize)
+        libraries = []
+        for key, spec in (('actlize_library', ActlizeLibrarySpec), ('quactlize_abi_library', QuactlizeLibrarySpec)):
+            if key in value and (not isinstance(value[key], str) or not value[key]):
+                raise CheckpointError(f'{key} requires a native library path')
+            libraries.append(None if key not in value else spec.read(directory / value[key]))
+        return cls(*paths, value['read_mode'], *libraries)
+
+
+def operator_identity(actlize, quactlize):
+    value = None if actlize is None else actlize.identity()
+    if quactlize is not None:
+        value = dict(gdn='b12x', qsa='b12x', kv_dtype='float8_e4m3fn') if value is None else value
+        value['matmul'] = quactlize.identity()
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +77,7 @@ class QwenGgufCheckpoint(GgufCheckpoint):
     headers_sha256: str
     read_mode: str
     actlize: ActlizeLibrarySpec | None = None
+    quactlize: QuactlizeLibrarySpec | None = None
 
     @property
     def metadata_path(self):
@@ -139,7 +160,8 @@ def inspect_qwen38_gguf(inputs: GgufInputs):
     headers = hashlib.sha256(''.join(shard.header_sha256 for checkpoint in (main, draft)
                                      for shard in checkpoint.shards).encode()).hexdigest()
     return QwenGgufCheckpoint(main.snapshot, main.tensors, main.shards, main.metadata, main.vocab_size,
-                              draft, inputs.frontend, MappingProxyType(hashes), headers, inputs.read_mode, inputs.actlize)
+                              draft, inputs.frontend, MappingProxyType(hashes), headers, inputs.read_mode,
+                              inputs.actlize, inputs.quactlize)
 
 
 def device_weight_bytes(checkpoint):
