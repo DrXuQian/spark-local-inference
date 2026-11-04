@@ -112,14 +112,39 @@ def check_reference(buffers, initial, state, lengths, slots, counts, live, canon
         assert torch.equal(state[slot], initial[slot])
 
 
+def export_fixture(args, images, storage, graphs, signatures, buffers, resources, cases, kind):
+    from helios.tests.fixture_frontend import server_config
+    from helios.tests.signing import publisher
+    from ignition.preparation.execution import PreparedExecution
+    from ignition.preparation.runtime_package import export_model
+
+    device = torch.device('cuda:0')
+    buffers.update(frame_index=torch.zeros(1, dtype=torch.int32, device=device),
+        submission_sequence=torch.zeros(1, dtype=torch.int64, device=device),
+        completion_records=torch.zeros(2, 2, 32, dtype=torch.int64, device=device))
+    prepared = PreparedExecution(device=0, graphs=graphs, buffers=buffers,
+        signatures=signatures, max_active=2, resources=(*resources, storage))
+    prepared.server_config = server_config(args.output)
+    prepared.package_data = None
+    package = export_model(prepared, images, storage, args.output / 'package',
+        options={}, publisher=publisher())
+    references = {}
+    for name, tensor in buffers.items():
+        allocation, = [a for a in package.allocations if a.address <= tensor.data_ptr()
+            and tensor.data_ptr() + tensor.nbytes <= a.address + a.nbytes]
+        references[name] = dict(allocation=allocation.name, offset=tensor.data_ptr() - allocation.address,
+            nbytes=tensor.nbytes)
+    manifest = dict(kind=kind, cases=cases, addresses={a.name: a.address for a in package.allocations},
+        buffers=references, export_counts=package.export_counts)
+    (args.output / 'expected.json').write_text(json.dumps(manifest, indent=2) + '\n')
+    print(json.dumps(dict(cases=len(cases), export=package.export_counts)), flush=True)
+
+
 def qualify(args, images, storage):
     from actlize_la.serving import NativeLibrary
     from b12x.preparation import PreparationSession
-    from helios.tests.fixture_frontend import server_config
-    from helios.tests.signing import publisher
     from ignition.preparation.capture import capture_forwards
-    from ignition.preparation.execution import GraphSignature, PreparedExecution
-    from ignition.preparation.runtime_package import export_model
+    from ignition.preparation.execution import GraphSignature
 
     library = NativeLibrary(args.library, target='cuda_sm120')
     device = torch.device('cuda:0')
@@ -177,26 +202,8 @@ def qualify(args, images, storage):
             # Use the production fixed-VMM export path. Automatic discovery retains
             # native C-struct pointers at their recorded addresses; relocation would
             # require explicit per-parameter bindings for every captured kernel.
-            buffers.update(frame_index=torch.zeros(1, dtype=torch.int32, device=device),
-                submission_sequence=torch.zeros(1, dtype=torch.int64, device=device),
-                completion_records=torch.zeros(2, 2, 32, dtype=torch.int64, device=device))
-            prepared = PreparedExecution(device=0, graphs=graphs, buffers=buffers,
-                signatures=signatures, max_active=2, resources=(forward, compiled, library, storage))
-            prepared.server_config = server_config(args.output)
-            prepared.package_data = None
-            package = export_model(prepared, images, storage, args.output / 'package',
-                options={}, publisher=publisher())
-            references = {}
-            for name, tensor in buffers.items():
-                allocation, = [a for a in package.allocations if a.address <= tensor.data_ptr()
-                    and tensor.data_ptr() + tensor.nbytes <= a.address + a.nbytes]
-                references[name] = dict(allocation=allocation.name, offset=tensor.data_ptr() - allocation.address,
-                    nbytes=tensor.nbytes)
-            manifest = dict(kind='actlize-gdn-export-v1', cases=cases,
-                addresses={a.name: a.address for a in package.allocations},
-                buffers=references, export_counts=package.export_counts)
-            (args.output / 'expected.json').write_text(json.dumps(manifest, indent=2) + '\n')
-            print(json.dumps(dict(cases=len(cases), export=package.export_counts)), flush=True)
+            export_fixture(args, images, storage, graphs, signatures, buffers,
+                (forward, compiled, library), cases, 'actlize-gdn-export-v1')
         finally:
             torch.cuda.synchronize()
             for graph in graphs.values():

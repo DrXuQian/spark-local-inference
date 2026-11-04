@@ -49,6 +49,32 @@ def test_exact_hybrid_state_layout_and_snapshot_budget():
         layout.snapshot_capacity(-1)
 
 
+@pytest.mark.parametrize('drafts', [0, 7])
+def test_bf16_page_and_snapshot_storage_budget(drafts):
+    from ignition.recipes.qwen38.attention import QSAState
+
+    old = HybridStateLayout.build(speculative_tokens=drafts)
+    pool = HybridStatePool.allocate(2, 'meta', speculative_tokens=drafts, kv_dtype=torch.bfloat16)
+    extra = (12 * 2 + (4 if drafts else 0)) * 64 * 2 * 256
+    assert pool.layout.row_bytes == old.row_bytes + extra
+    assert pool.layout.snapshot_capacity(4 << 30) == (4 << 30) // pool.layout.row_bytes
+    for region in old.regions:
+        current = pool.layout.region(region.name)
+        boundary = 'boundary_key' in region.name or 'boundary_value' in region.name
+        assert current.shape == region.shape
+        assert current.dtype == (torch.bfloat16 if boundary else region.dtype)
+        assert current.nbytes == region.nbytes * (2 if boundary else 1)
+    cache = QSAState.allocate(pages=3, slots=2, device=torch.device('meta'),
+        draft_tokens=drafts, kv_dtype=torch.bfloat16)
+    for name in ('main_k_cache', 'main_v_cache'):
+        assert getattr(cache, name).dtype == torch.bfloat16
+        assert getattr(cache, name).nbytes == 3 * 64 * 2 * 256 * 2
+    assert cache.compressed_k_cache.nbytes == 3 * 16 * 128 * 2
+    resized = cache.resize_pages_for_preparation(5)
+    assert resized.main_k_cache.shape[0] == resized.main_v_cache.shape[0] == 5
+    assert resized.main_k_cache.dtype == resized.main_v_cache.dtype == torch.bfloat16
+
+
 def test_typed_views_share_exact_real_geometry_backing():
     pool = HybridStatePool.allocate(2, "cpu")
     assert pool.backing.shape == (2, 116505344)

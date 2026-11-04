@@ -38,11 +38,23 @@
     M<=8 selects SIMT, so do not carry the NVIDIA prefill chunk of eight into
     the PPU grouped-TC path without measuring complete forwards.
 
-[ ] actlizeLA PPU: carry explicit BF16 KV through allocation, memory planning,
-    snapshots, restore and attention bindings. Current Flare pools use FP8.
-    Ratio-zero shared MTP uses ordinary attention; ratio-four QSA uses
-    actlizeLA. Retain each layer's verification records, commit consumed
-    input counts and handle zero-prefix convolution rollback exactly once.
+[x] Add explicit BF16 cache and hybrid-snapshot storage for PPU preparation.
+    Twelve storage/maintenance cases pass, including capacity 2/32, scattered
+    live rows, all 12 target cache tails and both MTP boundary pages. The
+    existing byte-count-based memory budget and dtype checks cover both formats.
+
+[x] Qualify actlizeLA QSA with Flare BF16 storage, AOT handle rebinding and
+    fixed-VMM export. Seventeen reference cases include page/compression edges,
+    contexts 2048/2051, tied scores, consumed prefixes 0..6 and inactive rows.
+    Thirty-four standalone native replays compare 4753040 bytes each exactly,
+    with no CUDA allocation or Python/Torch/operator-host-library mapping.
+
+[ ] Bind actlizeLA into complete PPU model preparation. Ratio-zero shared MTP
+    requires ordinary attention; ratio-four QSA uses actlizeLA and explicit
+    BF16 cache/snapshot dtypes. Retain per-layer verification records, commit
+    consumed input counts and handle zero-prefix convolution rollback exactly
+    once. Intermediate prefill checkpoint exports remain unsupported by the
+    current external GDN ABI. Component export is not a complete-model adapter.
 
 [x] Inspect remaining PPU seams: FA2 paged KV requires a multiple of 256,
     while current Flare uses 64; the available narrow FA3 build disables

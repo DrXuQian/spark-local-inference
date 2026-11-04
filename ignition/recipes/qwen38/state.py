@@ -34,7 +34,8 @@ class HybridStateLayout(StateLayout):
     draft_ring_capacity: int = 0
 
     @classmethod
-    def build(cls, *, speculative_tokens: int = 0, world_size: int = 1) -> HybridStateLayout:
+    def build(cls, *, speculative_tokens: int = 0, world_size: int = 1,
+              kv_dtype: torch.dtype = torch.float8_e4m3fn) -> HybridStateLayout:
         if type(speculative_tokens) is not int or not 0 <= speculative_tokens <= 7:
             raise ValueError("hybrid state supports zero through seven speculative tokens")
         from ignition.components.parallel import TensorParallelShard
@@ -56,7 +57,7 @@ class HybridStateLayout(StateLayout):
         from b12x.attention import qsa
 
         geometry = qsa.cache_requirements(main_page_size=64, position_axes=3, kv_heads=max(1, 2 // world_size),
-                                         max_speculative_tokens=speculative_tokens, kv_dtype=torch.float8_e4m3fn)
+                                         max_speculative_tokens=speculative_tokens, kv_dtype=kv_dtype)
         for layer in QSA_LAYERS:
             add(f"qsa.{layer}.raw_keys", geometry.raw_k_ring_shape, torch.bfloat16)
             add(f"qsa.{layer}.raw_positions", geometry.raw_logical_positions_shape, torch.int64)
@@ -109,7 +110,8 @@ class HybridStatePool(StateStorage):
 
     @classmethod
     def allocate(cls, slots: int, device, *, speculative_tokens: int = 0, world_size: int = 1,
-                 storage=None, backed_slots: int | None = None) -> HybridStatePool:
+                 storage=None, backed_slots: int | None = None,
+                 kv_dtype: torch.dtype = torch.float8_e4m3fn) -> HybridStatePool:
         if type(slots) is not int or slots < 2:
             raise ValueError("hybrid state requires null and live slots")
         backed_slots = slots if backed_slots is None else backed_slots
@@ -117,7 +119,8 @@ class HybridStatePool(StateStorage):
             raise ValueError("backed state slots must include null and live slots within the virtual extent")
         if backed_slots != slots and storage is None:
             raise ValueError("partial state backing requires package storage")
-        layout = HybridStateLayout.build(speculative_tokens=speculative_tokens, world_size=world_size)
+        layout = HybridStateLayout.build(speculative_tokens=speculative_tokens, world_size=world_size,
+                                        kv_dtype=kv_dtype)
         backing = (torch.zeros((slots, layout.row_bytes), dtype=torch.uint8, device=device) if storage is None else
             storage.device_allocate("continuations", (slots, layout.row_bytes), torch.uint8, group="STATE_ROWS",
                                     maximum=torch.cuda.mem_get_info(device)[1] // layout.row_bytes, units=backed_slots))

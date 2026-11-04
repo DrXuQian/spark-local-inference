@@ -73,11 +73,12 @@ class QSAState:
 
     @classmethod
     def allocate(cls, *, pages: int, slots: int, device: torch.device,
-                 page_size: int = 64, draft_tokens: int = 0, kv_heads: int = 2) -> QSAState:
+                 page_size: int = 64, draft_tokens: int = 0, kv_heads: int = 2,
+                 kv_dtype: torch.dtype = torch.float8_e4m3fn) -> QSAState:
         if pages <= 0 or slots <= 0:
             raise ValueError("QSA page and state capacities must be positive")
         geometry = qsa.cache_requirements(main_page_size=page_size, position_axes=3, kv_heads=kv_heads,
-                                         max_speculative_tokens=draft_tokens, kv_dtype=torch.float8_e4m3fn)
+                                         max_speculative_tokens=draft_tokens, kv_dtype=kv_dtype)
         def zeros(shape, dtype=torch.bfloat16):
             return torch.zeros(shape, device=device, dtype=dtype)
         def invalid(shape):

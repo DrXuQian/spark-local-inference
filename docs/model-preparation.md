@@ -596,6 +596,24 @@ Automatic kernel discovery preserves C-ABI pointers through fixed virtual
 addresses. Relocatable low-level packages require explicit parameter bindings;
 automatic discovery alone does not reconstruct those bindings.
 
+QSA's corresponding fixture is `qualify.actlize_qsa_export`, using the same
+arguments and native replay binary. It binds actual Flare metadata and BF16
+page storage. Seventeen cases compare against b12x's independent compression,
+selection and sparse-attention references, including page/compression boundaries,
+contexts 2048/2051, exact score ties, retries after consumed prefixes 0..6, and
+inactive requests. Thirty-four native replays match 4753040 bytes per case,
+including all cache history and selected positions. Execution allocates no CUDA
+storage and loads no Python, Torch or operator host library. This is SM120
+component qualification; it does not establish full PPU model execution.
+
+`QSAState.allocate`, `HybridStateLayout.build` and `HybridStatePool.allocate`
+accept an explicit `kv_dtype` for operator preparation. Select BF16 consistently
+for the page pools and snapshot layout; checkpoint bindings reject a mismatch.
+The existing NVIDIA recipe defaults remain FP8. Memory estimates use actual
+tensor bytes: BF16 adds 786432 bytes per ordinary hybrid snapshot, or 917504
+bytes with both MTP boundary pages. Twelve storage/maintenance tests pass,
+including capacity 2/32, scattered rows and exact target/MTP page restoration.
+
 | Operation | Required contract | Current PPU source and remaining work |
 | --- | --- | --- |
 | GGUF projections and MoE | Q5_1, Q8_0, Q2_K–Q6_K; H2560/I640; 512 experts, top10; BF16 operands/output, FP32 accumulation | New QU raw path admits these shapes. Canonical packing retains stricter alignment. Bind the new ABI with prepared custom ops and verify each capacity on the target. |
@@ -604,7 +622,7 @@ automatic discovery alone does not reconstruct those bindings.
 | SwiGLU | BF16 SiLU followed by multiply and BF16 output | New QU helper rounds only after multiplication. It is not equivalent to Qwen's `round_silu=True`. For BF16 gate −4.96875 and up 1.5, results are −0.051513671875 versus −0.0517578125. |
 | Token embedding / PLE | Device-indexed Q8_0 rows of width2560 and IQ4_NL rows of width160; inactive IDs and changing live counts | New PPU matmul dequant takes host row indices and does not admit IQ4_NL. A captured row-lookup interface remains necessary. NVIDIA compatibility already provides it. |
 | GDN | FP32 state `[slot,Hv,V,K]`, Hk16/Hv48, compact per-layer records, consumed-input commit count | actlizeLA provides decode/verify/prefill/commit. Preserve zero-prefix convolution rollback, device errors and each layer's retained records; bind through complete compiled forwards. |
-| QSA | Ratio4, 24 query/2 KV heads, D256, selected capacity2051, page64 | actlizeLA supplies append/compression/selection/attention with BF16 KV. Flare currently uses FP8 KV; change allocation, memory estimates, snapshots and restore together. Do not retain the old writer as well. |
+| QSA | Ratio4, 24 query/2 KV heads, D256, selected capacity2051, page64 | actlizeLA supplies append/compression/selection/attention with BF16 KV. Explicit BF16 allocation, snapshot/restore and component export are now qualified on SM120; complete PPU recipe binding remains. Do not retain the old writer as well. |
 | Shared MTP attention | Ratio0, paged causal GQA, D256, page64, changing device lengths | Use ordinary FlashAttention. Local FA2 f600591 requires pages divisible by256; the narrow FA3 box build disables paging/append/D256. Qualify a matching FA3 build and prepared output/workspace ABI. |
 | Dense BF16 / HC projections | Preserve actual dimensions, strided outputs and FP32 accumulation | DeepGEMM provides BF16 kernels. Freeze plans and scratch before capture; its ordinary Python JIT entry is not a serving interface. |
 | RMSNorm / HC / ShortConv / RoPE / gating / sampling / state helpers | Exact dtype/rounding, inactive rows and complete mutable history | These exist in Flare through b12x and compiled tensor operations. QU/actlizeLA do not replace all of them; compile or bind external PPU implementations. No framework-owned kernel collection is added. |

@@ -90,8 +90,12 @@ fn main() -> Result<()> {
         .ok_or("expected fixture directory")?;
     let root = Path::new(&directory);
     let expected: Expected = serde_json::from_slice(&std::fs::read(root.join("expected.json"))?)?;
-    assert_eq!(expected.kind, "actlize-gdn-export-v1");
-    assert_eq!(expected.cases.len(), 15);
+    let count = match expected.kind.as_str() {
+        "actlize-gdn-export-v1" => 15,
+        "actlize-qsa-export-v1" => 17,
+        _ => return Err("unknown actlize qualification fixture".into()),
+    };
+    assert_eq!(expected.cases.len(), count);
     let allocations = allocation_watch::AllocationWatch::new()?;
     let owner = unsafe {
         NativeResources::load(
@@ -141,7 +145,9 @@ fn main() -> Result<()> {
             && !maps.contains("libactlize_la_serving")
     );
     println!(
-        "30 native actlize GDN verify/commit replays passed; no Python, Torch or operator host library"
+        "{} native {} replays passed; no Python, Torch or operator host library",
+        2 * count,
+        expected.kind
     );
     Ok(())
 }
