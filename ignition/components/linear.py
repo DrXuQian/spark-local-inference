@@ -25,8 +25,15 @@ from ignition.preparation.tuning import benchmark_resource, declare, register_co
 def prepare_projection(source, weight, output, *, session, name, workspace, activation_mode="auto", staging=None):
     """Bind a projection without changing its checkpoint weight representation."""
     from .block_fp8 import BlockFP8Projection, BlockFP8Weight
+    from .gguf_weights import GgufWeight
     from .weights import GroupedLinearWeights
 
+    if isinstance(weight, GgufWeight):
+        from .gguf_projection import PreparedGgufProjection
+
+        if activation_mode not in ('auto', 'dense'):
+            raise ValueError('GGUF compatibility projections require 16-bit dense activations')
+        return PreparedGgufProjection(source, weight, output, workspace=workspace)
     if isinstance(weight, GroupedLinearWeights):
         return PreparedProjectionGroup(source, weight, output, session=session, name=name, workspace=workspace,
                                        activation_mode=activation_mode, staging=staging)

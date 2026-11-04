@@ -425,9 +425,42 @@ GGUF checkpoint inspection is available for development with
 `ignition.preparation.gguf.inspect_gguf_checkpoint(Path(...))` with a GGUF file
 or any shard. It checks the shard set and tensor ranges and reports logical
 shapes, original block encodings, and stored byte shapes without dequantization.
-The external `gguf` package owns format parsing. This is metadata inspection;
-GGUF model preparation and serving, Q4_K/Q5_1 expert execution, and shared-Q8
-MTP integration are not yet connected to `ignition export`.
+The external `gguf` package owns format parsing.
+
+Development components can read these tensors with
+`ignition.components.gguf_weights.GgufWeightLoader`. Quantized projections keep
+their original blocks; row, expert and block-aligned column selections read only
+the selected ranges. Gate/up fusion concatenates rows separately within each
+expert. Plain weights retain their source dtype. The large
+`per_layer_token_embd.weight` PLE table is excluded from resident loading.
+
+`ignition.components.gguf_projection.PreparedGgufProjection` binds a dense
+projection to the external [QUactlize NVIDIA compatibility operators](https://github.com/DrXuQian/QUactlize/tree/feat/nvidia-dequant-gemm).
+Install that source package against the preparation environment's Torch and CUDA
+toolkit. Query `projection_workspace_bytes(source, weight)` and supply fixed
+byte storage before preparation warmup. Sequential projections share the maximum
+required scratch; concurrent projections need disjoint storage. Weights remain
+packed and the operator expands one matrix into scratch for each call. Its native
+handle is rebound when Flare restores a compiled forward; keep the prepared
+owner alive until graph work drains. This handle has QUactlize's ABI and cannot
+be passed to b12x's projection overlap helpers.
+
+Hosts whose containers prohibit `io_uring` can explicitly select
+`read_mode='pread'` on the loader. This preparation-only transport retains native
+O_DIRECT reads, uses 8 MiB of pinned staging plus bounded read/conversion buffers,
+and checks source identities and destination overlap. Existing default transport
+selection is unchanged; read errors never switch transport automatically.
+
+The file-to-projection and shared-workspace graph paths are development building
+blocks. GGUF model preparation and serving, routed-expert composition, host PLE
+lookup, and shared-Q8 MTP weight mapping are not yet connected to `ignition export`.
+Run their CUDA checks in the preparation environment with QUactlize installed:
+
+```sh
+.venv/bin/python -m ignition.patches
+FLARE_RUN_CUDA_TESTS=1 FLARE_GGUF_MTP=/models/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf \
+  .venv/bin/python -m pytest -q tests/preparation/test_gguf_weights_cuda.py tests/preparation/test_pread_weights_cuda.py
+```
 
 Enable hybrid history drafting at serving startup with
 `flare run PACKAGE --history-drafts`; disable it with `--no-history-drafts`.

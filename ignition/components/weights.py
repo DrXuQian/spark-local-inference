@@ -725,6 +725,7 @@ class DirectWeightLoader:
         *, prefixes: Sequence[str] | None = None,
         progress=None,
         progress_label: str = "Load weights",
+        read_mode: str | None = None,
     ):
         self.manifest = manifest
         self.device = device
@@ -732,6 +733,9 @@ class DirectWeightLoader:
         if self.prefixes is not None and not self.prefixes:
             raise ValueError("prefixes must be nonempty when supplied")
         self.progress, self.progress_label = progress, progress_label
+        if read_mode not in (None, 'auto', 'bounce', 'gds', 'pread'):
+            raise ValueError('unknown checkpoint read mode')
+        self.read_mode = read_mode
         self._display = None
         self._load_stats = None
         self._session = None
@@ -932,11 +936,25 @@ class DirectWeightLoader:
 
             source = source_for(self.manifest.snapshot)
             if source is None:
-                read_mode = _checkpoint_read_mode(self.manifest.snapshot / shard for shard in shards)
-                self._session = stack.enter_context(DirectWeightSession(device=self.device.index, read_mode=read_mode))
+                read_mode = self.read_mode or _checkpoint_read_mode(self.manifest.snapshot / shard for shard in shards)
+                from ignition.preparation.gguf import GgufCheckpoint
+
+                if isinstance(self.manifest, GgufCheckpoint):
+                    from ignition.preparation.gguf_weights import GgufWeightSession
+
+                    transfer = GgufWeightSession(self.manifest, device=self.device.index, read_mode=read_mode)
+                elif read_mode == 'pread':
+                    from ignition.preparation.pread_weights import PreadWeightSession
+
+                    transfer = PreadWeightSession(device=self.device.index)
+                else:
+                    transfer = DirectWeightSession(device=self.device.index, read_mode=read_mode)
+                self._session = stack.enter_context(transfer)
             else:
                 from ignition.preparation.remote_weights import RemoteWeightSession
 
+                if self.read_mode is not None:
+                    raise ValueError('explicit checkpoint read modes apply to local sources only')
                 self._session = stack.enter_context(RemoteWeightSession(source, self.manifest, device=self.device.index))
             if self._display is not None:
                 self._display.source(len(shards))
