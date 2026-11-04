@@ -420,6 +420,15 @@ prefill. This mode prepares no decode or speculative round graphs.
 
 ## Qwen3.8 Flash
 
+GGUF checkpoint inspection is available for development with
+`uv sync --locked --extra gguf --extra test`. Call
+`ignition.preparation.gguf.inspect_gguf_checkpoint(Path(...))` with a GGUF file
+or any shard. It checks the shard set and tensor ranges and reports logical
+shapes, original block encodings, and stored byte shapes without dequantization.
+The external `gguf` package owns format parsing. This is metadata inspection;
+GGUF model preparation and serving, Q4_K/Q5_1 expert execution, and shared-Q8
+MTP integration are not yet connected to `ignition export`.
+
 Enable hybrid history drafting at serving startup with
 `flare run PACKAGE --history-drafts`; disable it with `--no-history-drafts`.
 These options use the package's existing MTP graphs and are not export settings.
