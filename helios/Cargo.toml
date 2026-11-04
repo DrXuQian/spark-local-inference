@@ -86,6 +86,13 @@ test = false
 bench = false
 
 [[bin]]
+name = "test_qwen38_gguf_replay_floor"
+path = "tests/tools/test_qwen38_gguf_replay_floor.rs"
+required-features = ["server", "runtime-package", "test-tools"]
+test = false
+bench = false
+
+[[bin]]
 name = "test_runtime_package"
 path = "tests/tools/test_runtime_package.rs"
 required-features = ["runtime-package", "test-tools"]

@@ -518,10 +518,35 @@ still exist. Three adaptive traces contain isolated submission gaps of
 The 3483-round repeat has 3420 consecutive width-one pairs: median 14.912 us,
 p95 16.096 us, maximum 132.031 us. Cgroup counters show no CPU throttling during
 that repeat. OSRT and thread schedstat records do not establish the cause of
-the tails; this container prohibits CPU context-switch profiling. Unprofiled
-tail/readiness attribution and a separate minimal-replay comparison remain open.
-These partial-model measurements do not establish full-model throughput or a
-zero-idle claim.
+the tails; this container prohibits CPU context-switch profiling. The same
+48-request workload without Nsight observes all 3531 readiness-counter increments
+individually, maximum 3.712 us; its millisecond waits do not reproduce. These
+partial-model measurements do not establish full-model throughput or literal
+zero idle.
+
+The native replay tool loads this same exported package and compares isolated
+rounds with queued execution. Four 128-token cases each execute 22 width-six
+rounds. Tokens, logprobs and completion payloads match exactly; request generations
+and submission fences are validated independently. Each case compares 165465088
+bytes of committed live hybrid state and the declared KV ranges byte for byte.
+The service/replay ratios over the same interior 21 rounds are 0.9959–0.9992,
+including SSE serialization and loopback delivery. Differences this small are
+measurement variation; all four cases pass the 5% native-overhead limit. This
+qualifies the partial fixture at batch one and fixed width six, with RAM PLE.
+
+Run that comparison against a fresh service using `--mtp-draft-tokens 5
+--no-mtp-adaptive-verification`. The native tool explicitly trusts only the
+repository's fixture publisher:
+
+```sh
+.venv/bin/python -m qualify.qwen38_gguf_replay capture --output replay-corpus.json
+# Stop the service before measuring the native replay tool.
+cargo run --release --locked --manifest-path helios/Cargo.toml \
+  --features server,runtime-package,test-tools --bin test_qwen38_gguf_replay_floor \
+  -- /models/qualification/package replay-corpus.json replay-floor.json
+python -m qualify.qwen38_gguf_replay compare --corpus replay-corpus.json \
+  --replay replay-floor.json --output replay-comparison.json
+```
 
 Run request checks against an otherwise idle native service:
 

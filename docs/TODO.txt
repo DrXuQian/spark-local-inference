@@ -67,11 +67,17 @@
     3483-round repeat, 3420 consecutive width-one pairs have median 14.912 us
     and p95 16.096 us; cgroup counters show no CPU throttling. CPU context-switch
     profiling is unavailable in this container; OSRT and schedstat observations
-    do not establish the cause. Compare unprofiled readiness/tail records next.
+    do not establish the cause. The equivalent unprofiled 48-request run observes
+    all 3531 readiness-counter increments individually, maximum 3.712 us; the
+    millisecond waits do not reproduce. Keep profiler attribution separate from
+    the unprofiled service measurements.
 
-[ ] Measure the native service against a minimal replay floor for the same
-    graph sequence and PLE inputs. Kernel-node timelines alone do not qualify
-    the separate native-overhead limit or full-model serving performance.
+[x] Compare the same partial package with native fixed-sequence replay at batch
+    one/width six. Four 128-token requests each execute 22 rounds; queued and
+    isolated replay match tokens, logprobs, completion payloads and 165465088
+    bytes of live hybrid/KV state. Service/replay ratios over the same interior
+    21 rounds are 0.9959-0.9992, including SSE/loopback delivery, within the 5%
+    overhead bound. Full-model and other-capacity performance remain unqualified.
 
 [ ] Extend conditional-score comparison to the complete model when available.
     The partial fixture's teacher-forced MTP versus ordinary raw-logit relative
