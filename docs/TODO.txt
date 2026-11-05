@@ -352,6 +352,10 @@
     dense preparation uses the selected QUactlize helpers on an explicit stream.
     Real-file host checks pass on Torch2.9 and Torch2.15. Device transfer and native
     decode gates remain unrun; qualify.ppu_box now includes the gguf-read suite.
+    The box rejected cuda-python Runtime initialization with status 35 despite
+    working Torch allocations and PPU SDK library paths. Both pread readers now
+    bind platform Driver API copies using Torch's existing context/stream. SDK
+    C-ABI tests pass; rerun the six box read cases, which disable the Runtime import.
 
 [ ] Measure external GGUF shared/routed expert overlap. GgufMoeWorkspace bypasses
     the b12x ConcurrentSharedExpert branch even when stream_overlap is enabled.

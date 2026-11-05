@@ -5,6 +5,7 @@
 import os
 import importlib.util
 from pathlib import Path
+import sys
 
 import numpy as np
 import pytest
@@ -13,6 +14,16 @@ import torch
 gguf = pytest.importorskip('gguf')
 pytestmark = pytest.mark.skipif(os.environ.get('FLARE_RUN_CUDA_TESTS') != '1',
                                 reason='set FLARE_RUN_CUDA_TESTS=1 on a CUDA host')
+
+
+@pytest.fixture
+def no_cuda_runtime(monkeypatch):
+    # Torch's device path works on the box where cuda-python Runtime init fails.
+    # Raw loading must remain usable with that separate binding unavailable.
+    monkeypatch.setitem(sys.modules, 'cuda.bindings.runtime', None)
+    bindings = sys.modules.get('cuda.bindings')
+    if bindings is not None:
+        monkeypatch.delattr(bindings, 'runtime', raising=False)
 
 
 class ProjectionPair:
@@ -69,7 +80,7 @@ def checkpoint(tmp_path):
     return inspect_gguf_checkpoint(path), gate, up, dense, bf16
 
 
-def test_native_reads_fuse_within_each_expert_and_preserve_plain_bits(checkpoint):
+def test_native_reads_fuse_within_each_expert_and_preserve_plain_bits(checkpoint, no_cuda_runtime):
     from ignition.components.gguf_weights import GgufWeightLoader
 
     manifest, gate, up, _, bf16 = checkpoint
@@ -87,7 +98,7 @@ def test_native_reads_fuse_within_each_expert_and_preserve_plain_bits(checkpoint
         assert loader._session.torch_copy_bytes == 0
 
 
-def test_selected_blocks_and_experts_are_exact(checkpoint):
+def test_selected_blocks_and_experts_are_exact(checkpoint, no_cuda_runtime):
     from ignition.components.gguf_weights import GgufWeightLoader
 
     manifest, gate, _, dense, _ = checkpoint
@@ -104,7 +115,7 @@ def test_selected_blocks_and_experts_are_exact(checkpoint):
             loader.load_quantized_group(('blk.0.ffn_gate_exps.weight', 'blk.0.hc_attn_up.weight'))
 
 
-def test_changed_file_is_rejected_before_queued_transfer(checkpoint):
+def test_changed_file_is_rejected_before_queued_transfer(checkpoint, no_cuda_runtime):
     from ignition.components.gguf_weights import GgufWeightLoader
 
     manifest, *_ = checkpoint
@@ -118,7 +129,7 @@ def test_changed_file_is_rejected_before_queued_transfer(checkpoint):
             loader.load_quantized('blk.0.hc_attn_up.weight')
 
 
-def test_pread_strided_bf16_expansion_and_staging_lifetime(checkpoint):
+def test_pread_strided_bf16_expansion_and_staging_lifetime(checkpoint, no_cuda_runtime):
     from ignition.components.gguf_weights import GgufWeightLoader
     from ignition.preparation.gguf_pread import ALIGNMENT, BLOCK_BYTES
 
@@ -142,7 +153,7 @@ def test_pread_strided_bf16_expansion_and_staging_lifetime(checkpoint):
     assert session.staging is None and session.expanded is None and not session.files
 
 
-def test_pread_overlapping_destinations_rejected_before_write(checkpoint):
+def test_pread_overlapping_destinations_rejected_before_write(checkpoint, no_cuda_runtime):
     from ignition.components.gguf_weights import GgufWeightLoader
 
     manifest, *_ = checkpoint
@@ -155,7 +166,7 @@ def test_pread_overlapping_destinations_rejected_before_write(checkpoint):
     assert torch.all(destination == -19.).item()
 
 
-def test_pread_multiple_blocks_keep_file_and_destination_tails(tmp_path):
+def test_pread_multiple_blocks_keep_file_and_destination_tails(tmp_path, no_cuda_runtime):
     from ignition.components.gguf_weights import GgufWeightLoader
     from ignition.preparation.gguf import inspect_gguf_checkpoint
     from ignition.preparation.gguf_pread import BLOCK_BYTES

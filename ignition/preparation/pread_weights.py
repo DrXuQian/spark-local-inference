@@ -25,6 +25,7 @@ class PreadWeightSession(DirectWeightSession):
         super().__init__(read_mode='bounce' if mode == 'pread' else mode, **kwargs)
         self.read_mode = mode if mode == 'pread' else self.read_mode
         self.staging = None
+        self.copy = None
 
     def manifest(self, path):
         if self.read_mode != 'pread':
@@ -49,7 +50,7 @@ class PreadWeightSession(DirectWeightSession):
             self._validate_source_identities()
             return
         import torch
-        from cuda.bindings import runtime as cuda
+        from .checkpoint_copy import CheckpointCopy
 
         if len(records) % 8:
             raise ValueError('invalid checkpoint transfer descriptor')
@@ -75,6 +76,8 @@ class PreadWeightSession(DirectWeightSession):
                 raise RuntimeError('checkpoint reads must finish before graph capture')
             stream = torch.cuda.current_stream(self.device)
             stream.synchronize()
+            if self.copy is None:
+                self.copy = CheckpointCopy()
             if self.staging is None:
                 self.staging = torch.empty(2 * BLOCK_BYTES, dtype=torch.uint8, pin_memory=True)
             host = memoryview(self.staging.numpy()).cast('B')
@@ -96,12 +99,11 @@ class PreadWeightSession(DirectWeightSession):
                         copy_width = take * 2
                         copy_pitch = copy_width
                         self.staging[:count * copy_width].view(torch.float32).view_as(expanded).copy_(expanded)
-                    status, = cuda.cudaMemcpy2DAsync(destination, destination_pitch if count > 1 else copy_width,
-                        self.staging.data_ptr(), copy_pitch, copy_width, count,
-                        cuda.cudaMemcpyKind.cudaMemcpyHostToDevice, stream.cuda_stream)
-                    stream.synchronize()
-                    if int(status):
-                        raise RuntimeError(f'checkpoint CUDA copy failed: {status}')
+                    try:
+                        self.copy(destination, destination_pitch if count > 1 else copy_width,
+                                  self.staging.data_ptr(), copy_pitch, copy_width, count, stream.cuda_stream)
+                    finally:
+                        stream.synchronize()
         self._validate_source_identities()
 
     def stats(self, **kwargs):
@@ -109,4 +111,5 @@ class PreadWeightSession(DirectWeightSession):
 
     def _close(self):
         self.staging = None
+        self.copy = None
         super()._close()

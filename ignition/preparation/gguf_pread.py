@@ -104,6 +104,7 @@ class GgufPreadSession:
         self.checkpoint, self.device = checkpoint, device
         self.files, self.sources, self.pending = {}, {}, []
         self.staging = self.expanded = self.stream = None
+        self.copy = None
         self.opened = self.retained = False
         self.read_mode = 'pread'
         self.payload_bytes = self.physical_bytes = self.reads = self.loaded_tensors = 0
@@ -187,7 +188,7 @@ class GgufPreadSession:
             return
         self._validate()
         import torch
-        from cuda.bindings import runtime as cuda
+        from .checkpoint_copy import CheckpointCopy
 
         destinations = []
         for destination, source, version, fd, records in self.pending:
@@ -208,6 +209,8 @@ class GgufPreadSession:
                 raise RuntimeError('checkpoint reads must finish before graph capture')
             self.stream = torch.cuda.current_stream(self.device)
             self._drain()
+            if self.copy is None:
+                self.copy = CheckpointCopy()
             if self.staging is None:
                 self.staging = torch.empty(BLOCK_BYTES + 2 * ALIGNMENT, dtype=torch.uint8, pin_memory=True)
             padding = -self.staging.data_ptr() % ALIGNMENT
@@ -230,11 +233,8 @@ class GgufPreadSession:
                             source_pointer = self.expanded.data_ptr()
                             width = source_pitch = take * 2
                         try:
-                            status, = cuda.cudaMemcpy2DAsync(pointer, stride if count > 1 else width,
-                                source_pointer, source_pitch, width, count,
-                                cuda.cudaMemcpyKind.cudaMemcpyHostToDevice, self.stream.cuda_stream)
-                            if int(status):
-                                raise RuntimeError(f'checkpoint CUDA copy failed: {status}')
+                            self.copy(pointer, stride if count > 1 else width,
+                                      source_pointer, source_pitch, width, count, self.stream.cuda_stream)
                         finally:
                             self._drain()
             self._validate()
@@ -260,4 +260,5 @@ class GgufPreadSession:
                 self.sources.clear()
                 self.pending.clear()
                 self.staging = self.expanded = self.stream = None
+                self.copy = None
                 self.opened = False

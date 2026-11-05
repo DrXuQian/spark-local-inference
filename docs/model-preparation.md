@@ -455,6 +455,16 @@ alignment, with another 8 MiB only when converting stored BF16 to FP32. Other
 checkpoint transports retain their existing readers. Read errors never switch
 transport automatically.
 
+Both local pread readers use `cuMemcpy2DAsync_v2` from the platform driver and
+Torch's current context/stream. They do not initialize `cuda.bindings.runtime`:
+on the PPU box that separate Runtime returned `cudaErrorInsufficientDriver` (35)
+even for `cudaFree(0)`, while Torch could allocate device memory. The reported
+driver and runtime library paths were already inside the PPU SDK. The driver
+binding preserves exact byte pitches and the existing drain-before-reuse rule;
+absence of Torch's current driver context is an error, not a new context request.
+Host C-ABI checks pass against NVIDIA and PPU SDK headers. Device copies still
+need the box gate below after this change.
+
 Explicit PPU GGUF loading requires `pread` and prepared QUactlize helpers.
 Target and shared-MTP dense expansion use the selected helpers on a private
 preparation stream, retaining raw input and output until the work drains. The
