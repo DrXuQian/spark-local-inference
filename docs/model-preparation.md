@@ -895,7 +895,7 @@ earlier isolated tails, or qualify the remaining PPU operators and target export
 | Token embedding / PLE | Device-indexed Q8_0 rows of width2560 and IQ4_NL rows of width160; inactive IDs and changing live counts | QU serving row lookup v1 accepts device int64 IDs and an int32 live count, retaining raw GGUF bytes. Embedding and staged PLE binding are implemented; qualify actual graphs on PPU. |
 | GDN | FP32 state `[slot,Hv,V,K]`, Hk16/Hv48, compact per-layer records, consumed-input commit count | actlizeLA provides decode/verify/prefill/commit. Preserve zero-prefix convolution rollback, device errors and each layer's retained records; bind through complete compiled forwards. |
 | QSA | Ratio4, 24 query/2 KV heads, D256, selected capacity2051, page64 | actlizeLA supplies append/compression/selection/attention with BF16 KV. Combined GDN/QSA partial GGUF serving and snapshot/restore are qualified on SM120; complete PPU recipe binding remains. Do not retain the old writer as well. |
-| Shared MTP attention | Ratio0, paged causal GQA, D256, page64, changing device lengths | Ordinary NVIDIA attention passes actual shared-Q8 MTP tests at 1/7/128 with BF16 pages. Local PPU FA2 f600591 requires pages divisible by256; the narrow FA3 box build disables paging/append/D256. Qualify a matching FA3 build and prepared output/workspace ABI. |
+| Shared MTP attention | Ratio0, paged causal GQA, D256, page64, changing device lengths | The user reports six FA3 API graph tests passing on PPU at widths1/7/128. Explicit FA3 selection now connects ordinary MTP attention; cache-only absorption uses a separate BF16 layout copy. The prepared copy/attention and full-forward compiler tests await device execution. |
 | Dense BF16 / HC projections | Preserve actual dimensions, strided outputs and FP32 accumulation | Explicit `dense_blas` selection binds cuBLAS or acBLAS GemmEx with caller-owned scratch. CPU ABI and layout tests pass; compiled device capture and native export with this selection remain unqualified. |
 | RMSNorm / HC / ShortConv / MTP feedback | Exact dtype/rounding, inactive rows and complete mutable history | actlizeLA bindings cover GDN convolution/norm, four-stream HC and full-width MTP feedback. External scratch survives tuning/trim; raw convolution slot0 uses its new valid-slot history contract. Device composition tests remain unrun locally. |
 | PLE hash and gating | Read-only committed history, int64 hashes, dilation3, BF16 gate boundaries | External binding preserves staged IQ4_NL readiness and aliases only expired norm intermediates. Geometry/export host tests pass; four composed graph cases await a device. |
@@ -1000,8 +1000,32 @@ native `flash_attn_3.fwd` interface with page64, D256, 24/2 heads, widths
 1/7/128, packed inactive rows and changing device lengths. It checks both
 ordinary reads and KV append, exact cache mutation, caller-provided output
 and allocation stability during graph replay. The wheel must enable paged KV,
-append, varlen and D256; the earlier narrow FA3 build is insufficient. This is
-an operator capability test; FA3 is not yet wired into the Qwen recipe.
+append, varlen and D256. The user reports all six cases passing on the installed
+PPU wheel. This is operator API evidence; it does not establish full-model execution.
+
+Select that installed extension explicitly with
+`"flash_attention3_library": "/path/to/site-packages/flash_attn_3/_C.so"` in the
+GGUF input manifest, using its actual filename (which may include a Python ABI
+suffix). For the partial-layer qualifier the corresponding option is
+`--flash-attention3-library PATH`. Preparation checks that the imported extension
+matches this path, binds its content hash into the plan, and budgets BF16 cache
+pages and snapshots. FA3 reads the pages after a separate unquantized KV copy;
+cache-only MTP absorption performs that copy without attention. Cache-write bounds
+errors participate in the existing round error accumulator. No b12x/cuTile import
+is required by these prepared components. FA3 selects its own split schedule;
+temporary attention buffers are allocated during warmup/capture in the graph pool.
+The new `attention-prepared` suite checks actual copy/attention replay at widths
+1/7/128, both directly captured and through Flare's complete-forward compiler,
+with changed lengths, inactive rows, exact cache writes and allocation stability.
+A cache-only case checks full-width int64 bounds and error retention across two
+calls. These seven new device cases are unrun locally and need box qualification.
+
+The manifest also accepts `"operator_target": "ppu10"` or `"ppu15"` for explicit
+QUactlize/actlizeLA library selection. The default remains the NVIDIA debug target;
+its QUactlize loader binds the current `quactlize_cuda_matmul_*_v1` C ABI directly.
+Target and library content enter preparation identity. This input binding alone
+does not remove the remaining normal preparation/session and hardware-planning
+dependencies or qualify PPU export.
 The inspection also checks the platform Torch APIs used by Flare's AOT
 serialization, guard pickler and retained CUDA graphs, and round-trips tensor
 metadata with aliases. Platform API compatibility must be established before
@@ -1009,7 +1033,7 @@ attempting complete compilation/export; this inspection does not compile or
 replay a model.
 
 Passing this command qualifies those components, not complete PPU model
-serving. Full b12x-free recipe composition, ordinary MTP paged attention,
+serving. Full b12x-free recipe composition, composed MTP device qualification,
 target native export/Rust replay and whole-round bubble measurements remain
 separate requirements.
 

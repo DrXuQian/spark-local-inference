@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from ignition.preparation.actlize import ActlizeLibrarySpec
     from ignition.preparation.quactlize import QuactlizeHelpersSpec, QuactlizeLibrarySpec
     from ignition.preparation.blas import BlasLibrarySpec
+    from ignition.preparation.flash_attn3 import FlashAttention3Spec
 
 @dataclass(frozen=True)
 class SamplingRange:
@@ -239,17 +240,19 @@ class Recipe:
     quactlize: "QuactlizeLibrarySpec | None" = None
     dense_blas: "BlasLibrarySpec | None" = None
     quactlize_helpers: "QuactlizeHelpersSpec | None" = None
+    flash_attention3: "FlashAttention3Spec | None" = None
     # Preparation overrides for vocabulary and transition projections used only by proposals.
     draft_head_quantizations: tuple[str, ...] = ()
     markov_head_quantizations: tuple[str, ...] = ()
 
     @property
     def operators(self):
-        if all(spec is None for spec in (self.actlize, self.quactlize, self.dense_blas, self.quactlize_helpers)):
+        if all(spec is None for spec in (self.actlize, self.quactlize, self.dense_blas,
+                                        self.quactlize_helpers, self.flash_attention3)):
             return None
         from ignition.preparation.qwen38_gguf import operator_identity
 
-        return operator_identity(self.actlize, self.quactlize, self.dense_blas, self.quactlize_helpers)
+        return operator_identity(self.actlize, self.quactlize, self.dense_blas, self.quactlize_helpers, self.flash_attention3)
 
     def mixed_shapes(self, concurrency, chunk, speculation):
         from ignition.components.capacity import mixed_shapes

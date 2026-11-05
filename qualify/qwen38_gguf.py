@@ -280,19 +280,23 @@ def prepare(args):
             external=args.actlize_library is not None and args.quactlize_helpers_library is not None)
         from ignition.preparation.actlize import ActlizeLibrarySpec
         from ignition.preparation.quactlize import QuactlizeHelpersSpec, QuactlizeLibrarySpec
+        from ignition.preparation.flash_attn3 import FlashAttention3Spec
         from ignition.preparation.qwen38_gguf import GgufInputs
 
         operator_inputs = GgufInputs(args.target_shard, args.mtp, args.frontend, 'pread',
             None if args.actlize_library is None else ActlizeLibrarySpec.read(args.actlize_library),
             None if args.quactlize_abi_library is None else QuactlizeLibrarySpec.read(args.quactlize_abi_library),
             dense_blas=dense_blas,
+            flash_attention3=None if args.flash_attention3_library is None else
+                FlashAttention3Spec.read(args.flash_attention3_library),
             quactlize_helpers=None if args.quactlize_helpers_library is None else
                 QuactlizeHelpersSpec.read(args.quactlize_helpers_library))
         attention_libraries = operator_inputs.load_operators('cuda:0')
         dense_blas_library = attention_libraries.pop('dense_blas')
         quactlize_helpers = attention_libraries.pop('quactlize_helpers')
+        flash_attention3 = attention_libraries.pop('flash_attention3')
         operators = operator_inputs.operator_identity() or {'gdn': 'b12x'}
-        kv_dtype = torch.bfloat16 if args.actlize_qsa else torch.float8_e4m3fn
+        kv_dtype = torch.bfloat16 if args.actlize_qsa or flash_attention3 is not None else torch.float8_e4m3fn
         operators.update(qsa='actlize' if args.actlize_qsa else 'b12x', kv_dtype=str(kv_dtype))
         if not args.actlize_qsa:
             attention_libraries['actlize_qsa_library'] = None
@@ -330,6 +334,7 @@ def prepare(args):
                            'operators': operators},
                 autotune_effort='off', compile_workers=2) as session:
             session.quactlize_helpers = quactlize_helpers
+            session.flash_attention3 = flash_attention3
             session.actlize_helpers = attention_libraries['actlize_library']
             session.dense_blas = None
             if dense_blas_library is not None:
@@ -437,6 +442,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--quactlize-helpers-library', type=Path,
                         help='explicit QUactlize serving v2/v1 DSO, independent of the matmul DSO')
+    parser.add_argument('--flash-attention3-library', type=Path,
+                        help='installed flash_attn_3._C extension for BF16 ordinary MTP attention')
     for name in ('target-shard', 'metadata', 'mtp', 'frontend', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--layers', type=int, nargs='+', default=[44, 47])

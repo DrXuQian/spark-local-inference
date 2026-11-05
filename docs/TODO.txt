@@ -297,8 +297,9 @@
 
 [ ] Finish b12x-free Qwen GGUF preparation using external QUactlize/actlizeLA
     operators. Routing, rounded SwiGLU, rows, GDN sequence, HC, PLE and MTP feedback
-    bindings are implemented; ordinary paged GQA and preparation dependency
-    cleanup remain. PLE retains raw IQ4_NL delivery, hash publication/readiness,
+    bindings are implemented. Explicit FA3 ordinary MTP attention and independent
+    cache-only writes are connected; preparation dependency cleanup remains.
+    PLE retains raw IQ4_NL delivery, hash publication/readiness,
     BF16 gate boundaries and dilation3 history; its four graph tests await a
     device. Qualify FlashInfer's
     caller-owned sampling workspace and row-independent RNG interfaces.
@@ -307,7 +308,11 @@
     unused b12x/CuTe packages; normal session/tuning orchestration is pending.
     qualify.ppu_box includes a separate FA3 page64/D256/append graph API gate
     (widths 1/7/128, changing lengths, inactive rows and exact cache writes).
-    This gate is unrun locally and does not wire FA3 into the recipe.
+    The user reports all six API cases passing on PPU. New attention-prepared
+    cases exercise strided KV copy, FA3 automatic splits, full-forward lowering,
+    changing packed suffixes and sticky bounds errors; these await box execution.
+    Explicit PPU operator target identities now select the libraries, but normal
+    session/planning/export orchestration still needs the remaining port work.
 
 [ ] Exercise per-message checkpoint restore and prefill graph selection through
     Qwen, GLM, DeepSeek, MiMo, Step, and Nemotron services. See

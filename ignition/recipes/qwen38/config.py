@@ -116,7 +116,8 @@ class PreparationConfig:
 
     @property
     def kv_dtype(self):
-        return torch.bfloat16 if self.actlize is not None else torch.float8_e4m3fn
+        bf16 = self.actlize is not None or (self.gguf_inputs is not None and self.gguf_inputs.flash_attention3 is not None)
+        return torch.bfloat16 if bf16 else torch.float8_e4m3fn
 
     @property
     def preparation_pages(self):

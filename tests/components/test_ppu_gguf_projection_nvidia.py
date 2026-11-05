@@ -8,12 +8,10 @@ import json
 import pytest
 
 pytest.importorskip('quactlize.compat.native')
-cuda_compat = pytest.importorskip('quactlize.cuda_compat')
-if not hasattr(cuda_compat, 'CudaPpuMatmulLibrary'):
-    pytest.skip('explicit NVIDIA implementation of PPU matmul records required', allow_module_level=True)
 from tests.components.test_ppu_gguf_projection_cuda import check_captured_projection
 
-pytestmark = pytest.mark.skipif(os.environ.get('FLARE_RUN_CUDA_TESTS') != '1',
+pytestmark = pytest.mark.skipif(os.environ.get('FLARE_RUN_CUDA_TESTS') != '1'
+                              or not os.environ.get('FLARE_TEST_CUDA_MATMUL_LIBRARY'),
                                 reason='explicit NVIDIA CUDA assignment required')
 
 
@@ -27,7 +25,7 @@ def test_nvidia_implementation_of_ppu_matmul_records(tmp_path, qtype, m):
     for name in ('main.gguf', 'mtp.gguf'):
         (tmp_path / name).touch()
     (tmp_path / 'frontend').mkdir()
-    library_path = cuda_compat.CudaPpuMatmulLibrary().lib._name
+    library_path = os.environ['FLARE_TEST_CUDA_MATMUL_LIBRARY']
     (tmp_path / 'manifest.json').write_text(json.dumps(dict(schema='qwen38-gguf/1',
         main='main.gguf', mtp='mtp.gguf', frontend='frontend', read_mode='pread',
         quactlize_abi_library=library_path)))

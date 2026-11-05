@@ -63,6 +63,8 @@ def device_suites(args, root, output):
             '--junitxml=' + str(output / 'framework.xml')], root, 'framework.xml'),
         ('attention-api', [python, '-m', 'pytest', '-q', 'tests/components/test_flash_attn3_paged_cuda.py',
             '--junitxml=' + str(output / 'attention-api.xml')], root, 'attention-api.xml'),
+        ('attention-prepared', [python, '-m', 'pytest', '-q', 'tests/components/test_flash_attn3_prepared_cuda.py',
+            '--junitxml=' + str(output / 'attention-prepared.xml')], root, 'attention-prepared.xml'),
         ('quactlize', [python, '-m', 'pytest', '-q', 'tests/serving/test_serving_device.py',
             '--junitxml=' + str(output / 'quactlize.xml')], args.quactlize_source, 'quactlize.xml'),
         ('actlize', [python, str(args.actlize_source / 'tests/serving_device.py'),

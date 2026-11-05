@@ -139,11 +139,14 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
         if config.gguf_inputs is None else config.gguf_inputs.load_operators(device))
     dense_blas_library = operator_libraries.pop('dense_blas', None)
     quactlize_helpers = operator_libraries.pop('quactlize_helpers', None)
+    flash_attention3 = operator_libraries.pop('flash_attention3', None)
     operators = None if config.gguf_inputs is None else config.gguf_inputs.operator_identity()
     if config.actlize is not None:
-        report('actlizeLA GDN/QSA · BF16 KV and snapshots · cuda_sm120')
+        report('actlizeLA GDN/QSA · BF16 KV and snapshots · ' + config.actlize.target)
     if operator_libraries['gguf_projection_library'] is not None:
-        report('QUactlize PPU matmul records · explicit NVIDIA implementation · SM120')
+        report('QUactlize matmul records · ' + config.gguf_inputs.quactlize.target)
+    if flash_attention3 is not None:
+        report('FA3 ordinary MTP attention · BF16 page64/D256')
     if quactlize_helpers is not None:
         report('QUactlize serving helpers · router v2, rounded SwiGLU v2 and raw GGUF rows')
     # Loading, construction and tuning free most of what they allocate; a transient package pool returns
@@ -206,6 +209,7 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
     graphs = {}
     try:
         session.quactlize_helpers = quactlize_helpers
+        session.flash_attention3 = flash_attention3
         session.actlize_helpers = operator_libraries['actlize_library']
         session.dense_blas = None
         if dense_blas_library is not None:

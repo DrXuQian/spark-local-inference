@@ -133,6 +133,9 @@ class _NativeOwner:
         with torch.cuda.device(self.device):
             if torch.cuda.is_current_stream_capturing():
                 raise ValueError('prepare PPU projections before capture')
+            self.preparation_stream = torch.cuda.Stream(device=self.device)
+            self.preparation_stream.wait_stream(torch.cuda.current_stream(self.device))
+        with torch.cuda.device(self.device), torch.cuda.stream(self.preparation_stream):
             source, raw, ids, output, workspace, error = operands
             # The native prepare runs its first call. Shared serving IDs/input
             # are not initialized until the complete forward executes.

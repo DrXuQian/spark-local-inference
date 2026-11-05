@@ -15,7 +15,7 @@ from ignition.preparation.qwen38_gguf import GgufInputs
 from ignition.recipes.qwen38.recipe import gguf_cache_costs, gguf_recipe
 
 
-def bundle(tmp_path, *, actlize=False, quactlize=False, helpers=False):
+def bundle(tmp_path, *, actlize=False, quactlize=False, helpers=False, fa3=False):
     (tmp_path / 'main.gguf').write_bytes(b'header fixture')
     (tmp_path / 'mtp.gguf').write_bytes(b'draft header fixture')
     (tmp_path / 'frontend').mkdir(exist_ok=True)
@@ -30,6 +30,9 @@ def bundle(tmp_path, *, actlize=False, quactlize=False, helpers=False):
     if helpers:
         (tmp_path / 'helpers.so').write_bytes(b'helpers identity fixture')
         value['quactlize_helpers_library'] = 'helpers.so'
+    if fa3:
+        (tmp_path / 'fa3.so').write_bytes(b'FA3 identity fixture')
+        value['flash_attention3_library'] = 'fa3.so'
     (tmp_path / 'manifest.json').write_text(json.dumps(value))
     return value
 
@@ -69,7 +72,8 @@ def test_helpers_are_independent_and_changed_binary_is_rejected(tmp_path):
 
 
 @pytest.mark.parametrize('value', [None, '', 1, {}, []])
-@pytest.mark.parametrize('key', ['actlize_library', 'quactlize_abi_library', 'quactlize_helpers_library'])
+@pytest.mark.parametrize('key', ['actlize_library', 'quactlize_abi_library', 'quactlize_helpers_library',
+                               'flash_attention3_library'])
 def test_invalid_library_selection_fails_during_input_read(tmp_path, value, key):
     fields = bundle(tmp_path)
     fields[key] = value
@@ -109,13 +113,13 @@ def test_preparation_uses_bf16_and_rejects_fp8_snapshot_budget(tmp_path):
         replace(config, max_active=2, mixed_prefill=True)
 
 
-@pytest.mark.parametrize('actlize,quactlize,helpers', [
-    (True, False, False), (False, True, False), (True, True, False),
-    (False, False, True), (True, True, True)])
-def test_resolved_recipe_reports_operator_identity_and_sizes_pages(tmp_path, actlize, quactlize, helpers):
+@pytest.mark.parametrize('actlize,quactlize,helpers,fa3', [
+    (True, False, False, False), (False, True, False, False), (True, True, False, False),
+    (False, False, True, False), (True, True, True, False), (False, False, False, True), (True, True, True, True)])
+def test_resolved_recipe_reports_operator_identity_and_sizes_pages(tmp_path, actlize, quactlize, helpers, fa3):
     from ignition import planning
 
-    bundle(tmp_path, actlize=actlize, quactlize=quactlize, helpers=helpers)
+    bundle(tmp_path, actlize=actlize, quactlize=quactlize, helpers=helpers, fa3=fa3)
     inputs = GgufInputs.read(tmp_path)
     # The planner consumes inspected sizes; this fixture does not claim a full checkpoint.
     tensor = SimpleNamespace(nbytes=2 << 30, dtype='F16', shape=(1024, 1024), component='weights')
@@ -124,12 +128,13 @@ def test_resolved_recipe_reports_operator_identity_and_sizes_pages(tmp_path, act
     manifest = SimpleNamespace(draft=draft, shards=(shard,), headers_sha256='a' * 64,
         tensors={'per_layer_token_embd.weight': replace_namespace(tensor, component='ple_tables'),
                  'token_embd.weight': tensor}, actlize=inputs.actlize, quactlize=inputs.quactlize,
-        dense_blas=None, quactlize_helpers=inputs.quactlize_helpers)
+        dense_blas=None, quactlize_helpers=inputs.quactlize_helpers, flash_attention3=inputs.flash_attention3)
     selected = gguf_recipe(manifest, tmp_path)
-    baseline = gguf_recipe(replace_namespace(manifest, actlize=None, quactlize=None, quactlize_helpers=None), tmp_path)
+    baseline = gguf_recipe(replace_namespace(manifest, actlize=None, quactlize=None,
+                                           quactlize_helpers=None, flash_attention3=None), tmp_path)
     assert selected.checkpoints[0].alias == baseline.checkpoints[0].alias
     assert selected.checkpoints[0].revision != baseline.checkpoints[0].revision
-    for name in ('actlize', 'quactlize', 'quactlize_helpers'):
+    for name in ('actlize', 'quactlize', 'quactlize_helpers', 'flash_attention3'):
         spec = getattr(inputs, name)
         if spec is not None:
             changed = replace(spec, sha256='b' * 64)
@@ -137,7 +142,7 @@ def test_resolved_recipe_reports_operator_identity_and_sizes_pages(tmp_path, act
     gpu = planning.Gpu(0, 'RTX qualification', 'GPU-test', 96 << 30, 95 << 30, (12, 0))
     plan = planning.plan(selected, selected.checkpoints[0], (gpu,), selected=(0,),
         concurrency=1, reserve_bytes=0, speculation=selected.speculation, prefill_chunk=64)
-    costs = gguf_cache_costs(speculating=True, bf16=actlize)
+    costs = gguf_cache_costs(speculating=True, bf16=actlize or fa3)
     assert plan.costs == costs
     record = plan.to_dict()
     assert record['operators'] == inputs.operator_identity()
@@ -191,3 +196,53 @@ def test_prepare_rejects_operator_changed_after_planning(tmp_path, name):
 
 def replace_namespace(value, **fields):
     return SimpleNamespace(**(vars(value) | fields))
+
+
+@pytest.mark.parametrize('target', ['cuda_sm120', 'ppu10', 'ppu15'])
+def test_explicit_operator_target_changes_identity_without_loading_device_code(tmp_path, target):
+    fields = bundle(tmp_path, actlize=True, quactlize=True, helpers=True)
+    baseline = GgufInputs.read(tmp_path)
+    fields['operator_target'] = target
+    (tmp_path / 'manifest.json').write_text(json.dumps(fields))
+    inputs = GgufInputs.read(tmp_path)
+    assert inputs.actlize.target == target
+    assert inputs.quactlize.target == inputs.quactlize_helpers.target == ('nvidia' if target == 'cuda_sm120' else target)
+    assert (inputs.operator_identity() == baseline.operator_identity()) == (target == 'cuda_sm120')
+    inputs.actlize.path.write_bytes(b'changed library')
+    with pytest.raises(ValueError, match='changed after input inspection'):
+        inputs.load_operators('cuda:0')
+
+
+@pytest.mark.parametrize('target', [None, '', 'ppu17', 'nvidia', False, {}])
+def test_invalid_operator_target_is_rejected(tmp_path, target):
+    fields = bundle(tmp_path, actlize=True)
+    fields['operator_target'] = target
+    (tmp_path / 'manifest.json').write_text(json.dumps(fields))
+    with pytest.raises(CheckpointError, match='operator_target'):
+        GgufInputs.read(tmp_path)
+
+
+def test_fa3_selection_binds_content_and_bf16_snapshot_budget(tmp_path):
+    import torch
+    from ignition.preparation.flash_attn3 import FlashAttention3Spec
+    from ignition.recipes.qwen38.config import PreparationConfig
+    from ignition.recipes.qwen38.recipe import RECIPE, prepare_gguf
+
+    bundle(tmp_path, fa3=True)
+    inputs = GgufInputs.read(tmp_path)
+    selected = replace(RECIPE, name='qwen38_gguf', flash_attention3=inputs.flash_attention3)
+    assert selected.operators == inputs.operator_identity()
+    assert selected.operators['full_attention']['operator'] == 'flash_attn_3.fwd'
+    config = PreparationConfig(gguf_inputs=inputs, max_active=1, context=1024, prefill_chunk_size=64)
+    assert config.kv_dtype == torch.bfloat16
+    fp8 = gguf_cache_costs(speculating=False, bf16=False)
+    with pytest.raises(ValueError, match='snapshot budget'):
+        replace(config, snapshot_budget_bytes=fp8.state_row_bytes)
+    copy = tmp_path / 'copy.so'
+    copy.write_bytes(inputs.flash_attention3.path.read_bytes())
+    assert FlashAttention3Spec.read(copy).identity() == inputs.flash_attention3.identity()
+    inputs.flash_attention3.path.write_bytes(b'changed FA3 binary')
+    with pytest.raises(ValueError, match='changed after input inspection'):
+        inputs.load_operators('cuda:0')
+    with pytest.raises(ValueError, match='FA3 selection changed after memory planning'):
+        prepare_gguf(tmp_path, SimpleNamespace(recipe=selected))

@@ -1,12 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Qwen's uncompressed MTP attention using Flare's existing paged GQA."""
+"""Qwen's uncompressed MTP attention and cache-only absorption."""
 
 import torch
-from transformers.models.qwen4_exp.modeling_qwen4_exp import apply_rotary_pos_emb
 
 from ignition.components.linear import prepare_projection
-from ignition.components.paged_attention import PreparedPagedAttention, PreparedPagedKVWriter
 
 
 class PreparedFullAttention:
@@ -25,15 +23,32 @@ class PreparedFullAttention:
             raise ValueError('planned full-attention pages must cover the bound cache')
         self.qkv = prepare_projection(source, weights['qkv_proj'], scratch.projected_qkv,
             session=session, name=name + '.qkv', workspace=projection_workspace)
-        self.writer = PreparedPagedKVWriter(scratch.key,
-            scratch.projected_v.view(self.tokens, self.kv_heads, 256), state.main_k_cache,
-            state.main_v_cache, metadata.slot_mapping, session=session, name=name + '.kv_write')
+        fa3 = getattr(session, 'flash_attention3', None)
+        operands = (scratch.key, scratch.projected_v.view(self.tokens, self.kv_heads, 256),
+                    state.main_k_cache, state.main_v_cache, metadata.slot_mapping)
+        if fa3 is not None:
+            from ignition.components.flash_attn3 import PreparedPagedKVWriter
+
+            self.writer = PreparedPagedKVWriter(*operands, workspace=workspace, max_cache_pages=self.cache_page_capacity)
+        else:
+            from ignition.components.paged_attention import PreparedPagedKVWriter
+
+            self.writer = PreparedPagedKVWriter(*operands, session=session, name=name + '.kv_write')
         if cache_only:
             return
         self.projection = prepare_projection(scratch.gated, weights['o_proj'], scratch.output,
             session=session, name=name + '.output', workspace=projection_workspace)
         batch = metadata.main_block_table.shape[0]
         width = (self.tokens + batch - 1) // batch
+        if fa3 is not None:
+            from ignition.components.flash_attn3 import PreparedFlashAttention3
+
+            self.attention = PreparedFlashAttention3(fa3, scratch.query, state.main_k_cache, state.main_v_cache,
+                metadata.main_block_table, metadata.sequence_lengths, metadata.query_start_loc,
+                scratch.attended, width=width)
+            return
+        from ignition.components.paged_attention import PreparedPagedAttention
+
         # Every invocation is a suffix of each request's cache. Extend handles
         # absorption/prefill; short suffixes use paged GQA's verification schedule.
         mode = 'decode' if width == 1 else 'verify' if width <= 8 else 'extend'
@@ -42,6 +57,10 @@ class PreparedFullAttention:
             scratch.attended, mode=mode, width=width, session=session, workspace=workspace,
             name=name + '.full', k_descale=self.writer.arguments['k_scale'],
             v_descale=self.writer.arguments['v_scale'])
+
+    @property
+    def device_errors(self):
+        return getattr(self.writer, 'device_errors', ())
 
     def rebind_pages_for_preparation(self, state):
         if state.main_k_cache.shape[0] > self.cache_page_capacity:
@@ -52,12 +71,16 @@ class PreparedFullAttention:
                     or old.dtype != new.dtype or old.device != new.device):
                 raise ValueError('full-attention rebinding must preserve the page ABI')
         self.writer.arguments.update(k_cache=state.main_k_cache, v_cache=state.main_v_cache)
+        if hasattr(self.writer, 'rebind'):
+            self.writer.rebind()
         if not self.cache_only:
             self.attention.arguments.update(k_cache=state.main_k_cache, v_cache=state.main_v_cache)
             self.attention.rebind()
         self.state = state
 
     def __call__(self, source):
+        from transformers.models.qwen4_exp.modeling_qwen4_exp import apply_rotary_pos_emb
+
         s, m = self.scratch, self.metadata
         self.qkv(source)
         projected = s.projected_q.view(self.tokens, self.q_heads, 512)

@@ -71,6 +71,8 @@ from ignition.recipes.qwen38.mtp import MTPScratch
 from ignition.recipes.qwen38.gguf_weights import QwenGgufWeightLoader
 from ignition.recipes.qwen38.mtp_weights import MTPWeights
 from ignition.recipes.qwen38.decoder import ModelWeights, DecoderScratch
+from ignition.recipes.qwen38.full_attention import PreparedFullAttention
+from ignition.components.flash_attn3 import PreparedFlashAttention3, PreparedPagedKVWriter
 qsa = QSAScratch.allocate(17, 'meta')
 mtp = MTPScratch.allocate(17, 2, 'meta')
 assert qsa.projected_qkv.shape == (17, 13312)

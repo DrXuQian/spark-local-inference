@@ -66,7 +66,7 @@ def test_planning_records_blas_and_counts_shared_workspace_once(tmp_path):
     manifest = SimpleNamespace(draft=draft, shards=(shard,), headers_sha256='a' * 64,
         tensors={'per_layer_token_embd.weight': SimpleNamespace(**(vars(tensor) | {'component':'ple_tables'})),
                  'token_embd.weight': tensor}, actlize=None, quactlize=None, dense_blas=inputs.dense_blas,
-        quactlize_helpers=None)
+        quactlize_helpers=None, flash_attention3=None)
     selected = gguf_recipe(manifest, tmp_path)
     baseline = gguf_recipe(SimpleNamespace(**(vars(manifest) | {'dense_blas':None})), tmp_path)
     assert selected.checkpoints[0].revision != baseline.checkpoints[0].revision

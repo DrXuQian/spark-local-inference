@@ -13,6 +13,7 @@ from .checkpoint import CheckpointError
 from .actlize import ActlizeLibrarySpec
 from .quactlize import QuactlizeHelpersSpec, QuactlizeLibrarySpec
 from .blas import BlasLibrarySpec
+from .flash_attn3 import FlashAttention3Spec
 from .gguf import GgufCheckpoint, file_identity, inspect_gguf_checkpoint
 from .qwen38 import CONFIG_SHA256, FRONTEND_SHA256, GENERATION_SHA256
 
@@ -27,9 +28,10 @@ class GgufInputs:
     quactlize: QuactlizeLibrarySpec | None = None
     dense_blas: BlasLibrarySpec | None = None
     quactlize_helpers: QuactlizeHelpersSpec | None = None
+    flash_attention3: FlashAttention3Spec | None = None
 
     def operator_identity(self):
-        return operator_identity(self.actlize, self.quactlize, self.dense_blas, self.quactlize_helpers)
+        return operator_identity(self.actlize, self.quactlize, self.dense_blas, self.quactlize_helpers, self.flash_attention3)
 
     def load_operators(self, device):
         attention = None if self.actlize is None else self.actlize.load(device)
@@ -37,6 +39,7 @@ class GgufInputs:
         return dict(actlize_library=attention, actlize_qsa_library=attention,
                     gguf_projection_library=projection,
                     dense_blas=None if self.dense_blas is None else self.dense_blas.load(),
+                    flash_attention3=None if self.flash_attention3 is None else self.flash_attention3.load(device),
                     quactlize_helpers=None if self.quactlize_helpers is None else self.quactlize_helpers.load(device))
 
     @classmethod
@@ -44,11 +47,19 @@ class GgufInputs:
         directory = Path(directory).resolve()
         value = json.loads((directory / 'manifest.json').read_text())
         required = {'schema', 'main', 'mtp', 'frontend', 'read_mode'}
-        optional = {'actlize_library', 'quactlize_abi_library', 'dense_blas', 'quactlize_helpers_library'}
+        optional = {'actlize_library', 'quactlize_abi_library', 'dense_blas', 'quactlize_helpers_library',
+                    'operator_target', 'flash_attention3_library'}
         if (not isinstance(value, dict) or not required <= value.keys() <= required | optional
                 or value['schema'] != 'qwen38-gguf/1'):
             raise CheckpointError('GGUF input manifest requires schema, main, mtp, frontend and read_mode;'
-                                  ' actlize_library, quactlize_abi_library, quactlize_helpers_library and dense_blas are optional')
+                                  ' actlize_library, quactlize_abi_library, quactlize_helpers_library, dense_blas,'
+                                  ' operator_target and flash_attention3_library are optional')
+        target = value.get('operator_target', 'cuda_sm120')
+        if target not in ('cuda_sm120', 'ppu10', 'ppu15'):
+            raise CheckpointError('operator_target must be cuda_sm120, ppu10 or ppu15')
+        if 'operator_target' in value and not any(key in value for key in
+                ('actlize_library', 'quactlize_abi_library', 'quactlize_helpers_library')):
+            raise CheckpointError('operator_target requires an explicitly selected operator library')
         if value['read_mode'] not in ('auto', 'bounce', 'gds', 'pread'):
             raise CheckpointError('unknown GGUF checkpoint transport')
         paths = []
@@ -63,17 +74,24 @@ class GgufInputs:
                           ('quactlize_helpers_library', QuactlizeHelpersSpec)):
             if key in value and (not isinstance(value[key], str) or not value[key]):
                 raise CheckpointError(f'{key} requires a native library path')
-            libraries.append(None if key not in value else spec.read(directory / value[key]))
+            library_target = 'nvidia' if spec is not ActlizeLibrarySpec and target == 'cuda_sm120' else target
+            libraries.append(None if key not in value else spec.read(directory / value[key], target=library_target))
         try:
             blas = BlasLibrarySpec.read(directory, value['dense_blas']) if 'dense_blas' in value else None
         except ValueError as exc:
             raise CheckpointError(str(exc)) from exc
-        return cls(*paths, value['read_mode'], libraries[0], libraries[1], blas, libraries[2])
+        fa3 = None
+        if 'flash_attention3_library' in value:
+            path = value['flash_attention3_library']
+            if not isinstance(path, str) or not path:
+                raise CheckpointError('flash_attention3_library requires a native library path')
+            fa3 = FlashAttention3Spec.read(directory / path)
+        return cls(*paths, value['read_mode'], libraries[0], libraries[1], blas, libraries[2], fa3)
 
 
-def operator_identity(actlize, quactlize, dense_blas=None, quactlize_helpers=None):
+def operator_identity(actlize, quactlize, dense_blas=None, quactlize_helpers=None, flash_attention3=None):
     value = None if actlize is None else actlize.identity()
-    if value is None and any(spec is not None for spec in (quactlize, dense_blas, quactlize_helpers)):
+    if value is None and any(spec is not None for spec in (quactlize, dense_blas, quactlize_helpers, flash_attention3)):
         value = dict(gdn='b12x', qsa='b12x', kv_dtype='float8_e4m3fn')
     if quactlize is not None:
         value['matmul'] = quactlize.identity()
@@ -81,6 +99,8 @@ def operator_identity(actlize, quactlize, dense_blas=None, quactlize_helpers=Non
         value['dense_blas'] = dense_blas.identity()
     if quactlize_helpers is not None:
         value['quactlize_helpers'] = quactlize_helpers.identity()
+    if flash_attention3 is not None:
+        value.update(full_attention=flash_attention3.identity(), kv_dtype='bfloat16')
     return value
 
 
@@ -95,6 +115,7 @@ class QwenGgufCheckpoint(GgufCheckpoint):
     quactlize: QuactlizeLibrarySpec | None = None
     dense_blas: BlasLibrarySpec | None = None
     quactlize_helpers: QuactlizeHelpersSpec | None = None
+    flash_attention3: FlashAttention3Spec | None = None
 
     @property
     def metadata_path(self):
@@ -178,7 +199,8 @@ def inspect_qwen38_gguf(inputs: GgufInputs):
                                      for shard in checkpoint.shards).encode()).hexdigest()
     return QwenGgufCheckpoint(main.snapshot, main.tensors, main.shards, main.metadata, main.vocab_size,
                               draft, inputs.frontend, MappingProxyType(hashes), headers, inputs.read_mode,
-                              inputs.actlize, inputs.quactlize, inputs.dense_blas, inputs.quactlize_helpers)
+                              inputs.actlize, inputs.quactlize, inputs.dense_blas, inputs.quactlize_helpers,
+                              inputs.flash_attention3)
 
 
 def device_weight_bytes(checkpoint):
