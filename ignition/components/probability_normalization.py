@@ -7,6 +7,8 @@ import torch
 import triton
 import triton.language as tl
 
+from ignition.preparation.triton import wrap_triton
+
 _BLOCK = 4096
 
 
@@ -86,16 +88,16 @@ class PreparedProbabilityNormalization:
     def __call__(self, probabilities, params):
         grid = (self.rows, self.blocks)
         reduce = triton.next_power_of_2(self.blocks)
-        torch.library.wrap_triton(_maxima)[grid](
+        wrap_triton(_maxima)[grid](
             probabilities, params, self.maxima, self.vocabulary, self.width,
             params.stride(0), self.blocks, _BLOCK)
-        torch.library.wrap_triton(_filter)[grid](
+        wrap_triton(_filter)[grid](
             probabilities, params, self.maxima, self.masses, self.output,
             self.vocabulary, self.width, params.stride(0), self.blocks, reduce, _BLOCK,
             probabilities is self.output,
             enable_fp_fusion=False)
-        torch.library.wrap_triton(_totals)[(self.rows,)](
+        wrap_triton(_totals)[(self.rows,)](
             self.masses, self.totals, self.valid, self.blocks, reduce)
-        torch.library.wrap_triton(_apply)[grid](
+        wrap_triton(_apply)[grid](
             self.output, self.valid, self.totals, self.vocabulary, _BLOCK)
         return self.output

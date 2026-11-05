@@ -50,7 +50,7 @@ def test_both_installed_packages_keep_framework_gates_without_operator_sources(t
                                '--blas-api', 'cublas'])
     assert resolve_sources(args) == ()
     suites = device_suites(args, Path.cwd(), tmp_path / 'results')
-    assert {'framework', 'gguf-packed', 'gguf-expert-chain', 'compiled-catalog'} <= {s[0] for s in suites}
+    assert {'framework', 'gguf-packed', 'gguf-expert-chain', 'compiled-catalog', 'qsa', 'sampling'} <= {s[0] for s in suites}
     assert not {'quactlize', 'actlize', 'actlize-aux'} & {s[0] for s in suites}
     assert 'tests/components/test_actlize_gdn_sequence_cuda.py' in suites[0][1]
     assert 'tests/components/test_actlize_mixing_cuda.py' in suites[0][1]

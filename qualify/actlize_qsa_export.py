@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import torch
 
 from qualify.actlize_export import export_fixture, save
+from qualify.qsa_reference import compress_history, encode_index, paged_attention, select_positions
 
 
 class Forward:
@@ -21,13 +22,15 @@ class Forward:
 
 
 class Fixture:
-    def __init__(self, library):
+    def __init__(self, library, rows=7):
         from actlize_la.serving import qsa_workspace_specs
         from actlize_la.serving.flare import bind_qsa
         from ignition.recipes.qwen38.attention import QSAState, QSAMetadata, RotaryTables
 
         device = torch.device('cuda:0')
-        self.context, self.pages, self.rows = 2176, 34, 7
+        self.rows = rows
+        self.context = max(2176, ((2051 + rows + 63) // 64) * 64)
+        self.pages = self.context // 64
         self.state = QSAState.allocate(pages=self.pages, slots=3, device=device,
             draft_tokens=7, kv_dtype=torch.bfloat16)
         self.metadata = QSAMetadata.allocate(tokens=self.rows, batch=2, context=self.context, device=device)
@@ -64,13 +67,8 @@ class Fixture:
         return torch.cat((lo * co - hi * si, hi * co + lo * si, value[..., 64:]), -1)
 
     def compressed(self, end):
-        from b12x.attention.qsa.reference import stream_compress_reference
-
-        _, values = stream_compress_reference(self.data['raw'][:end], torch.arange(end),
-            self.positions[:end], torch.zeros(16, 128, dtype=torch.bfloat16),
-            torch.full((16,), -1, dtype=torch.int64), torch.full((16, 3), -1, dtype=torch.int64),
-            4, self.inputs['index_k_norm_weight'].cpu(), 1e-6, self.rope)
-        return values.bfloat16()
+        return compress_history(self.data['raw'][:end], self.inputs['index_k_norm_weight'].cpu(),
+                                self.positions[:end], self.rope)
 
     def seed(self, context, seed):
         torch.manual_seed(seed)
@@ -118,11 +116,9 @@ class Fixture:
         m.query_start_loc.copy_(torch.tensor([0, width, width], dtype=torch.int32))
         m.sequence_lengths.copy_(torch.tensor([first + width, 0], dtype=torch.int32))
         m.num_accepted_tokens.copy_(torch.tensor([accepted, 0], dtype=torch.int32))
-        m.is_prefilling.zero_(); self.live.fill_(2 if width else 0)
+        m.is_prefilling.fill_(width > 7); self.live.fill_(2 if width else 0)
 
     def check(self, before):
-        from b12x.attention.qsa.reference import prepare_index_reference, score_select_reference, sparse_paged_gqa_reference
-
         s, m, first, width = self.state, self.metadata, self.first, self.width
         assert not self.work['errors'].any().item()
         if not width:
@@ -130,11 +126,10 @@ class Fixture:
                 assert torch.equal(getattr(s, name).cpu(), value)
             assert not self.observed.count_nonzero().item()
             return
-        encoded, _ = prepare_index_reference(self.data['index_query'][first:first + width],
-            self.data['raw'][first:first + width], self.inputs['index_q_norm_weight'].cpu(),
-            1e-6, self.rope, self.positions[first:first + width])
+        encoded = encode_index(self.data['index_query'][first:first + width],
+            self.inputs['index_q_norm_weight'].cpu(), self.positions[first:first + width], self.rope)
         compressed = self.compressed(first + width)
-        _, selected = score_select_reference(encoded, compressed, torch.arange(first, first + width), first + width, 4, 2048)
+        selected = select_positions(encoded, compressed, torch.arange(first, first + width), first + width)
         assert torch.equal(self.work['selected'][:width].cpu(), selected)
         for t in range(first, first + width):
             page, offset = int(self.perm[t // 64]), t % 64
@@ -145,7 +140,7 @@ class Fixture:
         for group in range((first + width) // 4):
             actual = s.compressed_k_cache[self.compressed_perm[group // 16], group % 16].cpu()
             torch.testing.assert_close(actual, compressed[group], rtol=2**-6, atol=2e-3)
-        expected = sparse_paged_gqa_reference(self.inputs['query'][:width].cpu(),
+        expected = paged_attention(self.inputs['query'][:width].cpu(),
             before['main_k_cache'], before['main_v_cache'], m.main_block_table.cpu(),
             m.request_ids[:width].cpu(), selected, m.query_positions[:width].cpu())
         actual = self.observed[:width].cpu().float()

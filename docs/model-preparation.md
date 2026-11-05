@@ -1079,8 +1079,33 @@ FLARE_TEST_BLAS_API=cublas python -m pytest -q \
 
 Expect fourteen executed cases. These check consumed-prefix GDN/convolution
 rollback including raw slot0, HC, full-width MTP feedback and staged IQ4_NL PLE
-graph replay. They remain unrun on PPU; they do not cover complete speculative
-rounds, native PLE I/O latency, export or Rust serving.
+graph replay. The user reports all fourteen passing on PPU in 8.67s. They do
+not cover complete speculative rounds, native PLE I/O latency, export or Rust serving.
+
+The next gate checks QSA and sampling without requiring the native Rust worker
+or any b12x/cuTile package. From the updated framework directory, run:
+
+```sh
+FLARE_RUN_CUDA_TESTS=1 FLARE_ACTLIZE_TARGET=ppu10 python -m pytest -q \
+  tests/components/test_actlize_qsa_cuda.py \
+  tests/components/test_external_sampling_cuda.py --tb=short
+```
+
+Expect eight executed cases. QSA checks widths 1/7/128, real BF16 page layouts,
+cache boundaries, tied selection, consumed-prefix recovery, inactive state and
+compiled disk reload with fresh handles. Its CPU reference keeps the original
+Flare numerical bounds and matches that reference exactly in host comparison.
+Sampling composes actual Flare draft proposals, FlashInfer filtering and chain
+verification in each graph, using vocabulary 248320 and widths 1/7. It checks
+shared scratch across batch 1/4, every rejection position, stale/inactive rows,
+penalties, top-k/top-p/min-p and per-request RNG under repacking. Both suites
+check replay allocation stability and have direct/catalog variants. Initial
+catalog compilation takes longer than subsequent replay.
+Torch2.9's skipped `torch.library.wrap_triton` call in probability normalization
+now goes through the existing Dynamo-aware launch helper; four host tracing
+cases pass on Torch2.9 and Torch2.15. The eight device cases remain unrun.
+These are component graph gates, not complete target/MTP state commit,
+native export/Rust replay or whole-round bubble measurements.
 
 The GGUF helper test creates tiny Q8_0/IQ4_NL files and replays changing token
 IDs, route counts, poisoned inactive rows and sticky repeated-call errors in
@@ -1179,8 +1204,9 @@ With `FLARE_QUACTLIZE_HELPERS_LIBRARY` set to the selected PPU DSO, also run
 `tests/components/test_quactlize_helpers_cuda.py -k dense_preparation` through
 pytest. Its four cases compare selected Q8_0/IQ4_NL dense ranges against
 independent GGUF decoding in FP16 and BF16, with the NVIDIA debug module disabled.
-The user reports the six read cases above passing on PPU. The four native dense
-decoder cases remain unrun; the read gate does not qualify decoder arithmetic.
+The user reports the six read cases above passing on PPU and the four native
+dense-decoder cases passing separately (4 passed, 10 deselected in 4.09s).
+The decoder gate checks exact Q8_0/IQ4_NL selected ranges in FP16 and BF16.
 
 Routed expert weights now use the selected QUactlize producer during loading.
 Each target or shared-MTP gate/up group is read with the existing per-expert

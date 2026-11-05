@@ -50,17 +50,20 @@
     route errors and per-round clearing. Host tracing/identity checks pass;
     actual graph and no-allocation tests are in test_quactlize_helpers_cuda.py.
 
-[ ] Qualify the updated actlizeLA convolution-history binding at raw slot 0.
+[x] Qualify the updated actlizeLA convolution-history binding at raw slot 0.
     Raw convolution slots use -1 inactive/0 valid; recurrence keeps 0 null.
     The adapter now uses bind_shortconv_history; exercise zero-consumed
     rollback and positive prefixes with distinct convolution/recurrent slots.
+    The user reports the four sequence cases passing on PPU in the 14-case gate.
 
-[ ] Qualify the new external GDN sequence, HC and MTP feedback bindings on
+[x] Qualify the new external GDN sequence, HC and MTP feedback bindings on
     device. GDN now uses actlizeLA ShortConv and gated RMSNorm; HC uses the
     existing gate scratch for disjoint combine output before residual copy.
     With dense_blas, MTP normalizes the full 10240-wide hidden before four
     BF16 projections. Preserve the intermediate BF16 boundaries and inputs.
-    Test through qualify.ppu_box; ordinary MTP attention still needs a port.
+    The user reports the sequence/mixing/PLE gate passing on PPU: 14 passed in
+    8.67s. Ordinary MTP attention's FA3 component gate passed earlier; complete
+    target/MTP round composition is still pending.
 
 [x] Retain fixed external GDN/QSA/MTP scratch requirements through autotuning
     and trim/freeze/finalize. Static declarations share the maximum capacity;
@@ -304,8 +307,8 @@
     freezes scratch, finalizes bindings and drains before releasing owners,
     without importing b12x tuning or unused single-rank communication kernels.
     PLE retains raw IQ4_NL delivery, hash publication/readiness,
-    BF16 gate boundaries and dilation3 history; its four graph tests await a
-    device. Qualify FlashInfer's
+    BF16 gate boundaries and dilation3 history; its four graph tests are now
+    user-reported passing on PPU. Qualify FlashInfer's
     caller-owned sampling workspace and row-independent RNG interfaces.
     Preserve consumed-prefix state, compile/capture lifetimes and native replay.
     Metadata serialization/guards and QSA/MTP/GGUF class imports no longer load
@@ -353,7 +356,9 @@
     disjointness, exact packed bytes and confirmed-drain ownership. Target/MTP
     dense preparation uses the selected QUactlize helpers on an explicit stream.
     Real-file host checks pass on Torch2.9 and Torch2.15; qualify.ppu_box includes
-    the gguf-read suite. The four native dense-decoder cases remain unrun.
+    the gguf-read suite. The user reports all four native dense-decoder cases
+    passing on PPU (4 passed, 10 deselected in 4.09s): Q8_0/IQ4_NL selected
+    rows/columns, exact FP16/BF16 outputs, with the NVIDIA debug decoder disabled.
     The box rejected cuda-python Runtime initialization with status 35 despite
     working Torch allocations and PPU SDK library paths. Both pread readers now
     bind platform Driver API copies using Torch's existing context/stream. SDK
@@ -410,8 +415,21 @@
     discovery and native ABI inspection (21 exports, 11 structures) pass;
     the checked artifact is ppu10/SDK2.2.1-184ee6. Its fourteen existing GDN
     sequence/HC/MTP-feedback/PLE device cases now accept installed wheels without
-    manual operator paths. Those device cases, full target/MTP and native PPU
-    export/replay remain unrun.
+    manual operator paths. The user reports all fourteen passing on PPU in
+    8.67s. Full target/MTP and native PPU export/replay remain unrun.
+
+[ ] Run the remaining QSA and sampling component gates on PPU. The box runner
+    includes six QSA cases (widths 1/7/128, direct/catalog, fresh-handle disk
+    reload, page boundaries, top-k ties, consumed-prefix replacement and inactive
+    state) and two draft/filter/verification graph cases (Qwen vocabulary,
+    widths 1/7, batch 1/4, shared scratch, request RNG under repacking, penalties,
+    top-k/top-p/min-p, stale/inactive rows and allocation stability).
+    QSA uses a CPU oracle with no b12x import; it agrees exactly with the original
+    Flare reference on nine history lengths and paged attention. Fix the proven
+    Torch2.9 probability-normalization Dynamo graph break through the existing
+    shared Triton tracing helper. Four real Dynamo tracing cases pass on
+    Torch2.9/Torch2.15; arithmetic, complete target/MTP and native replay still
+    require device qualification. These gates require no model downloads.
 
 [ ] Correct upstream QUactlize a4207d6 installed-wheel device-test reporting:
     tools/verify_installed_wheel.py does not set FLARE_RUN_CUDA_TESTS for its
