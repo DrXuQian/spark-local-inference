@@ -454,6 +454,16 @@
     QSA and two sampling cases on the box; full target/MTP and bubble measurements
     remain unqualified.
 
+[x] Remove unsupported-API stub definitions from FlashInfer sampling preparation
+    in 762b396 (ppu.flare2). The host regression reproduces duplicate acsparse
+    symbols from an SDK extern declaration followed by Sailify static-inline
+    stubs under permissive compilation; sampling now requires implemented APIs.
+    Eighteen tracing/linkage tests pass on Torch2.9; real sampling/renorm/FFI
+    sources compile and link with SDK2.2.1, with no conflicting sparse symbols.
+    The replacement wheel is in Git LFS; use its explicit filename in
+    docs/ppu-box-resume.txt. Actual box headers and the two sampling device
+    cases still require verification; this is not a device-pass claim.
+
 [x] Publish the QUactlize installed-wheel reporting fix as 653b46e on feat/ppu-flash-next:
     tools/verify_installed_wheel.py previously omitted FLARE_RUN_CUDA_TESTS for its
     Flare subprocess and accepted pytest exit zero without checking skipped

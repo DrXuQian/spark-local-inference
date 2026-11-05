@@ -1,10 +1,10 @@
 PPU box resume after the QSA / sampling failures (2026-11-06)
 ==========================================================
 
-The two wheels are now available directly in Git LFS under
+The current wheels are available directly in Git LFS under
 artifacts/ppu/20261106/wheels/ on feat/qwen38-gguf:
   actlize_la-0.2.1-1ppu10version221184ee6-py3-none-linux_x86_64.whl
-  flashinfer_python-0.6.18+ppu.flare1-py3-none-any.whl
+  flashinfer_python-0.6.18+ppu.flare2-py3-none-any.whl
 
 GitHub rejects new LFS objects in this public fork. The payloads are stored in
 DrXuQian/qwen4flash on branch artifacts/ppu-20261106; this repository's
@@ -20,10 +20,12 @@ From the already configured PPU environment:
   git lfs pull --include="artifacts/ppu/20261106/wheels/*.whl" --exclude=""
   python -m pip install --no-deps --force-reinstall \
     artifacts/ppu/20261106/wheels/actlize_la-0.2.1-1ppu10version221184ee6-py3-none-linux_x86_64.whl \
-    artifacts/ppu/20261106/wheels/flashinfer_python-0.6.18+ppu.flare1-py3-none-any.whl
+    artifacts/ppu/20261106/wheels/flashinfer_python-0.6.18+ppu.flare2-py3-none-any.whl
 
-These are the same wheel bytes as the original local handoff. Git LFS checks
-their content hashes during download. --no-deps keeps the platform Torch,
+The actlizeLA wheel is unchanged from the original handoff. FlashInfer flare2
+replaces flare1 for the reported sampling link failure; install the explicit
+filename above, not a wildcard that selects both versions. Git LFS checks
+content hashes during download. --no-deps keeps the platform Torch,
 Triton, TVM-FFI, FlashAttention and QUactlize packages. Installing the wheel
 does not rebuild FlashInfer. The sampling module is compiled during first
 preparation against the box's SDK and TVM-FFI, then reused from the JIT cache.
@@ -54,10 +56,20 @@ not shipped because the box must use its own SDK and TVM-FFI. Its distinct
 version creates a separate JIT cache; do not force reuse of older sampling AOT
 artifacts, whose FFI lacks row_independent_rng.
 
+flare2 omits Sailify's unsupported-API stub definitions only from sampling's
+generated compatibility header. A host regression reproduces the reported
+acsparse duplicate symbols when an SDK extern declaration precedes a static
+inline stub under permissive compilation. Sampling requires no such stubs;
+missing APIs now fail compilation, and implemented SDK APIs are not shadowed.
+Eighteen host tracing/linkage checks pass on Torch2.9, and all three real PPU
+sampling translation units compile and link with SDK2.2.1. The box's actual
+header provenance and successful device replay still need verification. The
+version change creates a fresh JIT cache without deleting unrelated caches.
+
 The operator sources are published on the Flare development branches:
   DrXuQian/actlizeLA: feat/flare-gdn-qsa-mtp, 2e107e2
   DrXuQian/QUactlize: feat/ppu-flash-next, 653b46e
-  DrXuQian/flashinfer-for-sail: fix/flare-ppu-sampling, 7a7989e
+  DrXuQian/flashinfer-for-sail: fix/flare-ppu-sampling, 762b396
 The QUactlize change only fixes installed-wheel test reporting; it changes no
 kernel or runtime and does not require a replacement QUactlize wheel. The two
 LFS wheels above already match the published actlizeLA and FlashInfer commits.
