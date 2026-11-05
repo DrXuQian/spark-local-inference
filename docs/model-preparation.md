@@ -573,6 +573,46 @@ individually, maximum 3.712 us; its millisecond waits do not reproduce. These
 partial-model measurements do not establish full-model throughput or literal
 zero idle.
 
+Further analysis separates late host submission from weight traffic. In the
+original 367.513 us tail, a `cuEventQuery` invocation spans 2.481 ms. The next
+`cuGraphLaunch` call starts 351.686 us after the preceding graph's final kernel. The
+141.311/132.031 us tails also submit their next graphs late. This identifies
+the delayed boundary, not whether the delay came from the driver, profiling,
+interrupts or CPU scheduling. No weight upload explains these intervals.
+
+A diagnostic run of the current QUactlize-record/GDN/QSA package covers 3311
+adaptive rounds across 48 requests. Its 3072 consecutive width-one pairs have
+15.328 us median, 16.064 us p95 and one 448.282 us maximum gap. The maximum
+follows a 2.798 ms `cuEventQuery`; the next `cuGraphLaunch` starts 398.670 us
+after the preceding graph's last kernel. A temporary host-only yield probe
+records wall and thread-CPU clocks, but neither recorded long model-thread
+yield overlaps that tail. The trace still has no hot GPU allocation, recapture,
+module load or out-of-graph compute. Removing one possible delay source does
+not follow from this trace alone.
+
+An unprofiled control does observe a 2.941 ms model-thread yield with only
+1.596 us of thread CPU time. To test whether removing voluntary yielding helps,
+a diagnostic wrapper keeps or skips only `flare-model`'s `sched_yield` in
+keep/skip/skip/keep order. Each trial starts a fresh ordinary-decode service,
+uses the same 48 requests and emits 6144 tokens; all token IDs match exactly.
+Intervals below use the server's token publication timestamps, excluding
+prefill and client/network observation delays. They measure host publication,
+not GPU gaps or MTP graph latency. These trials load no Nsight instrumentation.
+
+| Trial | Model-thread yield | Interior duration, summed over requests | p99.9 publication interval | Maximum interval |
+| --- | --- | --- | --- | --- |
+| 0 | Keep | 13.2895 s | 2.4242 ms | 5.9633 ms |
+| 1 | Skip | 13.2419 s | 2.3761 ms | 4.0216 ms |
+| 2 | Skip | 13.2422 s | 2.3905 ms | 4.6568 ms |
+| 3 | Keep | 13.2400 s | 2.3798 ms | 4.5990 ms |
+
+Skipping yields has no consistent advantage over the final control. The
+wrapper is invoked 63.2/65.6 million times when skipping versus 35.5/35.9 million
+when keeping the yield. The existing native polling loop is retained. The diagnostic libraries are absent
+from the restored service. CPU context-switch tracing remains unavailable in
+this container, so the rare driver/host tails remain open; these measurements
+do not establish literal zero idle or a full-model performance result.
+
 The native replay tool loads this same exported package and compares isolated
 rounds with queued execution. Four 128-token cases each execute 22 width-six
 rounds. Tokens, logprobs and completion payloads match exactly; request generations
