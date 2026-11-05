@@ -15,7 +15,7 @@ from ignition.preparation.qwen38_gguf import GgufInputs
 from ignition.recipes.qwen38.recipe import gguf_cache_costs, gguf_recipe
 
 
-def bundle(tmp_path, *, actlize=False, quactlize=False):
+def bundle(tmp_path, *, actlize=False, quactlize=False, helpers=False):
     (tmp_path / 'main.gguf').write_bytes(b'header fixture')
     (tmp_path / 'mtp.gguf').write_bytes(b'draft header fixture')
     (tmp_path / 'frontend').mkdir(exist_ok=True)
@@ -27,6 +27,9 @@ def bundle(tmp_path, *, actlize=False, quactlize=False):
     if quactlize:
         (tmp_path / 'matmul.so').write_bytes(b'matmul identity fixture')
         value['quactlize_abi_library'] = 'matmul.so'
+    if helpers:
+        (tmp_path / 'helpers.so').write_bytes(b'helpers identity fixture')
+        value['quactlize_helpers_library'] = 'helpers.so'
     (tmp_path / 'manifest.json').write_text(json.dumps(value))
     return value
 
@@ -46,8 +49,27 @@ def test_input_bundle_preserves_default_and_binds_selected_library(tmp_path):
         inputs.actlize.load('cuda:0')
 
 
+def test_helpers_are_independent_and_changed_binary_is_rejected(tmp_path):
+    from ignition.preparation.quactlize import QuactlizeHelpersSpec
+    from ignition.recipes.qwen38.recipe import RECIPE, prepare_gguf
+
+    bundle(tmp_path, helpers=True)
+    inputs = GgufInputs.read(tmp_path)
+    assert inputs.quactlize is None and inputs.actlize is None
+    copy = tmp_path / 'same-helpers.so'
+    copy.write_bytes(inputs.quactlize_helpers.path.read_bytes())
+    assert QuactlizeHelpersSpec.read(copy).identity() == inputs.quactlize_helpers.identity()
+    assert inputs.operator_identity()['quactlize_helpers']['router'] == 'v2'
+    selected = replace(RECIPE, name='qwen38_gguf', quactlize_helpers=inputs.quactlize_helpers)
+    inputs.quactlize_helpers.path.write_bytes(b'changed helpers')
+    with pytest.raises(ValueError, match='changed after input inspection'):
+        inputs.load_operators('cuda:0')
+    with pytest.raises(ValueError, match='QUactlize helpers changed after memory planning'):
+        prepare_gguf(tmp_path, SimpleNamespace(recipe=selected))
+
+
 @pytest.mark.parametrize('value', [None, '', 1, {}, []])
-@pytest.mark.parametrize('key', ['actlize_library', 'quactlize_abi_library'])
+@pytest.mark.parametrize('key', ['actlize_library', 'quactlize_abi_library', 'quactlize_helpers_library'])
 def test_invalid_library_selection_fails_during_input_read(tmp_path, value, key):
     fields = bundle(tmp_path)
     fields[key] = value
@@ -59,8 +81,8 @@ def test_invalid_library_selection_fails_during_input_read(tmp_path, value, key)
 @pytest.mark.parametrize('speculating', [False, True])
 def test_bf16_planning_matches_actual_cache_and_snapshot_layout(speculating):
     import torch
-    from ignition.recipes.qwen38.attention import QSAState
-    from ignition.recipes.qwen38.state import HybridStateLayout
+    from ignition.recipes.qwen38.attention_state import QSAState
+    from ignition.recipes.qwen38.state_layout import HybridStateLayout
 
     for dtype, bf16 in ((torch.float8_e4m3fn, False), (torch.bfloat16, True)):
         costs = gguf_cache_costs(speculating=speculating, bf16=bf16)
@@ -73,7 +95,7 @@ def test_bf16_planning_matches_actual_cache_and_snapshot_layout(speculating):
 
 def test_preparation_uses_bf16_and_rejects_fp8_snapshot_budget(tmp_path):
     import torch
-    from ignition.recipes.qwen38.bootstrap import PreparationConfig
+    from ignition.recipes.qwen38.config import PreparationConfig
 
     bundle(tmp_path, actlize=True)
     inputs = GgufInputs.read(tmp_path)
@@ -87,11 +109,13 @@ def test_preparation_uses_bf16_and_rejects_fp8_snapshot_budget(tmp_path):
         replace(config, max_active=2, mixed_prefill=True)
 
 
-@pytest.mark.parametrize('actlize,quactlize', [(True, False), (False, True), (True, True)])
-def test_resolved_recipe_reports_operator_identity_and_sizes_pages(tmp_path, actlize, quactlize):
+@pytest.mark.parametrize('actlize,quactlize,helpers', [
+    (True, False, False), (False, True, False), (True, True, False),
+    (False, False, True), (True, True, True)])
+def test_resolved_recipe_reports_operator_identity_and_sizes_pages(tmp_path, actlize, quactlize, helpers):
     from ignition import planning
 
-    bundle(tmp_path, actlize=actlize, quactlize=quactlize)
+    bundle(tmp_path, actlize=actlize, quactlize=quactlize, helpers=helpers)
     inputs = GgufInputs.read(tmp_path)
     # The planner consumes inspected sizes; this fixture does not claim a full checkpoint.
     tensor = SimpleNamespace(nbytes=2 << 30, dtype='F16', shape=(1024, 1024), component='weights')
@@ -99,12 +123,13 @@ def test_resolved_recipe_reports_operator_identity_and_sizes_pages(tmp_path, act
     draft = SimpleNamespace(tensors={'blk.48.projection': tensor}, shards=(shard,))
     manifest = SimpleNamespace(draft=draft, shards=(shard,), headers_sha256='a' * 64,
         tensors={'per_layer_token_embd.weight': replace_namespace(tensor, component='ple_tables'),
-                 'token_embd.weight': tensor}, actlize=inputs.actlize, quactlize=inputs.quactlize)
+                 'token_embd.weight': tensor}, actlize=inputs.actlize, quactlize=inputs.quactlize,
+        dense_blas=None, quactlize_helpers=inputs.quactlize_helpers)
     selected = gguf_recipe(manifest, tmp_path)
-    baseline = gguf_recipe(replace_namespace(manifest, actlize=None, quactlize=None), tmp_path)
+    baseline = gguf_recipe(replace_namespace(manifest, actlize=None, quactlize=None, quactlize_helpers=None), tmp_path)
     assert selected.checkpoints[0].alias == baseline.checkpoints[0].alias
     assert selected.checkpoints[0].revision != baseline.checkpoints[0].revision
-    for name in ('actlize', 'quactlize'):
+    for name in ('actlize', 'quactlize', 'quactlize_helpers'):
         spec = getattr(inputs, name)
         if spec is not None:
             changed = replace(spec, sha256='b' * 64)
@@ -119,17 +144,22 @@ def test_resolved_recipe_reports_operator_identity_and_sizes_pages(tmp_path, act
     assert record['page_bytes'] == plan.pages * costs.page_bytes
     assert record['snapshot_virtual_bytes'] == plan.snapshots * costs.state_row_bytes
     other = replace(gpu, capability=(12, 1))
-    with pytest.raises(planning.CapacityError, match='SM120'):
+    if actlize or quactlize:
+        with pytest.raises(planning.CapacityError, match='SM120'):
+            planning.plan(selected, selected.checkpoints[0], (other,), selected=(0,),
+                concurrency=1, reserve_bytes=0, speculation=selected.speculation, prefill_chunk=64)
+    else:
+        # Serving helpers do not select the SM120-only debugging matmul/GDN library.
         planning.plan(selected, selected.checkpoints[0], (other,), selected=(0,),
             concurrency=1, reserve_bytes=0, speculation=selected.speculation, prefill_chunk=64)
     automatic = planning.plan(selected, selected.checkpoints[0], (other, replace(gpu, index=1)), selected=None,
         concurrency=1, reserve_bytes=0, speculation=selected.speculation, prefill_chunk=64)
-    assert automatic.gpus[0].index == 1
+    assert automatic.gpus[0].index == int(actlize or quactlize)
 
 
 def test_quactlize_input_preserves_precision_and_rejects_changed_binary(tmp_path, monkeypatch):
     import torch
-    from ignition.recipes.qwen38.bootstrap import PreparationConfig
+    from ignition.recipes.qwen38.config import PreparationConfig
 
     bundle(tmp_path, quactlize=True)
     inputs = GgufInputs.read(tmp_path)

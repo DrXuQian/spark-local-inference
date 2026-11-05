@@ -9,7 +9,7 @@ from ignition.preparation.tuning import RecordedPreparationSession
 
 def preparation_session(*, device, checkpoint, namespace=None, coordinator=None, headroom_bytes=0,
                         benchmark_storage=None, compile_workers=None, tuning_replica=None, autotune_effort="default", collective_tuning="static", collective_ladder=None,
-                        native_dense_activations=False, lock_gpu_clocks=False):
+                        native_dense_activations=False, lock_gpu_clocks=False, dense_blas_api=None):
     return RecordedPreparationSession(
         device=device, checkpoint=checkpoint, compile_workers=compile_workers, tuning_replica=tuning_replica,
         collective_tuning=collective_tuning, collective_ladder=collective_ladder, autotune_effort=autotune_effort, lock_gpu_clocks=lock_gpu_clocks, native_dense_activations=native_dense_activations,
@@ -18,7 +18,8 @@ def preparation_session(*, device, checkpoint, namespace=None, coordinator=None,
         workload_schema="qwen38-active-operators-v1",
         numerical_policy="qsa16-gdn-sequential-k1-dense-mxfp8-auto-vision-nvfp4-a16-moe-a4-route-fp32",
         search_limits={
-            "bf16_projection": "all eligible b12x backends and rows_per_tile configurations",
+            "bf16_projection": ("all eligible b12x backends and rows_per_tile configurations"
+                if dense_blas_api is None else f"{dense_blas_api} GemmEx, FP32 accumulation, caller-owned scratch"),
             "mxfp8_projection": "BF16 or quantized activations with eligible b12x projection configurations",
             "qsa": "fixed attention_splits=16; eligible direct-KV warp configurations",
             "gdn_prefill": "sequential k_split=1; v_split, stages, and window_tiles remain tunable",

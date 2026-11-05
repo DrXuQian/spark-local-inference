@@ -33,15 +33,38 @@
     or out-of-graph compute, with 16.479/16.320 us maximum consecutive-round
     gaps. This is not complete-model or PPU hardware qualification.
 
-[ ] QUactlize PPU: add device-indexed Q8_0/IQ4_NL row lookup for token
-    embedding/PLE. The new host-indexed dequant range API cannot implement
-    captured lookup with changing token IDs. Preserve original GGUF bytes.
+[x] Check QUactlize 8519e9a serving helpers: 24 host cases pass; serving.cu
+    compiles for ppu_10. Router v2 has descending-ID ties and a device live
+    count; SwiGLU v2 preserves round_silu; row lookup reads raw Q8_0/IQ4_NL
+    with device int64 IDs. The separate SM120 debugging DSO builds. No new
+    device qualification has run; NVIDIA compatibility is for debugging.
 
-[ ] QUactlize PPU: match Qwen BF16 SiLU rounding and Flare router ties.
-    The new SwiGLU rounds only the final product; round_silu=True also rounds
-    SiLU before multiplication. New router ties prefer lower expert IDs;
-    Flare's route_topk prefers higher IDs. Preserve inactive-row masking and
-    adapt sticky device errors into the existing request failure path.
+[x] Check actlizeLA b5696176 auxiliary and transaction interfaces: 91 host
+    contract cases pass against the built SM120 DSO. Pointwise, ShortConv,
+    PLE hash and GDN translation units compile for ppu_10 and ppu_15.
+    New helper device numerics and native PPU replay remain unrun.
+
+[ ] Qualify quactlize_helpers_library in complete GGUF+MTP graphs: embedding,
+    staged PLE rows, router and shared/routed SwiGLU now bind the external
+    helpers independently of matmul. Retain readiness dependencies, sticky
+    route errors and per-round clearing. Host tracing/identity checks pass;
+    actual graph and no-allocation tests are in test_quactlize_helpers_cuda.py.
+
+[ ] Qualify the updated actlizeLA convolution-history binding at raw slot 0.
+    Raw convolution slots use -1 inactive/0 valid; recurrence keeps 0 null.
+    The adapter now uses bind_shortconv_history; exercise zero-consumed
+    rollback and positive prefixes with distinct convolution/recurrent slots.
+
+[ ] Qualify the new external GDN sequence, HC and MTP feedback bindings on
+    device. GDN now uses actlizeLA ShortConv and gated RMSNorm; HC uses the
+    existing gate scratch for disjoint combine output before residual copy.
+    With dense_blas, MTP normalizes the full 10240-wide hidden before four
+    BF16 projections. Preserve the intermediate BF16 boundaries and inputs.
+    Test through qualify.ppu_box; ordinary MTP attention still needs a port.
+
+[x] Retain fixed external GDN/QSA/MTP scratch requirements through autotuning
+    and trim/freeze/finalize. Static declarations share the maximum capacity;
+    they no longer depend on a b12x plan incidentally reserving enough space.
 
 [x] Add a separate raw-GGUF PPU projection preparation bridge using the new
     QUactlize ABI's own declarations. Query each capacity, preserve element
@@ -266,6 +289,18 @@
 [ ] Validate full-width INT64 expert IDs in b12x W4A16 route packing,
     reductions, and MoE calibration. These paths narrow IDs before range
     checks; add captured replay coverage for IDs outside the INT32 range.
+
+[ ] Qualify the explicit cuBLAS/acBLAS dense projection path on device:
+    compiled capture, workspace rebinding and partial GGUF+MTP native export.
+    Host ABI, strided-output and cache/snapshot layout checks pass. See
+    model-preparation.md#ppu-port-preparation and test_blas_projection_cuda.py.
+
+[ ] Finish b12x-free Qwen GGUF preparation using external QUactlize/actlizeLA
+    operators. Routing, rounded SwiGLU, rows, GDN sequence, HC and MTP feedback
+    bindings are implemented; PLE, ordinary paged GQA and preparation dependency
+    cleanup remain. Qualify FlashInfer's
+    caller-owned sampling workspace and row-independent RNG interfaces.
+    Preserve consumed-prefix state, compile/capture lifetimes and native replay.
 
 [ ] Exercise per-message checkpoint restore and prefill graph selection through
     Qwen, GLM, DeepSeek, MiMo, Step, and Nemotron services. See

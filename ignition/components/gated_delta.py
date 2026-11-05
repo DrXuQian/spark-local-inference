@@ -8,26 +8,20 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, fields
 from functools import cached_property
+from typing import TYPE_CHECKING
 
 import torch
-from b12x.gemm.blockscaled import Weight
-from b12x.preparation import PreparationSession
-from b12x.sequence import gdn_decode, gdn_prefill, short_conv
 
-from ignition.components.gated_norm import PreparedGatedRMSNorm
 from ignition.components.linear import QuantizedProjection, UnquantizedProjection
-from ignition.components.tensor_fp8 import TensorFP8Projection, TensorFP8Weight
-from ignition.components.recurrent import (
-    DeltaMetadata,
-    DeltaState,
-    prepare_sequence_binding,
-)
+from ignition.components.recurrent_state import DeltaMetadata, DeltaState, PrefillBuffers
 from ignition.preparation.scratch import ScratchArena
 
 from ignition.components import sm103
-from ignition.components.gdn_prefill_sm103 import PreparedGdnPrefill, PrefillBuffers
 
-from .gdn_recovery import GDNRecords, PreparedRecoveredRecurrence
+if TYPE_CHECKING:
+    from b12x.gemm.blockscaled import Weight
+    from b12x.preparation import PreparationSession
+    from .gdn_recovery import GDNRecords
 
 
 @dataclass(frozen=True)
@@ -177,6 +171,10 @@ class PreparedGDN:
         prepare_projections: bool = True,
         actlize_library=None,
     ) -> None:
+        if actlize_library is None:
+            from b12x.sequence import gdn_decode, gdn_prefill, short_conv
+            from ignition.components.recurrent import prepare_sequence_binding
+
         self.world_size = 48 // module.num_v_heads
         self.key_heads, self.value_heads = module.num_k_heads, module.num_v_heads
         world_size = self.world_size
@@ -272,19 +270,23 @@ class PreparedGDN:
         if set(projections) != expected:
             raise ValueError("GDN requires QKV/Z, packed B/A, and output projection weights")
 
-        from b12x.gemm.blockscaled._linear import MXFP8LinearWeight
+        self.output_encoding = None
+        if (actlize_library is None and prepare_projections and mode == 'prefill' and partitions is None
+                and not sm103.is_sm103(self.device) and not isinstance(projections['out_proj'], torch.Tensor)):
+            from b12x.gemm.blockscaled._linear import MXFP8LinearWeight
 
-        self.output_encoding = (scratch.mxfp8_output if prepare_projections and mode == "prefill" and partitions is None
-            and not sm103.is_sm103(self.device) and isinstance(projections["out_proj"], MXFP8LinearWeight)
-            else None)
+            if isinstance(projections['out_proj'], MXFP8LinearWeight):
+                self.output_encoding = scratch.mxfp8_output
 
         def projection(key, inputs, output):
             weight = projections[key]
             options = dict(session=session, name=f"{name}.{key}")
-            if isinstance(weight, TensorFP8Weight):
-                return TensorFP8Projection(inputs, weight, output, staging=projection_staging, **options)
             if isinstance(weight, torch.Tensor):
                 return UnquantizedProjection(inputs, weight, output, **options)
+            from ignition.components.tensor_fp8 import TensorFP8Projection, TensorFP8Weight
+
+            if isinstance(weight, TensorFP8Weight):
+                return TensorFP8Projection(inputs, weight, output, staging=projection_staging, **options)
             return QuantizedProjection(inputs, weight, output, activation_mode="auto",
                                        allow_bf16_atomic_reduction=False if key == "in_proj_qkvzba" else None,
                                        workspace=projection_workspace, encoded=self.output_encoding if key == "out_proj" else None, **options)
@@ -339,24 +341,17 @@ class PreparedGDN:
             "conv_state": state.convolution,
             "out": scratch.convolved_qkv,
         }
-        conv_caps = short_conv.Caps(
-            device=self.device,
-            mode=mode,
-            channels=module.conv_dim,
-            kernel_size=4,
-            max_tokens=self.tokens,
-            max_seqs=self.sequences,
-            max_state_slots=state.convolution.shape[0],
-            max_speculative_tokens=self.speculative_tokens,
-        )
-        self.conv_plan = short_conv.plan(
-            conv_caps,
-            invocation=short_conv.invocation_from_tensors(**conv_args),
-        )
+        self.conv_plan = None
+        if actlize_library is None:
+            conv_caps = short_conv.Caps(
+                device=self.device, mode=mode, channels=module.conv_dim, kernel_size=4,
+                max_tokens=self.tokens, max_seqs=self.sequences,
+                max_state_slots=state.convolution.shape[0], max_speculative_tokens=self.speculative_tokens)
+            self.conv_plan = short_conv.plan(conv_caps, invocation=short_conv.invocation_from_tensors(**conv_args))
         fused_convolution = (actlize_library is None and mode == "decode" and records is not None
                              and metadata.state_indices.shape[1] > 1)
         self.conv_binding = None
-        if fused_convolution:
+        if fused_convolution or actlize_library is not None:
             self.conv_plan = None
         else:
             self.conv_binding = prepare_sequence_binding(
@@ -389,6 +384,8 @@ class PreparedGDN:
             self.actlize = PreparedActlizeGDN(actlize_library, module=module, scratch=scratch,
                 state=state, metadata=metadata, mode=mode, records=records, workspace=workspace)
         elif mode == "decode" and (records is not None or in_place):
+            from .gdn_recovery import PreparedRecoveredRecurrence
+
             # Speculative verification records corrections and the round commits the accepted ones;
             # single-token rounds advance the committed state in place.
             self.recovered = PreparedRecoveredRecurrence(
@@ -424,6 +421,8 @@ class PreparedGDN:
             )
             operation = gdn_decode
         elif sm103.is_sm103(self.device) and not checkpoint_export:
+            from ignition.components.gdn_prefill_sm103 import PreparedGdnPrefill
+
             # FlashInfer's chunked delta rule replaces b12x's token-sequential prefill on SM103.
             self.chunked = PreparedGdnPrefill(
                 mixed_qkv=scratch.convolved_qkv, a=scratch.a, b=scratch.b, A_log=module.A_log,
@@ -477,7 +476,9 @@ class PreparedGDN:
                 set_binding=set_recurrent_binding,
                 run_options={"eps": module.norm.variance_epsilon} if mode == "decode" else None,
             )
-        if mode != "decode" or self.recovered is not None or self.actlize is not None:
+        if self.actlize is None and (mode != "decode" or self.recovered is not None):
+            from ignition.components.gated_norm import PreparedGatedRMSNorm
+
             # Qwen's gated norm, fused: it rounds normalized values to BF16 before weighting.
             self.output_norm = PreparedGatedRMSNorm(
                 scratch.recurrence.view(self.tokens, self.value_heads, 128),
@@ -514,12 +515,15 @@ class PreparedGDN:
         scratch = self.scratch
         if self.actlize is not None:
             self.actlize.before_convolution()
+            self.actlize.convolution()
+            self.actlize()
+            self.actlize.norm()
+            return
+        from b12x.sequence import gdn_decode, gdn_prefill, short_conv
+
         if self.conv_binding is not None:
             short_conv.run(self.conv_binding)
-        if self.actlize is not None:
-            self.actlize()
-            self.output_norm()
-        elif self.recovered is not None:
+        if self.recovered is not None:
             self.recovered()
             self.output_norm()
         elif self.mode == "decode":

@@ -154,6 +154,8 @@ def _install_boundaries(monkeypatch, checkpoint):
     from triton.runtime.jit import JITFunction
 
     from ignition.components import gated_delta, varlen_attention
+    from b12x.sequence import gdn_decode, gdn_prefill, short_conv
+    from b12x.norm import hyperconnection as hc
     from ignition.preparation import tuning
     from ignition.recipes.qwen38 import (
         attention,
@@ -301,10 +303,10 @@ def _install_boundaries(monkeypatch, checkpoint):
     for op in (
         attention.qsa,
         attention.paged_kv_write,
-        hyperconnection.hc,
-        gated_delta.short_conv,
-        gated_delta.gdn_prefill,
-        gated_delta.gdn_decode,
+        hc,
+        short_conv,
+        gdn_prefill,
+        gdn_decode,
         moe.fused_moe,
         ple.ple_embedding,
         varlen_attention.varlen,

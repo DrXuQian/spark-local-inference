@@ -1,15 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Bounded GGUF experts composed from external projections and b12x SwiGLU."""
+"""Bounded GGUF experts composed from external projections and rounded SwiGLU."""
 
 from dataclasses import dataclass
 
 import torch
-from b12x.norm import hyperconnection
-from b12x.preparation import PreparedCall
 
 from ignition.preparation.rebuild_manifest import declare_container_fields
-from ignition.preparation.tuning import declare
 from .gguf_projection import PreparedGgufProjection, projection_workspace_bytes
 from .gguf_weights import GgufWeight
 
@@ -137,6 +134,14 @@ class PreparedGgufRoutedExperts:
                         workspace.projected[:count], workspace=workspace.matmul, ids=ids[start:end])
                 prepared[count] = up, down
             self.calls.append((start, end, *prepared[count]))
+        self.helpers = getattr(session, 'quactlize_helpers', None)
+        self.activation_plan = None
+        if self.helpers is not None:
+            return
+        from b12x.norm import hyperconnection
+        from b12x.preparation import PreparedCall
+        from ignition.preparation.tuning import declare
+
         self.activation_plan = hyperconnection.plan(hyperconnection.Caps(device=source.device,
             max_tokens=capacity * topk, hidden_size=width),
             invocation={'operation': 'swiglu', 'limit': float('inf'), 'round_silu': True})
@@ -152,9 +157,15 @@ class PreparedGgufRoutedExperts:
             ids = self.ids[start:end]
             up(self.source[start:end], ids=ids, output=self.workspace.gate_up[:count],
                device_error=self.errors[index, 0])
-            hyperconnection.run_swiglu(self.workspace.gate_up[:count].flatten(0, 1),
-                limit=float('inf'), round_silu=True, out=self.workspace.intermediate[:count].flatten(0, 1),
-                plan=self.activation_plan)
+            gate_up = self.workspace.gate_up[:count].flatten(0, 1)
+            intermediate = self.workspace.intermediate[:count].flatten(0, 1)
+            if self.helpers is not None:
+                self.helpers.swiglu(gate_up, intermediate, round_silu=True)
+            else:
+                from b12x.norm import hyperconnection
+
+                hyperconnection.run_swiglu(gate_up, limit=float('inf'), round_silu=True,
+                    out=intermediate, plan=self.activation_plan)
             down(self.workspace.intermediate[:count], ids=ids, output=self.workspace.projected[:count],
                  device_error=self.errors[index, 1])
             valid = (ids >= 0) & (ids < self.num_experts)

@@ -15,22 +15,28 @@ from .readiness import PreparedReadinessWait, wait_for_readiness
 def _lookup(source: torch.Tensor, weight: torch.Tensor, ids: torch.Tensor,
             count: torch.Tensor, out: torch.Tensor, error: torch.Tensor,
             timings: torch.Tensor, frame: torch.Tensor, barrier_input: torch.Tensor,
-            barrier_output: torch.Tensor, barrier: int, event: int) -> None:
-    from quactlize.cuda_compat import gather_rows
-
+            barrier_output: torch.Tensor, barrier: int, event: int, helpers: int = 0) -> None:
     wait_for_readiness(source, event, timings, frame, 0, barrier_input, barrier_output, barrier)
-    gather_rows(weight, ids, out.view(-1, 160), count, error, 20, weight.shape[0])
+    if helpers:
+        from quactlize.serving import gather_rows
+
+        gather_rows(weight, ids, out.view(-1, 160), count, error, 20, weight.shape[0], helpers)
+    else:
+        from quactlize.cuda_compat import gather_rows
+
+        gather_rows(weight, ids, out.view(-1, 160), count, error, 20, weight.shape[0])
 
 
 @_lookup.register_fake
 def _lookup_fake(source, weight, ids, count, out, error, timings, frame, barrier_input,
-                 barrier_output, barrier, event):
+                 barrier_output, barrier, event, helpers=0):
     pass
 
 
 class PreparedGgufPLELookup:
     def __init__(self, table, metadata, output, caps, *, session, name, runtime=None, coordinator=None):
         self.metadata, self.output, self.geometry = metadata, output, table.geometry
+        self.helpers = getattr(session, 'quactlize_helpers', None)
         self.mailbox, self.sequence = table.mailbox.device_view, table.sequence
         tokens, self.heads = output.shape[0], table.layout.caps.head_count
         if output.shape != (tokens, self.heads * 160):
@@ -67,4 +73,4 @@ class PreparedGgufPLELookup:
         self.count.copy_(self.metadata.num_tokens * self.heads)
         _lookup(source, self.weights, self.rows, self.count, self.output, self.error,
             self.wait.timings.timestamps, self.wait.timings.frame, self.wait.input, self.wait.output,
-            self.wait.handle, self.event)
+            self.wait.handle, self.event, 0 if self.helpers is None else self.helpers.handle)

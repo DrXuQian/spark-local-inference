@@ -8,15 +8,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import partial
+from typing import TYPE_CHECKING
 
 import torch
-from b12x.norm import hyperconnection as hc
-from b12x.preparation import FrozenMapping, PreparationSession, PreparedCall
 
-from ignition.components.hyperconnection_gate import PreparedHyperconnectionGate, PreparedShardedHyperconnectionGate
 from ignition.components.linear import UnquantizedProjection
-from ignition.preparation.fixtures import hyperconnection as hc_fixtures
-from ignition.preparation.tuning import declare, register_finalizer
+
+if TYPE_CHECKING:
+    from b12x.preparation import PreparationSession
 
 
 def hyperconnection_extents(shard, sharded: bool):
@@ -118,6 +117,13 @@ class PreparedHyperconnection:
     The final model mixer has no residual injection projection.
     """
 
+    def __new__(cls, module=None, scratch=None, *, session=None, **kwargs):
+        if getattr(session, 'actlize_helpers', None) is not None:
+            from .actlize_hyperconnection import PreparedActlizeHyperconnection
+
+            return PreparedActlizeHyperconnection(module, scratch, session=session, **kwargs)
+        return super().__new__(cls)
+
     def __init__(
         self,
         module: torch.nn.Module,
@@ -129,6 +135,12 @@ class PreparedHyperconnection:
         runtime=None,
         coordinator=None,
     ) -> None:
+        from b12x.norm import hyperconnection as hc
+        from b12x.preparation import FrozenMapping, PreparedCall
+        from ignition.components.hyperconnection_gate import PreparedHyperconnectionGate, PreparedShardedHyperconnectionGate
+        from ignition.preparation.fixtures import hyperconnection as hc_fixtures
+        from ignition.preparation.tuning import declare, register_finalizer
+
         if module.hc_count != 4 or module.hidden_size != 2560:
             raise ValueError("Qwen hyperconnection requires four streams of width 2560")
         self.scratch = scratch
@@ -194,6 +206,11 @@ class PreparedHyperconnection:
     def prepare_combine_norm(self, following: PreparedHyperconnection, *,
                              priming_state: torch.Tensor, session: PreparationSession,
                              name: str) -> None:
+        from b12x.norm import hyperconnection as hc
+        from b12x.preparation import FrozenMapping, PreparedCall
+        from ignition.preparation.fixtures import hyperconnection as hc_fixtures
+        from ignition.preparation.tuning import declare
+
         if self.injection is None:
             raise ValueError("the final hyperconnection mixer has no residual injection")
         self.following = following
@@ -212,6 +229,8 @@ class PreparedHyperconnection:
         self.plans["combine_norm"] = plan
 
     def mix(self, residual: torch.Tensor, *, pre_normalized: bool = False) -> torch.Tensor:
+        from b12x.norm import hyperconnection as hc
+
         normalized = self.scratch.normalized if pre_normalized else hc.run_grouped_rmsnorm(
             residual, self.norm_gain, eps=self.eps, zero_centered=False,
             binding=self.bindings["grouped_rmsnorm"])
@@ -229,6 +248,8 @@ class PreparedHyperconnection:
 
     def combine(self, residual: torch.Tensor, block_output: torch.Tensor) -> torch.Tensor:
         """Inject in FP32 and update the BF16 residual in place."""
+        from b12x.norm import hyperconnection as hc
+
         if self.injection is None:
             raise ValueError("the final hyperconnection mixer has no residual injection")
         return hc.run_combine(residual, block_output, self.scratch.injection_logits,
@@ -236,6 +257,8 @@ class PreparedHyperconnection:
 
     def combine_norm(self, residual: torch.Tensor, block_output: torch.Tensor) -> torch.Tensor:
         """Update the residual in place and prepare the following mixer's input."""
+        from b12x.norm import hyperconnection as hc
+
         combined, _ = hc.run_combine_norm(residual, block_output, self.scratch.injection_logits,
             self.following.norm_gain, eps=self.following.eps, zero_centered=False,
             plan=self.plans["combine_norm"], out=(residual, self.following.scratch.normalized))

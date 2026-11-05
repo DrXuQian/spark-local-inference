@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from b12x.moe import fused_moe
 
 from ignition.components import moe
 from ignition.components.moe import PreparedRouter, RouterScratch
@@ -44,7 +45,7 @@ def test_router_reuses_preallocated_buffers_through_public_entrypoint(monkeypatc
     logits = torch.zeros(2, 512, dtype=torch.bfloat16)
     router = PreparedRouter(logits, scratch, session=SimpleNamespace(prepare=lambda _: None), name="router")
     calls = []
-    monkeypatch.setattr(moe.fused_moe, "route_topk", lambda *args: calls.append(args))
+    monkeypatch.setattr(fused_moe, "route_topk", lambda *args: calls.append(args))
     router(logits)
     logits.fill_(3)
     router(logits)

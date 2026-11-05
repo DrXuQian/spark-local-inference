@@ -100,6 +100,14 @@ torch.utils._pytree.register_dataclass(MTPOutput)
 class PreparedMTPFeedback:
     """Qwen's flattened-state normalization and shared-stream BF16 projection."""
 
+    def __new__(cls, *args, session=None, **kwargs):
+        if (getattr(session, 'actlize_helpers', None) is not None
+                and getattr(session, 'dense_blas', None) is not None):
+            from .actlize_feedback import PreparedActlizeMTPFeedback
+
+            return PreparedActlizeMTPFeedback(*args, session=session, **kwargs)
+        return super().__new__(cls)
+
     def __init__(self, module, token_embedding, target_hidden, output, workspace, *, session, name):
         self.eps = module.config.rms_norm_eps
         self.kwargs = {
@@ -190,7 +198,7 @@ class PreparedMTP:
             workspace=workspace, projection_workspace=workspace, max_cache_pages=max_cache_pages,
             cache_only=cache_only)
         if cache_only:
-            self.prepare_errors(self.embedding, self.attention)
+            self.prepare_errors(self.embedding, self.feedback, self.attn_hc, self.attention)
             return
         self.mlp_hc = PreparedHyperconnection(layer.mlp_hyper_connection, scratch.hyperconnection,
             priming_state=scratch.residual, session=session, name=f"{name}.mlp_hc",
@@ -224,7 +232,8 @@ class PreparedMTP:
             self.lm_head = PreparedVocabularyProjection(scratch.selected_hidden, head,
                 scratch.local_logits, scratch.logits, runtime=vocabulary_runtime, session=session,
                 coordinator=coordinator, name=f"{name}.lm_head", workspace=workspace)
-        self.prepare_errors(self.embedding, self.attention, self.moe, self.lm_head)
+        self.prepare_errors(self.embedding, self.feedback, self.attn_hc, self.attention,
+                            self.mlp_hc, self.moe, self.final_mixer, self.lm_head)
 
     def rebind_pages_for_preparation(self, state):
         self.attention.rebind_pages_for_preparation(state)

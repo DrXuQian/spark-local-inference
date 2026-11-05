@@ -302,7 +302,8 @@ class PreparedDecoder:
                 self.gdn_operations[index] = attention
             moe = PreparedQwenMoe(source, layer_weights.moe, session=session, name=f"{prefix}.moe",
                 scratch=scratch.moe, workspace=workspaces if scratch.gguf_experts is None else scratch.gguf_experts,
-                projection_workspace=workspaces, gguf_projection_library=gguf_projection_library)
+                projection_workspace=workspaces, gguf_projection_library=gguf_projection_library,
+                num_valid_tokens=state.gdn.num_tokens)
             self.layers.append((attn_hc, attention, mlp_hc, moe))
             if runtime is not None:
                 from ignition.components.collectives import PreparedAllReduce
@@ -424,5 +425,5 @@ class PreparedDecoder:
     def device_errors(self):
         from ignition.components.operator_errors import device_errors
 
-        return device_errors(self.embedding, self.ple.embedding_lookup,
-            *(operation for _, attention, _, moe in self.layers for operation in (attention, moe)))
+        return device_errors(self.embedding, self.ple.embedding_lookup, self.final_mixer,
+            *(operation for layer in self.layers for operation in layer))

@@ -144,9 +144,11 @@ def test_expert_weight_storage_is_numeric(fmt, mode, layout):
 
 
 def defer_planning(monkeypatch, module, planner):
+    from ignition.preparation import tuning
+
     plan = SimpleNamespace(request=lambda **kwargs: SimpleNamespace(**kwargs))
-    monkeypatch.setattr(module, "declare", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module, "register_finalizer", lambda *args, **kwargs: None)
+    for name in ('declare', 'register_finalizer'):
+        monkeypatch.setattr(module if hasattr(module, name) else tuning, name, lambda *args, **kwargs: None)
     monkeypatch.setattr(planner[0], planner[1], lambda *args, **kwargs: plan)
     return plan
 
@@ -156,9 +158,10 @@ def test_compressed_expert_records_are_numeric_but_program_storage_is_opaque(mon
     from b12x._lib.quant.csf_blocks import CsfBlockPayload, CsfBlockScales, Nvfp4CompactBlockPlane
     from b12x._lib.quant.nvfp4_csf import Nvfp4CsfBatch, Nvfp4CsfDecoder
     from ignition.components import moe
+    from b12x.moe import fused_moe
 
-    plan = defer_planning(monkeypatch, moe, (moe.fused_moe, "plan_execution"))
-    monkeypatch.setattr(moe.fused_moe, "plan_scale_expansion", lambda *args, **kwargs: plan)
+    plan = defer_planning(monkeypatch, moe, (fused_moe, "plan_execution"))
+    monkeypatch.setattr(fused_moe, "plan_scale_expansion", lambda *args, **kwargs: plan)
     def bytes():
         return torch.zeros(128, dtype=torch.uint8)
     opaque = bytes()

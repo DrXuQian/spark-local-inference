@@ -55,6 +55,7 @@ class ScratchArena:
         self._auxiliary_stream = None
         self._recorded_views = None
         self._binding_views = None
+        self.external_nbytes = 0
 
     @property
     def device(self):
@@ -126,7 +127,7 @@ class ScratchArena:
     def trim(self, nbytes):
         if type(nbytes) is not int or nbytes < 0:
             raise ValueError("scratch size must be a nonnegative integer")
-        capacity = (nbytes + 255) // 256 * 256
+        capacity = (max(nbytes, self.external_nbytes) + 255) // 256 * 256
         if capacity > self.nbytes:
             raise ValueError("selected scratch exceeds the reserved candidate capacity")
         if capacity < self.nbytes:
@@ -146,6 +147,28 @@ class ScratchArena:
             self._recorded_views.append(shapes_and_dtypes)
         if self._binding_views is not None:
             shapes_and_dtypes = next(self._binding_views)
+        sizes = self._view_sizes(shapes_and_dtypes)
+        storage = self.reserve(sum((size + 255) // 256 * 256 for size in sizes))
+        result, offset = [], 0
+        for (shape, dtype), size in zip(shapes_and_dtypes, sizes, strict=True):
+            result.append(storage.narrow(0, offset, size).view(dtype).reshape(shape))
+            offset += (size + 255) // 256 * 256
+        return tuple(result)
+
+    def require_views(self, *shapes_and_dtypes):
+        """Retain a fixed external operator's scratch through tuning and trim.
+
+        Serial operators share the maximum requirement. Rebind their views in
+        a finalizer after tuning; declarations are forbidden once frozen.
+        """
+        if self.frozen:
+            raise RuntimeError('scratch declarations are frozen')
+        needed = sum((size + 255) // 256 * 256 for size in self._view_sizes(shapes_and_dtypes))
+        self.reserve(needed)
+        self.external_nbytes = max(self.external_nbytes, needed)
+
+    @staticmethod
+    def _view_sizes(shapes_and_dtypes):
         sizes = []
         for shape, dtype in shapes_and_dtypes:
             if any(type(dim) is not int or dim < 0 for dim in shape):
@@ -153,12 +176,7 @@ class ScratchArena:
             if not isinstance(dtype, torch.dtype):
                 raise TypeError("scratch dtype must be a torch dtype")
             sizes.append(prod(shape) * dtype.itemsize)
-        storage = self.reserve(sum((size + 255) // 256 * 256 for size in sizes))
-        result, offset = [], 0
-        for (shape, dtype), size in zip(shapes_and_dtypes, sizes, strict=True):
-            result.append(storage.narrow(0, offset, size).view(dtype).reshape(shape))
-            offset += (size + 255) // 256 * 256
-        return tuple(result)
+        return sizes
 
     def register_finalizer(self, callback):
         if self.frozen:

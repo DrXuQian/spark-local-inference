@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Prepare actlizeLA recurrence around Flare's convolution and state contract."""
+"""Prepare actlizeLA convolution, recurrence and norm with Flare's state contract."""
 
 import torch
 
@@ -10,10 +10,12 @@ from ignition.preparation.scratch import ScratchArena
 class PreparedActlizeGDN:
     def __init__(self, library, *, module, scratch, state, metadata, mode, records, workspace):
         from actlize_la.serving import gdn_workspace_specs
+        from actlize_la.serving.flare import auxiliary_rows, bind_gated_norm, bind_shortconv
 
         if not isinstance(workspace, ScratchArena):
             raise TypeError('actlizeLA GDN requires a shared preparation scratch arena')
         self.library, self.state, self.metadata = library, state, metadata
+        self.tokens = scratch.convolved_qkv.shape[0]
         self.mode = 'verify' if records is not None else mode
         rows = metadata.query_start_loc.numel() - 1
         width = (records.delta.shape[2] if records is not None else
@@ -22,15 +24,26 @@ class PreparedActlizeGDN:
                                     mode=self.mode, target=library.target)
         device = state.recurrent.device
         self.work = {'errors': torch.zeros(rows, dtype=torch.int32, device=device)}
+        self.convolution_errors = torch.zeros(rows, dtype=torch.int32, device=device)
+        self.norm_errors = torch.zeros(self.tokens, dtype=torch.int32, device=device)
+        self.convolution = bind_shortconv(library, x=scratch.projected_qkv,
+            weight=module.conv1d.weight.squeeze(1), state=state.convolution,
+            metadata=metadata, output=scratch.convolved_qkv, errors=self.convolution_errors,
+            dilation=1, mode=mode)
+        self.norm = bind_gated_norm(library, hidden=scratch.recurrence, gate=scratch.z,
+            weight=module.norm.weight, output=scratch.gated, errors=self.norm_errors,
+            value_heads=module.num_v_heads, epsilon=module.norm.variance_epsilon,
+            round_normalized=True, norm_before_gate=True, silu_gate=module.norm.activation == 'silu',
+            rows=auxiliary_rows(metadata, self.tokens, upstream_errors=self.work['errors']))
         if records is not None:
             self.work.update(delta=records.delta[:rows], keys=records.keys[:rows], decays=records.decay[:rows],
                 recorded_lengths=torch.zeros(rows, dtype=torch.int32, device=device),
                 recorded_slots=torch.full((rows,), -1, dtype=torch.int64, device=device))
         transient = {name: spec for name, spec in specs.items() if name not in self.work}
-        workspace.views(*transient.values())
+        workspace.require_views(*transient.values())
         self.operation = None
         self.snapshot = self.commit = None
-        self.device_errors = (self.work['errors'],)
+        self.device_errors = (self.work['errors'], self.convolution_errors, self.norm_errors)
 
         def bind():
             from actlize_la.serving.flare import bind_gdn
@@ -40,13 +53,13 @@ class PreparedActlizeGDN:
                 a=scratch.a, b=scratch.b, A_log=module.A_log, dt_bias=module.dt_bias,
                 state=state.recurrent, metadata=metadata, output=scratch.recurrence,
                 workspace=self.work, mode=self.mode, width=width,
-                key_heads=module.num_k_heads, value_heads=module.num_v_heads)
+                key_heads=module.num_k_heads, value_heads=module.num_v_heads,
+                upstream_errors=self.convolution_errors if self.mode != 'verify' else None)
 
         workspace.register_finalizer(bind)
 
     def prepare_commit(self, counts):
-        from actlize_la.serving import PreparedConvHistory
-        from actlize_la.serving.flare import bind_gdn_commit
+        from actlize_la.serving.flare import bind_gdn_commit, bind_shortconv_history
 
         if self.mode != 'verify' or self.commit is not None:
             raise ValueError('actlizeLA verification binds its consumed-prefix commit exactly once')
@@ -57,13 +70,12 @@ class PreparedActlizeGDN:
                                dtype=torch.bfloat16, device=device)
         stamps = torch.full((rows,), -1, dtype=torch.int64, device=device)
         history = dict(state=self.state.convolution, snapshot=snapshot,
-            slots=self.metadata.convolution_slots, recorded_slots=stamps,
-            live=self.metadata.num_seqs, consumed_prefix=counts)
-        self.snapshot = PreparedConvHistory(self.library, **history, errors=errors[0], restore=False)
+            metadata=self.metadata, tokens=self.tokens, stamps=stamps, dilation=1, consumed_prefix=counts)
+        self.snapshot = bind_shortconv_history(self.library, **history, errors=errors[0], restore=False)
         self.commit = ActlizeGDNCommit(
             bind_gdn_commit(self.library, state=self.state.recurrent, metadata=self.metadata,
                 records=self.work, consumed_prefix=counts, errors=errors[1]),
-            PreparedConvHistory(self.library, **history, errors=errors[2], restore=True))
+            bind_shortconv_history(self.library, **history, errors=errors[2], restore=True))
         self.device_errors += errors
         return self.commit
 
@@ -92,7 +104,6 @@ class ActlizeGDNCommit:
 
 def prepare_layer_commits(backing, states, records, metadata, counts, operations):
     """Retain the fused Flare commit or bind every selected external layer."""
-    from .gdn_recovery import PreparedGDNCommit
 
     if set(operations) != set(states) or set(states) != set(records.layers):
         raise ValueError('GDN commit requires an operator and records for every retained layer')
@@ -105,5 +116,7 @@ def prepare_layer_commits(backing, states, records, metadata, counts, operations
                 raise ValueError('external GDN commit must retain its verification state')
         return tuple(operation.prepare_commit(counts) for operation in external)
     heads = records.delta.shape[2]
+    from .gdn_recovery import PreparedGDNCommit
+
     return (PreparedGDNCommit(backing, states, records, metadata, counts,
                              key_heads=heads // 3, value_heads=heads),)

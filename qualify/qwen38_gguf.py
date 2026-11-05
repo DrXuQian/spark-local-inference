@@ -191,8 +191,8 @@ class PartialDecoder:
     def device_errors(self):
         from ignition.components.operator_errors import device_errors
 
-        return device_errors(self.embedding, self.lookup,
-            *(operation for _, attention, _, moe in self.layers for operation in (attention, moe)))
+        return device_errors(self.embedding, self.lookup, self.final,
+            *(operation for layer in self.layers for operation in layer))
 
 
 @torch.no_grad()
@@ -202,6 +202,7 @@ def prepare(args):
     from ignition.components.completion import CompletionOutputs
     from ignition.components.sampling import AdmissionBuffers
     from ignition.preparation.checkpoint import CheckpointManifest
+    from ignition.preparation.blas import BlasLibrarySpec
     from ignition.preparation.qwen38 import CONFIG_SHA256
     from ignition.preparation.capture import capture_forwards
     from ignition.preparation.contract import history_region
@@ -234,6 +235,11 @@ def prepare(args):
         raise FileExistsError(output / 'package')
     if args.actlize_qsa and args.actlize_library is None:
         raise ValueError('--actlize-qsa requires an explicit --actlize-library')
+    if (args.dense_blas_library is None) != (args.dense_blas_api is None):
+        raise ValueError('--dense-blas-library and --dense-blas-api must be supplied together')
+    dense_blas = None if args.dense_blas_library is None else BlasLibrarySpec.read(Path.cwd(),
+        dict(library=str(args.dense_blas_library), api=args.dense_blas_api,
+             workspace_bytes=args.dense_blas_workspace_bytes))
     raw = (frontend / 'config.json').read_bytes()
     if hashlib.sha256(raw).hexdigest() != CONFIG_SHA256:
         raise ValueError('qualification requires the pinned Qwen frontend config')
@@ -263,13 +269,18 @@ def prepare(args):
         sequence = torch.zeros(1, dtype=torch.int64, device='cuda')
         table, ple_caps = fixture_table(output, 64, storage, sequence, frame)
         from ignition.preparation.actlize import ActlizeLibrarySpec
-        from ignition.preparation.quactlize import QuactlizeLibrarySpec
+        from ignition.preparation.quactlize import QuactlizeHelpersSpec, QuactlizeLibrarySpec
         from ignition.preparation.qwen38_gguf import GgufInputs
 
         operator_inputs = GgufInputs(args.target_shard, args.mtp, args.frontend, 'pread',
             None if args.actlize_library is None else ActlizeLibrarySpec.read(args.actlize_library),
-            None if args.quactlize_abi_library is None else QuactlizeLibrarySpec.read(args.quactlize_abi_library))
+            None if args.quactlize_abi_library is None else QuactlizeLibrarySpec.read(args.quactlize_abi_library),
+            dense_blas=dense_blas,
+            quactlize_helpers=None if args.quactlize_helpers_library is None else
+                QuactlizeHelpersSpec.read(args.quactlize_helpers_library))
         attention_libraries = operator_inputs.load_operators('cuda:0')
+        dense_blas_library = attention_libraries.pop('dense_blas')
+        quactlize_helpers = attention_libraries.pop('quactlize_helpers')
         operators = operator_inputs.operator_identity() or {'gdn': 'b12x'}
         kv_dtype = torch.bfloat16 if args.actlize_qsa else torch.float8_e4m3fn
         operators.update(qsa='actlize' if args.actlize_qsa else 'b12x', kv_dtype=str(kv_dtype))
@@ -308,6 +319,14 @@ def prepare(args):
                            'layers': args.layers, 'target_header': manifest.shards[0].header_sha256,
                            'operators': operators},
                 autotune_effort='off', compile_workers=2) as session:
+            session.quactlize_helpers = quactlize_helpers
+            session.actlize_helpers = attention_libraries['actlize_library']
+            session.dense_blas = None
+            if dense_blas_library is not None:
+                from ignition.components.blas_projection import PreparedBlas
+
+                session.dense_blas = PreparedBlas(dense_blas_library,
+                    torch.empty(dense_blas.workspace_bytes, dtype=torch.uint8, device='cuda:0'))
             speculation = SpeculativePreparation(weights=weights, mtp_weights=mtp, pool=state, requests=requests,
                 inputs=inputs, scratch=scratch, workspaces=workspace, rotary=rotary, cache=cache, table=table,
                 session=session, completion=completion, frame=frame, sequence=sequence, context=1024,
@@ -385,9 +404,14 @@ def prepare(args):
             from ignition.recipes.qwen38.export import disposable_ranges
             zero = disposable_ranges(cache=cache, scratch=scratch, workspaces=workspace, vision_scratch={},
                 decoders=[decoder, *speculation.decoders], owners=owners, speculation=speculation)
+            if session.dense_blas is not None:
+                from ignition.preparation.disposable import storage_ranges
+
+                zero = (*zero, *storage_ranges((session.dense_blas.workspace,)))
             prepared = PreparedModel(device=0, graphs=graphs, buffers=buffers, signatures=signatures, max_active=1,
                 session=session, server_config=settings, memory_report={}, package_data=table, export_events=table.events(),
                 export_zero_ranges=(*zero, *completion.zero_ranges()),
+                close_resources=() if quactlize_helpers is None else (quactlize_helpers,),
                 resources=(weights, mtp, table, state, requests, inputs, scratch, workspace, rotary, cache,
                            completion, admission, transfer, functions, compiled, owners, speculation, stream, storage))
             print('Exporting native qualification package', flush=True)
@@ -401,6 +425,8 @@ if __name__ == '__main__':
     from qualify.qwen38_gguf import prepare
 
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--quactlize-helpers-library', type=Path,
+                        help='explicit QUactlize serving v2/v1 DSO, independent of the matmul DSO')
     for name in ('target-shard', 'metadata', 'mtp', 'frontend', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--layers', type=int, nargs='+', default=[44, 47])
@@ -410,4 +436,10 @@ if __name__ == '__main__':
                         help='also bind external QSA, with BF16 KV pages and matching snapshots')
     parser.add_argument('--quactlize-abi-library', type=Path,
                         help='qualify the explicit NVIDIA implementation of PPU matmul records')
+    parser.add_argument('--dense-blas-library', type=Path,
+                        help='use this cuBLAS-compatible library for unquantized projections')
+    parser.add_argument('--dense-blas-api', choices=('cublas', 'acblas'),
+                        help='C symbol prefix of the explicitly selected BLAS library')
+    parser.add_argument('--dense-blas-workspace-bytes', type=int, default=4 << 20,
+                        help='caller-owned shared BLAS scratch, default 4 MiB; must be 256-byte aligned')
     prepare(parser.parse_args())

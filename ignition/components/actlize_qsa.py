@@ -24,7 +24,7 @@ class PreparedActlizeQSA:
         self.work = dict(output=scratch.attended, selected=scratch.selected_positions,
             errors=torch.zeros(rows, dtype=torch.int32, device=scratch.query.device))
         self.transient = {name: spec for name, spec in specs.items() if name not in self.work}
-        workspace.views(*self.transient.values())
+        workspace.require_views(*self.transient.values())
         self.device_errors = (self.work['errors'],)
         self.operation = None
         workspace.register_finalizer(self.bind)

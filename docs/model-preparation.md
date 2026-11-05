@@ -510,6 +510,17 @@ libraries are rejected before weights load. The normal preparation flow and
 the bounded qualification command share the same explicit library loader.
 This selector is NVIDIA-only; it does not select a physical PPU implementation.
 
+The updated serving helpers are selected independently with
+`"quactlize_helpers_library": "/path/libquactlize_serving.so"`. This uses
+`quactlize.serving` router v2, rounded SwiGLU v2 and raw Q8_0/IQ4_NL row lookup
+for target/shared-MTP experts and embeddings. The staged PLE lookup keeps its
+existing readiness dependency. Router errors join the graph's existing
+request-error guard. Library bytes enter planning and compilation identity;
+preparation warms the helpers on an explicit stream and retains their owner
+until all graphs drain. The partial fixture accepts the same selection through
+`--quactlize-helpers-library`. Its device qualification is pending. The NVIDIA
+serving compatibility DSO is for debugging and numerical checks.
+
 This selection currently requires SM120 and the existing single-GPU GGUF
 capacity; automatic device selection considers only GPUs matching the selected
 library. The external GDN ABI does not support mixed prefill/decode partitions;
@@ -727,14 +738,18 @@ python -m qualify.qwen38_gguf_http --url http://127.0.0.1:18081 \
 ### PPU port preparation
 
 The checked QUactlize interface is
-[`feat/ppu-flash-next` at 01810ca5](https://github.com/DrXuQian/QUactlize/tree/01810ca53f837cbab3c4770f0cfdd4b0d208ea44/quactlize/compat),
-not the older canonical-only API on `develop`. Its 203 host ABI, reader and
-shape cases pass. Both new CUDA-compatible translation units compile with
-SDK 2.1.1 for `ppu_10`; PPU device tests have not run here.
+[`feat/ppu-flash-next` at 8519e9a](https://github.com/DrXuQian/QUactlize/tree/8519e9a76830a513ab8ede806063a02590c710b7/quactlize/compat).
+Its 24 new serving-helper host tests pass, and `serving.cu` compiles with SDK
+2.1.1 for `ppu_10`. This adds the missing rounding, routing and device-indexed
+row contracts to the previous matmul ABI; the earlier 203 host ABI/reader/shape
+checks were on 01810ca5. The separate SM120 debugging library builds with CUDA
+12.8; its throughput is not a requirement of the PPU implementation.
 The checked actlizeLA interface is
-[`feat/flare-gdn-qsa-mtp` at cbcb4b9](https://github.com/DrXuQian/actlizeLA/tree/cbcb4b9c9be5d8f38791a0955c8a11005670b5b7/actlize_la/serving).
-Its 44 host cases and 42 independent SM120 device cases pass. These are operator
-checks, not Flare package replay or PPU hardware qualification.
+[`feat/flare-gdn-qsa-mtp` at b5696176](https://github.com/DrXuQian/actlizeLA/tree/b5696176ce66735afc6e72d079bc05018377523d/actlize_la/serving).
+Its 91 host contract cases pass against a built SM120 library. Pointwise,
+ShortConv, PLE hash and GDN sources compile for `ppu_10` and `ppu_15`.
+These new interfaces have not run on a device here. The 42 SM120 operator
+cases and package results below qualify the earlier cbcb4b9 implementation.
 
 The separate `qualify.actlize_export` fixture now checks the GDN verify/commit
 and Flare gated-normalization composition through AOT workers, cached artifacts
@@ -760,6 +775,15 @@ operator package. This selects GDN alone by default; add `--actlize-qsa` to
 include the external QSA transaction and BF16 cache storage, as described below.
 Projections, ShortConv, gated normalization and MTP attention still use their
 existing NVIDIA operators in this qualification.
+
+The new preparation bindings using b5696176 also replace GDN ShortConv and
+gated RMSNorm with actlizeLA. HC normalization, gate arithmetic and residual
+combination use its pointwise helpers, with existing scratch supplying a
+disjoint combine output before copying back to the residual. Selecting
+`dense_blas` as well composes MTP feedback from whole-10240 normalization,
+two BF16 projections and a BF16 broadcast sum. The hidden norm is not split
+into four independent norms. These changes require fresh device qualification;
+the historical NVIDIA measurements below do not establish their performance.
 
 `PreparedGDN` binds the supplied library during preparation. Transient operands
 reuse the shared scratch arena; each layer retains its correction records until
@@ -866,15 +890,114 @@ earlier isolated tails, or qualify the remaining PPU operators and target export
 | --- | --- | --- |
 | GGUF projections and MoE | Q5_1, Q8_0, Q2_K–Q6_K; H2560/I640; 512 experts, top10; BF16 operands/output, FP32 accumulation | New QU raw path admits these shapes. Canonical packing retains stricter alignment. Prepared bindings and native replay pass with the explicit NVIDIA implementation of the new records; each capacity still needs PPU validation. |
 | Expert workspace | Resident packed weights, bounded expansion, changing device IDs | New QU scratch is linear in routed rows; weight expansion is bounded by four experts × 512 output columns. M≤8 selects SIMT; larger M selects grouped TC. Do not reuse NVIDIA's eight-row prefill chunk without checking this route change. |
-| Router | FP32 route weights, original tie rule, inactive rows | New QU helper supports 512/top10, but ties prefer lower IDs; Flare prefers higher IDs. No live-count operand is supplied, so mask padded rows explicitly. |
-| SwiGLU | BF16 SiLU followed by multiply and BF16 output | New QU helper rounds only after multiplication. It is not equivalent to Qwen's `round_silu=True`. For BF16 gate −4.96875 and up 1.5, results are −0.051513671875 versus −0.0517578125. |
-| Token embedding / PLE | Device-indexed Q8_0 rows of width2560 and IQ4_NL rows of width160; inactive IDs and changing live counts | New PPU matmul dequant takes host row indices and does not admit IQ4_NL. A captured row-lookup interface remains necessary. NVIDIA compatibility already provides it. |
+| Router | FP32 route weights, original tie rule, inactive rows | QU serving v2 selects raw logits with descending-ID ties, selected-logit softmax and a device live count. Framework binding and sticky error propagation are implemented; device qualification remains. |
+| SwiGLU | BF16 SiLU followed by multiply and BF16 output | QU serving v2 explicitly supports `round_silu=True`. Shared/routed GGUF experts select it with the helper library. Earlier v1 arithmetic remains unchanged and is not used by this binding. |
+| Token embedding / PLE | Device-indexed Q8_0 rows of width2560 and IQ4_NL rows of width160; inactive IDs and changing live counts | QU serving row lookup v1 accepts device int64 IDs and an int32 live count, retaining raw GGUF bytes. Embedding and staged PLE binding are implemented; qualify actual graphs on PPU. |
 | GDN | FP32 state `[slot,Hv,V,K]`, Hk16/Hv48, compact per-layer records, consumed-input commit count | actlizeLA provides decode/verify/prefill/commit. Preserve zero-prefix convolution rollback, device errors and each layer's retained records; bind through complete compiled forwards. |
 | QSA | Ratio4, 24 query/2 KV heads, D256, selected capacity2051, page64 | actlizeLA supplies append/compression/selection/attention with BF16 KV. Combined GDN/QSA partial GGUF serving and snapshot/restore are qualified on SM120; complete PPU recipe binding remains. Do not retain the old writer as well. |
 | Shared MTP attention | Ratio0, paged causal GQA, D256, page64, changing device lengths | Ordinary NVIDIA attention passes actual shared-Q8 MTP tests at 1/7/128 with BF16 pages. Local PPU FA2 f600591 requires pages divisible by256; the narrow FA3 box build disables paging/append/D256. Qualify a matching FA3 build and prepared output/workspace ABI. |
-| Dense BF16 / HC projections | Preserve actual dimensions, strided outputs and FP32 accumulation | DeepGEMM provides BF16 kernels. Freeze plans and scratch before capture; its ordinary Python JIT entry is not a serving interface. |
-| RMSNorm / HC / ShortConv / RoPE / gating / sampling / state helpers | Exact dtype/rounding, inactive rows and complete mutable history | These exist in Flare through b12x and compiled tensor operations. QU/actlizeLA do not replace all of them; compile or bind external PPU implementations. No framework-owned kernel collection is added. |
+| Dense BF16 / HC projections | Preserve actual dimensions, strided outputs and FP32 accumulation | Explicit `dense_blas` selection binds cuBLAS or acBLAS GemmEx with caller-owned scratch. CPU ABI and layout tests pass; compiled device capture and native export with this selection remain unqualified. |
+| RMSNorm / HC / ShortConv / MTP feedback | Exact dtype/rounding, inactive rows and complete mutable history | actlizeLA bindings cover GDN convolution/norm, four-stream HC and full-width MTP feedback. External scratch survives tuning/trim; raw convolution slot0 uses its new valid-slot history contract. Device composition tests remain unrun locally. |
+| PLE hash and gating | Read-only committed history, int64 hashes, dilation3, BF16 gate boundaries | actlizeLA provides the operators; framework wiring remains. |
+| RoPE / sampling / state helpers | Device lengths, request-local RNG and graph-safe mutable metadata | Qualify the PPU FlashInfer interfaces and target compilation. Installing FlashInfer alone does not prove its caller-owned sampling ABI. |
 | Native graph export | Capture and export on the deployment platform; replay after Python exits | SDK2.1.1 declares graph/VMM/event APIs. Qualify the CUDA facade, module-image recorder, PPU ELF globals/parameters and relocations. Current export uses CUPTI and CUDA module metadata; API names alone do not prove this boundary. |
+
+GGUF input manifests can select ordinary dense projections explicitly:
+
+```json
+"dense_blas": {
+  "library": "/path/to/libacblas.so",
+  "api": "acblas",
+  "workspace_bytes": 4194304
+}
+```
+
+On NVIDIA, select the matching `libcublas.so` and `"api": "cublas"`. The
+library path is relative to the input directory unless absolute. The library
+content, API and scratch size are part of preparation identity; scratch is
+budgeted once. No pip installation or device-capability guess chooses this
+library. Keep the platform's Torch and FlashInfer packages.
+
+`ignition.components.blas_projection` binds the C API directly. It supports
+unbiased BF16-by-BF16 projections with BF16 or FP32 output, and FP32-by-FP32
+projections with FP32 output. Inputs and outputs can have padded row strides;
+columns must be contiguous and write spans disjoint. FP32 accumulation is
+requested without reduced-precision reduction or TF32 conversion. Preparation
+owns one handle and workspace for serialized dense projections; concurrent
+branches require separate resources. Output and workspace mutations are explicit
+to compilation. Complete forwards warm the calls before capture, and serving
+replays captured kernels without calling the Python or BLAS host API.
+
+The ordinary projection dispatcher and the Qwen cache/configuration modules
+(`attention_state`, `cache_layout`, `state_layout`, `config`) can be imported
+without b12x. Cache, MTP rollback and snapshot layouts retain their existing
+byte geometry. This does **not** remove b12x from complete Qwen preparation:
+PLE, ordinary MTP attention and preparation orchestration still have pending
+replacements. The platform FlashInfer build must also supply
+Flare's caller-owned top-k/top-p workspace interfaces and request-local chain
+sampling RNG contract; a successful `import flashinfer` does not establish them.
+
+Run the host checks without loading a device library:
+
+```sh
+python -m pytest -q tests/components/test_blas_projection.py \
+  tests/preparation/test_blas_inputs.py tests/preparation/test_qwen38_cache_layout.py \
+  tests/preparation/test_qwen38_gguf_inputs.py tests/recipes/test_qwen38_prefill_config.py
+```
+
+The C fixture in these checks implements only host-side ABI arithmetic, not
+cuBLAS/acBLAS device execution. With an assigned device and matching Torch,
+run the separate graph checks, including complete-forward compilation, changed
+inputs, padded outputs and explicit workspace rebinding:
+
+```sh
+FLARE_TEST_BLAS_LIBRARY=/path/to/libacblas.so FLARE_TEST_BLAS_API=acblas \
+  python -m pytest -q tests/components/test_blas_projection_cuda.py
+```
+
+For the first PPU box qualification, use the platform's Python 3.12 environment
+with its Torch and FlashInfer artifacts. Install only the small missing test
+dependencies (`pytest`, `numpy`, `gguf==0.19.0`, `protobuf>=7.35.1,<8`) and this
+repository with `pip install --no-deps -e .`. Do not use the NVIDIA `prepare`
+extra for this check. Keep QUactlize and actlizeLA source checkouts matching
+their built PPU DSOs; this command imports their declarations from those paths:
+
+```sh
+cd /sim/eec/shared/junfu.qx/spark-local-inference
+python -m qualify.ppu_box \
+  --quactlize-source /path/to/QUactlize \
+  --actlize-source /path/to/actlizeLA \
+  --quactlize-library /path/to/PPU-quactlize-serving.so \
+  --actlize-library /path/to/libactlize_la_serving.so \
+  --actlize-target ppu15 \
+  --blas-library /path/to/libacblas.so --blas-api acblas \
+  --run-device-tests --output /path/to/new-ppu-test-directory
+```
+
+Use `ppu10` when that is the actual library target. Omit `--run-device-tests`
+and `--output` to inspect interfaces first. The command checks real exported
+symbols/descriptor sizes, valid Qwen matmul geometry, sampling workspace and
+`row_independent_rng` support. It then runs the framework's BLAS/GGUF/helper
+graph tests and both libraries' numerical, convolution/transaction and graph
+tests in separate processes. It also exercises the actual external GDN sequence,
+HC and full-width MTP feedback bindings. Skips are failures of device qualification.
+Results and logs stay in the new output directory; no model is downloaded.
+The GGUF helper test creates tiny Q8_0/IQ4_NL files and replays changing token
+IDs, route counts, poisoned inactive rows and sticky repeated-call errors in
+one graph. Its compilation test checks actual Flare storage lowering.
+
+Passing this command qualifies those components, not complete PPU model
+serving. Full b12x-free recipe composition, ordinary MTP paged attention,
+target native export/Rust replay and whole-round bubble measurements remain
+separate requirements.
+
+For the existing partial-layer NVIDIA qualification, append
+`--dense-blas-library /path/to/libcublas.so --dense-blas-api cublas`
+to `python -m qualify.qwen38_gguf` with its usual shard, MTP and frontend inputs.
+`--dense-blas-workspace-bytes` defaults to 4 MiB in this fixture. This uses the
+same selection in target and shared-MTP graph construction and does not require
+the complete model. This new BLAS selection has not yet been exercised through
+that export fixture; the fixture itself still needs the other NVIDIA operators.
 
 `quactlize_ppu_matmul_run_v1` has sticky device error bits. The adapter must
 clear and consume them at the intended graph boundary, retain all buffers and

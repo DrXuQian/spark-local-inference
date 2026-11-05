@@ -2,31 +2,30 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Prepared b12x projections with caller-owned output and scratch storage."""
+"""Prepared projections with caller-owned output and scratch storage."""
 
 from __future__ import annotations
 
 from dataclasses import replace
 from functools import partial
+from typing import TYPE_CHECKING
 
 import torch
-from b12x.gemm import bf16_gemv, blockscaled
-from b12x.preparation import PreparationSession, PreparedCall
 
-from ignition.components import sm103_projection
-from ignition.preparation.fixtures import bf16_gemv as bf16_fixtures
-from ignition.preparation.fixtures import blockscaled_gemm as gemm_fixtures
 from ignition.preparation.fixtures.projection import input_factory
 from ignition.preparation.scratch import ScratchArena, prime_owners, scratch_storage
 from ignition.preparation.tensor_metadata import record_numeric_tensor
-from ignition.preparation.tuning import benchmark_resource, declare, register_context_plan, register_finalizer
+
+if TYPE_CHECKING:
+    from b12x.gemm import blockscaled
+    from b12x.preparation import PreparationSession
 
 
 def prepare_projection(source, weight, output, *, session, name, workspace, activation_mode="auto", staging=None):
     """Bind a projection without changing its checkpoint weight representation."""
-    from .block_fp8 import BlockFP8Projection, BlockFP8Weight
+    if isinstance(weight, torch.Tensor):
+        return UnquantizedProjection(source, weight, output, session=session, name=name)
     from .gguf_weights import GgufWeight
-    from .weights import GroupedLinearWeights
 
     if isinstance(weight, GgufWeight):
         from .gguf_projection import PreparedGgufProjection
@@ -34,11 +33,13 @@ def prepare_projection(source, weight, output, *, session, name, workspace, acti
         if activation_mode not in ('auto', 'dense'):
             raise ValueError('GGUF compatibility projections require 16-bit dense activations')
         return PreparedGgufProjection(source, weight, output, workspace=workspace)
+    from .weights import GroupedLinearWeights
+
     if isinstance(weight, GroupedLinearWeights):
         return PreparedProjectionGroup(source, weight, output, session=session, name=name, workspace=workspace,
                                        activation_mode=activation_mode, staging=staging)
-    if isinstance(weight, torch.Tensor):
-        return UnquantizedProjection(source, weight, output, session=session, name=name)
+    from .block_fp8 import BlockFP8Projection, BlockFP8Weight
+
     if isinstance(weight, BlockFP8Weight):
         return BlockFP8Projection(source, weight, output, session=session, name=name)
     return QuantizedProjection(source, weight, output, session=session, name=name,
@@ -115,6 +116,20 @@ class UnquantizedProjection:
         name: str,
         bias: torch.Tensor | None = None,
     ) -> None:
+        self.blas = None
+        blas_owner = getattr(session, 'dense_blas', None)
+        if blas_owner is not None:
+            from .blas_projection import PreparedBlasProjection
+
+            self.blas = PreparedBlasProjection(source, weight, output, owner=blas_owner, bias=bias)
+            self.weight, self.output, self.bias, self.plan = weight, output, bias, None
+            return
+        from b12x.gemm import bf16_gemv
+        from b12x.preparation import PreparedCall
+        from ignition.components import sm103_projection
+        from ignition.preparation.fixtures import bf16_gemv as bf16_fixtures
+        from ignition.preparation.tuning import declare
+
         if any(t.dtype not in (torch.bfloat16, torch.float32) for t in (source, weight, output)):
             raise TypeError("unquantized projections require BF16 or FP32 operands")
         for tensor in (weight, bias):
@@ -152,9 +167,13 @@ class UnquantizedProjection:
         ),))
 
     def __call__(self, source: torch.Tensor) -> torch.Tensor:
+        if self.blas is not None:
+            return self.blas(source)
         if self.dense:
             torch.ops.flare.sm103_dense_out(source, self.weight, self.output, self.plan.handle)
             return self.output
+        from b12x.gemm import bf16_gemv
+
         return bf16_gemv.mm(source, self.weight, out=self.output, plan=self.plan, bias=self.bias)
 
 
@@ -177,8 +196,13 @@ class QuantizedProjection:
         allow_bf16_atomic_reduction: bool | None = None,
         buffers=None,
     ) -> None:
+        from b12x.gemm import blockscaled
         from b12x.gemm.blockscaled._a16 import NVFP4LinearWeight, _overlap, _weight_parts
         from b12x.gemm.blockscaled._linear import MXFP8LinearWeight, _validate_bias
+        from b12x.preparation import PreparedCall
+        from ignition.components import sm103_projection
+        from ignition.preparation.fixtures import blockscaled_gemm as gemm_fixtures
+        from ignition.preparation.tuning import benchmark_resource, declare, register_context_plan, register_finalizer
 
         # Address-dependent bias checks run before metadata-only forward compilation.
         _validate_bias(bias, out_features=weight.out_features, out_dtype=output.dtype, device=source.device)
@@ -380,6 +404,8 @@ class QuantizedProjection:
             torch.ops.flare.sm103_packed_out(source, values, scales, gain, self.output, self.workspace,
                                              self.plan.handle)
         else:
+            from b12x.gemm import blockscaled
+
             blockscaled.mm(source, self.weight, out=self.output, plan=self.plan, workspace=self.workspace)
         if self.bias is not None:
             self.output.add_(self.bias)
@@ -423,6 +449,9 @@ class BatchedQuantizedProjection:
     def __init__(self, source, weight, output, *, major, session, name):
         from b12x import gemm
         from b12x.gemm._bmm._tuning import BmmQuery
+        from b12x.preparation import PreparedCall
+        from ignition.components import sm103_projection
+        from ignition.preparation.tuning import declare
 
         if source.ndim != 3 or output.ndim != 3 or source.shape[:2] != output.shape[:2]:
             raise ValueError("batched projections require matching batch and row dimensions")
@@ -483,6 +512,8 @@ def _parallel_mx_projections(
     outputs: list[torch.Tensor], workspaces: list[torch.Tensor],
     plans: list[int], auxiliary_stream: int, join: bool = True,
 ) -> None:
+    from ignition.components import sm103_projection
+
     main = torch.cuda.current_stream(source.device)
     auxiliary = torch.cuda.ExternalStream(auxiliary_stream, device=source.device)
     auxiliary.wait_stream(main)
@@ -510,6 +541,7 @@ class ParallelProjections:
     def __init__(self, main: QuantizedProjection, auxiliary: QuantizedProjection, *, session,
                  workspace: ScratchArena):
         from b12x.gemm.blockscaled._a16 import _weight_parts
+        from ignition.preparation.tuning import register_finalizer
 
         self.projections = (main, auxiliary)
         self.arena = workspace

@@ -8,16 +8,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from functools import partial
+from typing import TYPE_CHECKING
 
 import torch
-from b12x.moe import fused_moe
-from b12x.moe.fused_moe.workloads import TUNING_WORKLOAD_VERSION
-from b12x.preparation import FrozenMapping, PreparationSession, PreparedCall
 
-from ignition.preparation.fixtures import fused_moe as moe_fixtures
 from ignition.preparation.scratch import ScratchArena, planned_scratch, prime_owners
 from ignition.preparation.tensor_metadata import record_numeric_tensor
-from ignition.preparation.tuning import declare, register_finalizer
+
+if TYPE_CHECKING:
+    from b12x.preparation import PreparationSession
 
 
 @dataclass(frozen=True)
@@ -55,10 +54,21 @@ class PreparedRouter:
     those rows receive expert ID -1 and zero weights.
     """
 
+    def __new__(cls, logits=None, scratch=None, *, session=None, **kwargs):
+        if getattr(session, 'quactlize_helpers', None) is not None:
+            from .quactlize_helpers import PreparedQuactlizeRouter
+
+            return PreparedQuactlizeRouter(logits, scratch, session=session, **kwargs)
+        return super().__new__(cls)
+
     def __init__(self, logits: torch.Tensor, scratch: RouterScratch, *,
                  session: PreparationSession, name: str, score_func="softmax",
                  renormalize=True, routed_scaling_factor=1.0, correction_bias=None,
                  image_correction_bias=None, image_mask=None, num_valid_tokens=None):
+        from b12x.moe import fused_moe
+        from b12x.preparation import PreparedCall
+        from ignition.preparation.tuning import declare
+
         if logits.ndim != 2 or logits.dtype not in (torch.bfloat16, torch.float32) or logits.stride(1) != 1:
             raise ValueError("router logits must be BF16 or FP32 [tokens, experts] with contiguous expert columns")
         tokens, experts = logits.shape
@@ -90,6 +100,8 @@ class PreparedRouter:
             owners=(logits, scratch))),))
 
     def __call__(self, logits: torch.Tensor) -> None:
+        from b12x.moe import fused_moe
+
         if (logits.dtype != self.dtype or logits.shape != self.shape
                 or logits.stride() != self.stride or logits.device != self.device):
             raise ValueError("router logits must preserve the prepared dtype, shape, strides, and device")
@@ -107,11 +119,12 @@ class PreparedRoutedExperts:
     def __new__(cls, source=None, experts=None, *args, **kwargs):
         # Experts loaded for SM103 execute through FlashInfer's native kernels. Unpickling, as compiler
         # workers do with a forward's metadata, creates the instance without arguments.
-        from ignition.components.moe_sm103 import Sm103Experts, Sm103RoutedExperts
         from ignition.components.gguf_moe import GgufExperts, PreparedGgufRoutedExperts
 
         if isinstance(experts, GgufExperts):
             return PreparedGgufRoutedExperts(source, experts, *args, **kwargs)
+        from ignition.components.moe_sm103 import Sm103Experts, Sm103RoutedExperts
+
         if isinstance(experts, Sm103Experts):
             return Sm103RoutedExperts(source, experts, *args, **kwargs)
         return super().__new__(cls)
@@ -119,6 +132,12 @@ class PreparedRoutedExperts:
     def __init__(self, source, experts, ids, weights, output, *, session: PreparationSession, name: str,
                  workspace: ScratchArena | torch.Tensor | None = None, router_plan=None,
                  a4_prefill=False, routing=None, router=None, route_output=None):
+        from b12x.moe import fused_moe
+        from b12x.moe.fused_moe.workloads import TUNING_WORKLOAD_VERSION
+        from b12x.preparation import FrozenMapping, PreparedCall
+        from ignition.preparation.fixtures import fused_moe as moe_fixtures
+        from ignition.preparation.tuning import declare, register_finalizer
+
         # b12x owns the final weight/scale planes after repacking. Classify those
         # exact tensors, not opaque execution scratch or the discarded source.
         for field in ("w1_fp4", "w2_fp4", "w1_blockscale", "w2_blockscale",
@@ -225,6 +244,8 @@ class PreparedRoutedExperts:
             self.router(logits)
 
     def __call__(self) -> torch.Tensor:
+        from b12x.moe import fused_moe
+
         fused_moe.run(binding=self.binding)
         return self.output
 

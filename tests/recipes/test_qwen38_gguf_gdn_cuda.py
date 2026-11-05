@@ -162,7 +162,8 @@ def test_target_gdn_prefill_graph(checkpoint, tokens, tmp_path, recurrence_libra
 
 
 @pytest.mark.parametrize('recurrence_library', ['actlize'], indirect=True)
-def test_actlize_retains_each_layers_records_through_shared_scratch(checkpoint, recurrence_library, tmp_path):
+@pytest.mark.parametrize('convolution_slot', [0, 1])
+def test_actlize_retains_each_layers_records_through_shared_scratch(checkpoint, recurrence_library, tmp_path, convolution_slot):
     from ignition.components.actlize_gdn import prepare_layer_commits
     from ignition.components.gdn_recovery import GDNLayerRecords
     from tests.recipes.test_qwen38_gdn_recovery_cuda import _reference
@@ -195,7 +196,7 @@ def test_actlize_retains_each_layers_records_through_shared_scratch(checkpoint, 
             source.normal_(std=.2)
             metadata.query_start_loc.copy_(torch.tensor([0, 6, 6], dtype=torch.int32, device=device))
             metadata.state_indices[:, 0].copy_(torch.tensor([1, 2], device=device))
-            metadata.convolution_slots.copy_(torch.tensor([1, 2], device=device))
+            metadata.convolution_slots.copy_(torch.tensor([convolution_slot, 2], device=device))
             metadata.accepted_tokens.fill_(1)
             metadata.num_seqs.fill_(2); metadata.num_tokens.fill_(6)
             initial, convolution, expected = {}, {}, {}
@@ -228,8 +229,9 @@ def test_actlize_retains_each_layers_records_through_shared_scratch(checkpoint, 
                     torch.testing.assert_close(state.recurrent[1], wanted, rtol=1e-5, atol=1e-6)
                     assert torch.equal(state.recurrent[0], initial[layer][0])
                     assert torch.equal(state.recurrent[2:], initial[layer][2:])
-                    assert torch.equal(state.convolution[0], convolution[layer][0])
-                    assert torch.equal(state.convolution[2:], convolution[layer][2:])
+                    for slot in range(state.convolution.shape[0]):
+                        if slot != convolution_slot:
+                            assert torch.equal(state.convolution[slot], convolution[layer][slot])
                     if not consumed:
                         assert torch.equal(state.convolution, convolution[layer])
         finally:

@@ -8,10 +8,12 @@ from types import SimpleNamespace
 import pytest
 import torch
 from b12x._lib.scratch import ScratchBufferSpec, scratch_tensor
+from b12x.moe import fused_moe
 
 from ignition.components import moe
 from ignition.preparation.fixtures import fused_moe as moe_fixtures
 from ignition.preparation.scratch import ScratchArena
+from ignition.preparation import tuning
 
 
 @pytest.mark.parametrize("a4_prefill", [False, True])
@@ -47,16 +49,16 @@ def test_candidate_cohort_reuses_exact_operands_and_one_arena(monkeypatch, token
         assert kwargs["invocation"]["tuning_route_pattern"] == moe.TUNING_WORKLOAD_VERSION
         return plan
 
-    monkeypatch.setattr(moe.fused_moe, "plan_execution", plan_execution)
-    monkeypatch.setattr(moe.fused_moe, "bind", lambda plan, **kwargs: SimpleNamespace(**kwargs))
+    monkeypatch.setattr(fused_moe, "plan_execution", plan_execution)
+    monkeypatch.setattr(fused_moe, "bind", lambda plan, **kwargs: SimpleNamespace(**kwargs))
     finalizers = []
-    monkeypatch.setattr(moe, "register_finalizer", lambda session, callback, **kwargs: finalizers.append(callback))
+    monkeypatch.setattr(tuning, "register_finalizer", lambda session, callback, **kwargs: finalizers.append(callback))
     router_plan = SimpleNamespace(query=SimpleNamespace(routed_scaling_factor=2.5))
 
     def route(*args, **kwargs):
         pytest.fail("expert tuning must use b12x synthetic routes")
 
-    monkeypatch.setattr(moe.fused_moe, "route_topk", route)
+    monkeypatch.setattr(fused_moe, "route_topk", route)
 
     def resource(session, key, factory):
         if key not in resources:
@@ -136,7 +138,7 @@ def test_expert_precision_reaches_the_canonical_execution_query(monkeypatch, tok
     from b12x.moe.fused_moe._impl import B12XFP4ExpertWeights, _PreparedWeightRepresentation
     from b12x.moe.fused_moe.weights import PreparedExperts
 
-    api = moe.fused_moe
+    api = fused_moe
     weight_plan = api.plan_weights(
         source=api.PackedSource(format="modelopt_nvfp4", w13_layout="w13"),
         activation=api.ActivationSpec(mode="a16", nonlinearity="silu", io_dtype=torch.bfloat16),
@@ -156,7 +158,7 @@ def test_expert_precision_reaches_the_canonical_execution_query(monkeypatch, tok
         representation=representation, a4_prefill_scales=True))
     declarations, finalizers = [], []
     session = SimpleNamespace(prepare=lambda requests: declarations.extend(requests))
-    monkeypatch.setattr(moe, "register_finalizer", lambda _, callback, **kwargs: finalizers.append(callback))
+    monkeypatch.setattr(tuning, "register_finalizer", lambda _, callback, **kwargs: finalizers.append(callback))
     source = torch.empty((tokens, 256), dtype=torch.bfloat16, device="meta")
     operation = moe.PreparedRoutedExperts(source, experts,
         torch.empty((tokens, 1), dtype=torch.int32, device="meta"),

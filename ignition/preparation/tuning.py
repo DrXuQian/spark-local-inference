@@ -401,9 +401,10 @@ class RecordedPreparationSession(PreparationSession):
             requirements.append(self.candidate_memory_envelope(remaining))
         envelope = MemoryRequirements.sequential(requirements)
         before = arena.nbytes
-        required = max(envelope.scratch_nbytes, parallel)
+        required = max(envelope.scratch_nbytes, parallel, arena.external_nbytes)
         arena.reserve(required)
         return {"initial_bytes": before, "candidate_scratch_bytes": required,
+                "external_scratch_bytes": arena.external_nbytes,
                 "parallel_candidate_scratch_bytes": parallel,
                 "candidate_reserved_bytes": arena.nbytes,
                 "pending_persistent_bytes": envelope.pending_persistent_nbytes}
@@ -541,7 +542,7 @@ class RecordedPreparationSession(PreparationSession):
                 selected = MemoryRequirements.sequential(request.plan.memory_requirements() for request in requests)
                 parallel = self._scratch_arena.parallel_nbytes(lambda plan:
                     plan.memory_requirements().scratch_nbytes)
-                required = max(selected.scratch_nbytes, parallel)
+                required = max(selected.scratch_nbytes, parallel, self._scratch_arena.external_nbytes)
                 self._scratch_arena.trim(required)
                 if self._coordinator is None:
                     self._scratch_arena.freeze()

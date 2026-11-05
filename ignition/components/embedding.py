@@ -5,11 +5,6 @@
 """Prepared b12x embedding lookup with fixed output and device live counts."""
 
 import torch
-from b12x.preparation import PreparedCall
-from b12x.sequence import embedding
-
-from ignition.preparation.tuning import declare
-from .collectives import PreparedChunkedAllGather
 
 
 class PreparedEmbedding:
@@ -29,6 +24,10 @@ class PreparedEmbedding:
         return super().__new__(cls)
 
     def __init__(self, weight, ids, output, *, session, name, num_rows=None):
+        from b12x.preparation import PreparedCall
+        from b12x.sequence import embedding
+        from ignition.preparation.tuning import declare
+
         self.weight, self.ids, self.output, self.num_rows = weight, ids, output, num_rows
         self.arguments = {"out": output, "num_rows": num_rows}
         self.plan = embedding.plan(embedding.query_from_call(weight, ids, **self.arguments), device=weight.device)
@@ -40,6 +39,8 @@ class PreparedEmbedding:
         declare(session, (self.plan.request(name=name, prepare_call=prepare),))
 
     def __call__(self):
+        from b12x.sequence import embedding
+
         if self.num_rows is not None:
             self.output.zero_()
         return embedding.run(self.weight, self.ids, plan=self.plan, **self.arguments)
@@ -49,6 +50,8 @@ class PreparedShardedEmbedding:
     """Gather column-sharded vocabulary rows through a prepared collective."""
 
     def __init__(self, weight, ids, local_output, output, *, runtime, coordinator, session, name, num_rows=None):
+        from .collectives import PreparedChunkedAllGather
+
         self.lookup = PreparedEmbedding(weight, ids, local_output, session=session, name=name + ".lookup",
                                         num_rows=num_rows)
         self.gather = PreparedChunkedAllGather(local_output, output, runtime=runtime, coordinator=coordinator,

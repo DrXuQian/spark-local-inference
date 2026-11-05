@@ -6,7 +6,7 @@
 
 import pytest
 
-from ignition.recipes.qwen38.bootstrap import PreparationConfig
+from ignition.recipes.qwen38.config import PreparationConfig
 
 
 def test_hyperconnection_sharding_requires_multiple_ranks():

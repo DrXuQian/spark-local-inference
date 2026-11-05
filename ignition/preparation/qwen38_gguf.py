@@ -11,7 +11,8 @@ from types import MappingProxyType
 
 from .checkpoint import CheckpointError
 from .actlize import ActlizeLibrarySpec
-from .quactlize import QuactlizeLibrarySpec
+from .quactlize import QuactlizeHelpersSpec, QuactlizeLibrarySpec
+from .blas import BlasLibrarySpec
 from .gguf import GgufCheckpoint, file_identity, inspect_gguf_checkpoint
 from .qwen38 import CONFIG_SHA256, FRONTEND_SHA256, GENERATION_SHA256
 
@@ -24,26 +25,30 @@ class GgufInputs:
     read_mode: str
     actlize: ActlizeLibrarySpec | None = None
     quactlize: QuactlizeLibrarySpec | None = None
+    dense_blas: BlasLibrarySpec | None = None
+    quactlize_helpers: QuactlizeHelpersSpec | None = None
 
     def operator_identity(self):
-        return operator_identity(self.actlize, self.quactlize)
+        return operator_identity(self.actlize, self.quactlize, self.dense_blas, self.quactlize_helpers)
 
     def load_operators(self, device):
         attention = None if self.actlize is None else self.actlize.load(device)
         projection = None if self.quactlize is None else self.quactlize.load(device)
         return dict(actlize_library=attention, actlize_qsa_library=attention,
-                    gguf_projection_library=projection)
+                    gguf_projection_library=projection,
+                    dense_blas=None if self.dense_blas is None else self.dense_blas.load(),
+                    quactlize_helpers=None if self.quactlize_helpers is None else self.quactlize_helpers.load(device))
 
     @classmethod
     def read(cls, directory):
         directory = Path(directory).resolve()
         value = json.loads((directory / 'manifest.json').read_text())
         required = {'schema', 'main', 'mtp', 'frontend', 'read_mode'}
-        optional = {'actlize_library', 'quactlize_abi_library'}
+        optional = {'actlize_library', 'quactlize_abi_library', 'dense_blas', 'quactlize_helpers_library'}
         if (not isinstance(value, dict) or not required <= value.keys() <= required | optional
                 or value['schema'] != 'qwen38-gguf/1'):
             raise CheckpointError('GGUF input manifest requires schema, main, mtp, frontend and read_mode;'
-                                  ' actlize_library and quactlize_abi_library are optional')
+                                  ' actlize_library, quactlize_abi_library, quactlize_helpers_library and dense_blas are optional')
         if value['read_mode'] not in ('auto', 'bounce', 'gds', 'pread'):
             raise CheckpointError('unknown GGUF checkpoint transport')
         paths = []
@@ -54,18 +59,28 @@ class GgufInputs:
         if not paths[0].is_file() or not paths[1].is_file() or not paths[2].is_dir():
             raise CheckpointError('GGUF input requires two files and a frontend directory')
         libraries = []
-        for key, spec in (('actlize_library', ActlizeLibrarySpec), ('quactlize_abi_library', QuactlizeLibrarySpec)):
+        for key, spec in (('actlize_library', ActlizeLibrarySpec), ('quactlize_abi_library', QuactlizeLibrarySpec),
+                          ('quactlize_helpers_library', QuactlizeHelpersSpec)):
             if key in value and (not isinstance(value[key], str) or not value[key]):
                 raise CheckpointError(f'{key} requires a native library path')
             libraries.append(None if key not in value else spec.read(directory / value[key]))
-        return cls(*paths, value['read_mode'], *libraries)
+        try:
+            blas = BlasLibrarySpec.read(directory, value['dense_blas']) if 'dense_blas' in value else None
+        except ValueError as exc:
+            raise CheckpointError(str(exc)) from exc
+        return cls(*paths, value['read_mode'], libraries[0], libraries[1], blas, libraries[2])
 
 
-def operator_identity(actlize, quactlize):
+def operator_identity(actlize, quactlize, dense_blas=None, quactlize_helpers=None):
     value = None if actlize is None else actlize.identity()
+    if value is None and any(spec is not None for spec in (quactlize, dense_blas, quactlize_helpers)):
+        value = dict(gdn='b12x', qsa='b12x', kv_dtype='float8_e4m3fn')
     if quactlize is not None:
-        value = dict(gdn='b12x', qsa='b12x', kv_dtype='float8_e4m3fn') if value is None else value
         value['matmul'] = quactlize.identity()
+    if dense_blas is not None:
+        value['dense_blas'] = dense_blas.identity()
+    if quactlize_helpers is not None:
+        value['quactlize_helpers'] = quactlize_helpers.identity()
     return value
 
 
@@ -78,6 +93,8 @@ class QwenGgufCheckpoint(GgufCheckpoint):
     read_mode: str
     actlize: ActlizeLibrarySpec | None = None
     quactlize: QuactlizeLibrarySpec | None = None
+    dense_blas: BlasLibrarySpec | None = None
+    quactlize_helpers: QuactlizeHelpersSpec | None = None
 
     @property
     def metadata_path(self):
@@ -161,7 +178,7 @@ def inspect_qwen38_gguf(inputs: GgufInputs):
                                      for shard in checkpoint.shards).encode()).hexdigest()
     return QwenGgufCheckpoint(main.snapshot, main.tensors, main.shards, main.metadata, main.vocab_size,
                               draft, inputs.frontend, MappingProxyType(hashes), headers, inputs.read_mode,
-                              inputs.actlize, inputs.quactlize)
+                              inputs.actlize, inputs.quactlize, inputs.dense_blas, inputs.quactlize_helpers)
 
 
 def device_weight_bytes(checkpoint):

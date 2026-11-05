@@ -173,7 +173,8 @@ class PreparedQwenMoe:
 
     def __init__(self, source, weights: QwenMoeWeights, *, session: PreparationSession, name: str,
                  scratch: QwenMoeScratch | None = None, workspace: ScratchArena | torch.Tensor | None = None,
-                 projection_workspace: ScratchArena | torch.Tensor | None = None, gguf_projection_library=None):
+                 projection_workspace: ScratchArena | torch.Tensor | None = None, gguf_projection_library=None,
+                 num_valid_tokens=None):
         if (weights.experts.num_experts, weights.experts.hidden_size) != (512, 2560):
             raise ValueError("Qwen MoE requires all 512 experts with hidden size 2560")
         if tuple(weights.router.shape) != (512, 2560):
@@ -190,7 +191,14 @@ class PreparedQwenMoe:
         self.routed_output, self.output = scratch.routed_output, scratch.output
         self.router_projection = UnquantizedProjection(source, weights.router, self.router_logits,
             session=session, name=f"{name}.router")
-        self.routing = PreparedRouter(self.router_logits, self.router, session=session, name=f"{name}.route_topk")
+        helpers = getattr(session, 'quactlize_helpers', None)
+        if helpers is not None:
+            from ignition.components.gguf_moe import GgufExperts
+
+            if not isinstance(weights.experts, GgufExperts):
+                raise ValueError('QUactlize routing requires the explicit GGUF expert path')
+        self.routing = PreparedRouter(self.router_logits, self.router, session=session, name=f"{name}.route_topk",
+            **({} if helpers is None else {'num_valid_tokens': num_valid_tokens}))
         self.shared = PreparedSharedExpert(source, weights.shared, session=session, name=f"{name}.shared",
             scratch=scratch.shared, projection_workspace=projection_workspace)
         self.experts = PreparedRoutedExperts(source, weights.experts, self.router.ids,
@@ -235,4 +243,4 @@ class PreparedQwenMoe:
     def device_errors(self):
         from ignition.components.operator_errors import device_errors
 
-        return device_errors(self.experts)
+        return device_errors(self.routing, self.experts)

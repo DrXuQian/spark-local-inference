@@ -219,6 +219,8 @@ def test_combine_norm_fixture_retains_fp32_gain_and_owns_both_outputs():
 
 
 def test_combine_uses_public_prepared_plan_and_residual_output(monkeypatch):
+    from b12x.norm import hyperconnection as hc
+
     operator = hyperconnection.PreparedHyperconnection.__new__(hyperconnection.PreparedHyperconnection)
     operator.scratch = HyperconnectionScratch.allocate(4, torch.device("cpu"))
     operator.injection = object()
@@ -233,7 +235,7 @@ def test_combine_uses_public_prepared_plan_and_residual_output(monkeypatch):
         assert out is state
         return out
 
-    monkeypatch.setattr(hyperconnection.hc, "run_combine", combine)
+    monkeypatch.setattr(hc, "run_combine", combine)
     for selection in ("default", "tuned"):
         plan.selection = selection
         assert operator.combine(residual, block) is residual

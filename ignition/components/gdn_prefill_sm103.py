@@ -15,6 +15,8 @@ null row instead, which is the same initial state.
 
 from __future__ import annotations
 
+from .recurrent_state import PrefillBuffers
+
 from dataclasses import dataclass
 
 import torch
@@ -90,32 +92,6 @@ def _tracing():
     return torch.compiler.is_compiling() or get_proxy_mode() is not None
 
 
-@dataclass(frozen=True)
-class PrefillBuffers:
-    """Contiguous query, key and value heads and FP32 decay and update gates for one prefill chunk."""
-
-    query: torch.Tensor
-    key: torch.Tensor
-    value: torch.Tensor
-    decay: torch.Tensor
-    beta: torch.Tensor
-
-    @classmethod
-    def allocate(cls, tokens: int, device, *, key_heads: int, value_heads: int, buffers=None) -> PrefillBuffers:
-        def zeros(shape, dtype=torch.bfloat16):
-            return (torch.zeros(shape, dtype=dtype, device=device) if buffers is None
-                    else buffers.zeros(shape, dtype))
-        return cls(zeros((tokens, key_heads, 128)), zeros((tokens, key_heads, 128)),
-                   zeros((tokens, value_heads, 128)), zeros((tokens, value_heads), torch.float32).fill_(1),
-                   zeros((tokens, value_heads), torch.float32))
-
-    def rows(self, tokens: int) -> PrefillBuffers:
-        return PrefillBuffers(*(getattr(self, name)[:tokens] for name in ("query", "key", "value", "decay", "beta")))
-
-    def fits(self, tokens: int, *, key_heads: int, value_heads: int) -> bool:
-        return (self.query.shape == (tokens, key_heads, 128) and self.key.shape == self.query.shape
-                and self.value.shape == (tokens, value_heads, 128)
-                and self.decay.shape == self.beta.shape == (tokens, value_heads))
 
 
 class PreparedGdnPrefill:

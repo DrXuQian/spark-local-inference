@@ -6,12 +6,9 @@
 from dataclasses import dataclass
 
 import torch
-from b12x.norm import hyperconnection
-from b12x.preparation import PreparedCall
 
 from ignition.components.linear import QuantizedProjection, UnquantizedProjection
 from ignition.components.weights import MLPWeights
-from ignition.preparation.tuning import declare
 
 
 @dataclass(frozen=True)
@@ -59,9 +56,10 @@ class PreparedMLP:
                 raise ValueError("MLP buffers require contiguous BF16 storage with matching geometry and device")
 
         def projection(input, weight, out, suffix, bias):
-            from ignition.components.block_fp8 import BlockFP8Projection, BlockFP8Weight
             from ignition.components.gguf_weights import GgufWeight
 
+            if isinstance(weight, torch.Tensor):
+                return UnquantizedProjection(input, weight, out, session=session, name=f"{name}.{suffix}", bias=bias)
             if isinstance(weight, GgufWeight):
                 from ignition.components.linear import prepare_projection
 
@@ -70,18 +68,29 @@ class PreparedMLP:
                 return prepare_projection(input, weight, out, session=session, name=f'{name}.{suffix}',
                                           workspace=workspace, activation_mode=activation_mode)
 
+            from ignition.components.block_fp8 import BlockFP8Projection, BlockFP8Weight
+
             if isinstance(weight, BlockFP8Weight):
                 if bias is not None:
                     raise ValueError("block-FP8 MLP projections do not support bias")
                 return BlockFP8Projection(input, weight, out, session=session, name=f"{name}.{suffix}")
-            if isinstance(weight, torch.Tensor):
-                return UnquantizedProjection(input, weight, out, session=session, name=f"{name}.{suffix}", bias=bias)
             return QuantizedProjection(input, weight, out, session=session,
                                        name=f"{name}.{suffix}", workspace=workspace,
                                        activation_mode=activation_mode, bias=bias)
 
+        self.helpers = getattr(session, 'quactlize_helpers', None)
+        if self.helpers is not None and (swiglu_limit != float('inf') or clamp_after_silu
+                                        or swiglu_alpha != 1. or swiglu_beta != 0.):
+            raise ValueError('QUactlize SwiGLU requires unclamped SiLU with alpha=1 and beta=0')
         self.up_projection = projection(source, weights.gate_up, gate_up, "gate_up", gate_up_bias)
         self.down_projection = projection(intermediate, weights.down, output, "down", down_bias)
+        self.activation_plan = None
+        if self.helpers is not None:
+            return
+        from b12x.norm import hyperconnection
+        from b12x.preparation import PreparedCall
+        from ignition.preparation.tuning import declare
+
         self.activation_plan = hyperconnection.plan(
             hyperconnection.Caps(device=source.device, max_tokens=tokens, hidden_size=width),
             invocation={"operation": "swiglu", "limit": swiglu_limit, "round_silu": round_silu,
@@ -97,9 +106,14 @@ class PreparedMLP:
 
     def __call__(self, source):
         self.up_projection(source)
-        hyperconnection.run_swiglu(self.gate_up, limit=self.swiglu_limit,
-                                  round_silu=self.round_silu, out=self.intermediate,
-                                  plan=self.activation_plan)
+        if self.helpers is not None:
+            self.helpers.swiglu(self.gate_up, self.intermediate, round_silu=self.round_silu)
+        else:
+            from b12x.norm import hyperconnection
+
+            hyperconnection.run_swiglu(self.gate_up, limit=self.swiglu_limit,
+                                      round_silu=self.round_silu, out=self.intermediate,
+                                      plan=self.activation_plan)
         return self.down_projection(self.intermediate)
 
 
@@ -126,6 +140,10 @@ class PreparedUngatedMLP:
         self.up_projection = projection(source, up_weight, projected, ".up", up_bias)
         self.down_projection = projection(intermediate, down_weight, output, ".down", down_bias)
         if activation == "relu2":
+            from b12x.norm import hyperconnection
+            from b12x.preparation import PreparedCall
+            from ignition.preparation.tuning import declare
+
             self.activation_plan = hyperconnection.plan(hyperconnection.Caps(device=source.device,
                 max_tokens=source.shape[0], hidden_size=projected.shape[1]), invocation={"operation": "relu2"})
             declare(session, (self.activation_plan.request(name=name + ".relu2", prepare_call=lambda state:

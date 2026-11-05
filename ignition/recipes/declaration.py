@@ -18,7 +18,8 @@ from ignition.components.capacity import request_capacity
 
 if TYPE_CHECKING:
     from ignition.preparation.actlize import ActlizeLibrarySpec
-    from ignition.preparation.quactlize import QuactlizeLibrarySpec
+    from ignition.preparation.quactlize import QuactlizeHelpersSpec, QuactlizeLibrarySpec
+    from ignition.preparation.blas import BlasLibrarySpec
 
 @dataclass(frozen=True)
 class SamplingRange:
@@ -236,17 +237,19 @@ class Recipe:
     # Explicit external GDN/QSA preparation dependency; native serving replays its kernels.
     actlize: "ActlizeLibrarySpec | None" = None
     quactlize: "QuactlizeLibrarySpec | None" = None
+    dense_blas: "BlasLibrarySpec | None" = None
+    quactlize_helpers: "QuactlizeHelpersSpec | None" = None
     # Preparation overrides for vocabulary and transition projections used only by proposals.
     draft_head_quantizations: tuple[str, ...] = ()
     markov_head_quantizations: tuple[str, ...] = ()
 
     @property
     def operators(self):
-        if self.actlize is None and self.quactlize is None:
+        if all(spec is None for spec in (self.actlize, self.quactlize, self.dense_blas, self.quactlize_helpers)):
             return None
         from ignition.preparation.qwen38_gguf import operator_identity
 
-        return operator_identity(self.actlize, self.quactlize)
+        return operator_identity(self.actlize, self.quactlize, self.dense_blas, self.quactlize_helpers)
 
     def mixed_shapes(self, concurrency, chunk, speculation):
         from ignition.components.capacity import mixed_shapes
@@ -259,6 +262,16 @@ class Recipe:
                                         speculation.token_capacity if enabled else None))
 
     def __post_init__(self):
+        if self.quactlize_helpers is not None:
+            from ignition.preparation.quactlize import QuactlizeHelpersSpec
+
+            if self.name != 'qwen38_gguf' or not isinstance(self.quactlize_helpers, QuactlizeHelpersSpec):
+                raise ValueError('QUactlize helpers require explicit Qwen GGUF inputs')
+        if self.dense_blas is not None:
+            from ignition.preparation.blas import BlasLibrarySpec
+
+            if self.name != 'qwen38_gguf' or not isinstance(self.dense_blas, BlasLibrarySpec):
+                raise ValueError('dense BLAS selection requires explicit Qwen GGUF inputs')
         if self.quactlize is not None:
             from ignition.preparation.quactlize import QuactlizeLibrarySpec
 

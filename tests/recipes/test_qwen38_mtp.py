@@ -90,7 +90,7 @@ def test_feedback_refresh_and_private_benchmark_preserve_input_state(monkeypatch
 
 
 def test_mtp_forward_preserves_feedback_alignment_and_all_streams(monkeypatch):
-    from ignition.components import embedding
+    from b12x.sequence import embedding
 
     scratch = mtp.MTPScratch.allocate(3, 2, "cpu")
     ids = torch.tensor([8, -1, 9], dtype=torch.int64)
@@ -100,9 +100,9 @@ def test_mtp_forward_preserves_feedback_alignment_and_all_streams(monkeypatch):
     metadata = SimpleNamespace(request_ids=torch.tensor([0, -1, 1]), rope_positions=positions)
     selected = torch.tensor([2, 0], dtype=torch.int64)
     plan = SimpleNamespace(request=lambda **kwargs: kwargs)
-    monkeypatch.setattr(embedding.embedding, "query_from_call", lambda *args, **kwargs: None)
-    monkeypatch.setattr(embedding.embedding, "plan", lambda *args, **kwargs: plan)
-    monkeypatch.setattr(embedding.embedding, "run", lambda weight, ids, *, out, **kwargs: out.copy_(ids[:, None]))
+    monkeypatch.setattr(embedding, "query_from_call", lambda *args, **kwargs: None)
+    monkeypatch.setattr(embedding, "plan", lambda *args, **kwargs: plan)
+    monkeypatch.setattr(embedding, "run", lambda weight, ids, *, out, **kwargs: out.copy_(ids[:, None]))
 
     class Feedback:
         def __init__(self, module, token, hidden, output, workspace, **kwargs):
@@ -188,6 +188,7 @@ def test_mtp_forward_preserves_feedback_alignment_and_all_streams(monkeypatch):
 
 def test_shared_bf16_expert_uses_bf16_projections_without_activation_quantization(monkeypatch):
     from ignition.components import mlp
+    from b12x.norm import hyperconnection
 
     source = torch.ones((1, 2560), dtype=torch.bfloat16)
     weights = moe.SharedExpertWeights(torch.empty((1280, 2560), dtype=torch.bfloat16, device="meta"),
@@ -198,8 +199,8 @@ def test_shared_bf16_expert_uses_bf16_projections_without_activation_quantizatio
     monkeypatch.setattr(mlp, "UnquantizedProjection", lambda *args, **kwargs: calls.append((args, kwargs)))
     monkeypatch.setattr(mlp, "QuantizedProjection", lambda *a, **kw: pytest.fail("BF16 MTP must not use quantized projections"))
     plan = SimpleNamespace(request=lambda **kwargs: kwargs)
-    monkeypatch.setattr(mlp.hyperconnection, "Caps", lambda **kwargs: kwargs)
-    monkeypatch.setattr(mlp.hyperconnection, "plan", lambda *args, **kwargs: plan)
+    monkeypatch.setattr(hyperconnection, "Caps", lambda **kwargs: kwargs)
+    monkeypatch.setattr(hyperconnection, "plan", lambda *args, **kwargs: plan)
     moe.PreparedSharedExpert(source, weights, session=SimpleNamespace(prepare=lambda _: None), name="mtp.shared")
     assert [kw["name"] for _, kw in calls] == ["mtp.shared.gate_up", "mtp.shared.down", "mtp.shared.shared_gate"]
 

@@ -109,11 +109,19 @@ def prepare_gguf(snapshot, plan, **kwargs):
         raise ValueError('GGUF actlizeLA selection changed after memory planning')
     if inputs.quactlize != plan.recipe.quactlize:
         raise ValueError('GGUF QUactlize selection changed after memory planning')
+    if inputs.dense_blas != plan.recipe.dense_blas:
+        raise ValueError('GGUF dense BLAS selection changed after memory planning')
+    if inputs.quactlize_helpers != plan.recipe.quactlize_helpers:
+        raise ValueError('GGUF QUactlize helpers changed after memory planning')
     return prepare(snapshot, plan, gguf_inputs=inputs, **kwargs)
 
 
-def gguf_cache_costs(*, speculating, bf16):
+def gguf_cache_costs(*, speculating, bf16, blas_workspace_bytes=0):
     costs = (RECIPE.ranks if speculating else RECIPE.plain_ranks)[1]
+    if blas_workspace_bytes:
+        from dataclasses import replace
+
+        costs = replace(costs, graph_bytes=costs.graph_bytes + blas_workspace_bytes)
     if not bf16:
         return costs
     from dataclasses import replace
@@ -136,7 +144,9 @@ def gguf_recipe(manifest, directory):
     draft = device_weight_bytes(manifest.draft)
     actlize = manifest.actlize
     quactlize = manifest.quactlize
-    operators = operator_identity(actlize, quactlize)
+    dense_blas = manifest.dense_blas
+    helpers = manifest.quactlize_helpers
+    operators = operator_identity(actlize, quactlize, dense_blas, helpers)
     revision = manifest.headers_sha256
     if operators is not None:
         revision = hashlib.sha256((revision + json.dumps(operators, sort_keys=True)).encode()).hexdigest()
@@ -147,5 +157,8 @@ def gguf_recipe(manifest, directory):
         mapped_host_bytes=manifest.tensors['per_layer_token_embd.weight'].nbytes)
     return replace(RECIPE, name='qwen38_gguf', prepare=prepare_gguf, checkpoints=(checkpoint,),
         concurrency=1, max_concurrency=1, max_images=0, image_bytes=0, actlize=actlize, quactlize=quactlize,
-        ranks=MappingProxyType({1: gguf_cache_costs(speculating=True, bf16=actlize is not None)}),
-        plain_ranks=MappingProxyType({1: gguf_cache_costs(speculating=False, bf16=actlize is not None)}))
+        dense_blas=dense_blas, quactlize_helpers=helpers,
+        ranks=MappingProxyType({1: gguf_cache_costs(speculating=True, bf16=actlize is not None,
+            blas_workspace_bytes=0 if dense_blas is None else dense_blas.workspace_bytes)}),
+        plain_ranks=MappingProxyType({1: gguf_cache_costs(speculating=False, bf16=actlize is not None,
+            blas_workspace_bytes=0 if dense_blas is None else dense_blas.workspace_bytes)}))
