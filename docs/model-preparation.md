@@ -931,17 +931,17 @@ replays captured kernels without calling the Python or BLAS host API.
 The ordinary projection dispatcher and the Qwen cache/configuration modules
 (`attention_state`, `cache_layout`, `state_layout`, `config`) can be imported
 without b12x. Cache, MTP rollback and snapshot layouts retain their existing
-byte geometry. This does **not** remove b12x from complete Qwen preparation:
-Ordinary MTP attention and preparation orchestration still have pending
-replacements. PLE selects the new path when both external helper libraries are
-present; a package-owned mapped mailbox avoids its legacy b12x allocator.
+byte geometry. The explicit external path now uses FA3 for ordinary MTP
+attention and a separate preparation session. PLE selects the new path when both
+external helper libraries are present; a package-owned mapped mailbox avoids
+its legacy b12x allocator.
 The platform FlashInfer build must also supply
 Flare's caller-owned top-k/top-p workspace interfaces and request-local chain
 sampling RNG contract; a successful `import flashinfer` does not establish them.
 The metadata serializer and guard pickler now identify loaded resource types
 without importing unused b12x, CuTe or peer-storage modules. QSA/MTP scratch and
-GGUF weight-class imports also work without those packages. This does not yet
-replace the normal preparation session or its tuning lifecycle.
+GGUF weight-class imports also work without those packages. The original
+b12x model path retains its existing preparation and tuning lifecycle.
 
 Run the host checks without loading a device library:
 
@@ -1059,6 +1059,12 @@ legacy session remains in use for the original b12x model path. Missing external
 libraries on an explicit PPU target are rejected before model preparation.
 This removes the session's b12x/cuTile requirement; full-model hardware planning,
 external operator numerics and native export still require qualification.
+The ordinary `ignition export`/`debug-serve` entry is not ready for this PPU
+environment: discovery still uses NVML, the GGUF plan and full weight loader
+enforce NVIDIA capabilities, and CLI patch setup still requires the pinned
+Torch2.14.1/Triton3.8 installation. Use the qualification commands below with
+the platform Torch2.9/Triton3.5 artifacts while these entry points are ported;
+do not replace platform wheels to satisfy that legacy patch error.
 
 The next device gate exercises this session through `capture_forwards`, with
 alternating one-row and seven-row graphs sharing scratch, strided state reads,

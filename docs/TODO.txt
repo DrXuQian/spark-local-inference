@@ -336,6 +336,19 @@
     Component compilation/capture does not qualify the complete model catalog,
     native export/Rust replay or whole-round bubble behavior.
 
+[ ] Admit the complete explicit PPU operator set through the normal CLI path.
+    Host.discover currently uses NVML; Plan/plan and ModelWeights.load retain
+    NVIDIA capability checks. environment.apply invokes version-pinned
+    Torch2.14.1/Triton3.8 patch setup, which rejects the box's Torch2.9/Triton3.5.
+    Preserve device visibility, library/target identity, memory and compilation
+    checks; the partial qualifier bypasses this CLI admission path.
+
+[ ] Measure external GGUF shared/routed expert overlap. GgufMoeWorkspace bypasses
+    the b12x ConcurrentSharedExpert branch even when stream_overlap is enabled.
+    Serial work inside one graph is not evidence of a host launch bubble.
+    Any native BLAS overlap requires separate handles/workspaces and verified
+    fork/join dependencies before claiming whole-round performance.
+
 [ ] Exercise per-message checkpoint restore and prefill graph selection through
     Qwen, GLM, DeepSeek, MiMo, Step, and Nemotron services. See
     core-design.md#exact-endpoint-capture and scheduling-runtime-design.md.

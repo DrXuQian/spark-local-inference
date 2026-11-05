@@ -286,7 +286,7 @@ def main(argv=None):
                 detail = dict(returncode=process.returncode, log=str(log))
             results['suite-' + name] = passed
             print(f'{"PASS" if passed else "FAIL"} {name}: {detail}', flush=True)
-    print('PENDING: complete b12x-free recipe composition, ordinary MTP paged attention, '
+    print('PENDING: complete GGUF/MTP catalog, normal CLI target admission, '
           'and PPU native export/Rust replay. Operator tests do not establish bubble-free serving.', flush=True)
     return 0 if all(results.values()) else 1
 
