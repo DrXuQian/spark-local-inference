@@ -15,6 +15,7 @@ from pathlib import Path
 import torch
 
 from .device_binding import _device_source, _freeze_tuning_winners
+from .torch_aot_api import TORCH29
 
 
 def _selected(tuner):
@@ -22,7 +23,16 @@ def _selected(tuner):
 
     if len(tuner.launchers) != 1:
         raise RuntimeError(f"Inductor kernel {tuner.inductor_meta['kernel_name']} has no final launcher")
-    tuner._prune_compile_results_to_launcher(tuner.launchers[0])
+    if TORCH29:
+        from torch._inductor.runtime.triton_heuristics import triton_config_to_hashable
+
+        selected = triton_config_to_hashable(tuner.launchers[0].config)
+        matches = [item for item in tuner.compile_results if triton_config_to_hashable(item.config) == selected]
+        if len(matches) != 1:
+            raise ValueError('the selected Torch 2.9 launcher must match exactly one compiled config')
+        tuner.compile_results = matches
+    else:
+        tuner._prune_compile_results_to_launcher(tuner.launchers[0])
     result, = tuner.compile_results
     if not isinstance(result, StaticTritonCompileResult):
         raise TypeError("prepared Inductor selections require a portable static kernel")
@@ -207,6 +217,8 @@ class InductorSelections:
             for tuner in tuners.values():
                 for name in ('autotune_to_one_config', '_combo_sequential_autotune',
                              'coordinate_descent_tuning', 'bench', '_precompile_config'):
+                    if TORCH29 and name == '_combo_sequential_autotune':
+                        continue  # This search does not exist in Torch 2.9.
                     previous = tuner.__dict__.get(name)
                     saved.append((tuner, name, previous, name in tuner.__dict__))
                     method = getattr(tuner, name)

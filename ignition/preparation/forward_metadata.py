@@ -19,6 +19,7 @@ from torch.utils.weak import WeakIdKeyDictionary
 
 _MODE = ContextVar('flare_forward_metadata_mode')
 _TENSOR_KINDS = ContextVar('flare_forward_tensor_kinds', default=None)
+_TENSOR_KEYS = ContextVar('flare_forward_tensor_dispatch_keys', default=None)
 _LOCK_TYPES = (type(Lock()), type(RLock()))
 
 
@@ -49,11 +50,13 @@ class _Storage:
         return _storage, (self.nbytes,)
 
 
-def _tensor(storage, shape, stride, offset, dtype, device, requires_grad, kind):
+def _tensor(storage, shape, stride, offset, dtype, device, requires_grad, kind, dispatch_keys=None):
     with torch._C._DisableTorchDispatch():
         meta = torch.empty(0, dtype=dtype, device='meta').set_(storage, offset, shape, stride)
         meta.requires_grad_(requires_grad)
     value = FakeTensor(_MODE.get(), meta, device)
+    if dispatch_keys is not None:
+        _TENSOR_KEYS.get()[value] = dispatch_keys
     if kind is torch.nn.Parameter:
         value._is_param = True
     _TENSOR_KINDS.get()[value] = kind
@@ -116,8 +119,14 @@ class _ForwardPickler(pickle.Pickler):
                 raise TypeError(f'unsupported forward tensor subclass: {type(value)}')
             storage = value.untyped_storage()
             owner = self.storages.setdefault(storage._cdata, _Storage(storage.nbytes()))
+            keys = torch._C._dispatch_keys(value).raw_repr()
+            if isinstance(value, FakeTensor):
+                recorded = _TENSOR_KEYS.get()
+                keys = None if value.dispatch_keys is None else value.dispatch_keys.raw_repr()
+                keys = keys if recorded is None else recorded.get(value, keys)
             return _tensor, (owner, tuple(value.shape), value.stride(), value.storage_offset(),
-                             value.dtype, value.device, value.requires_grad, type(value))
+                             value.dtype, value.device, value.requires_grad, type(value),
+                             keys)
         if isinstance(value, self.slots):
             # Tracing needs selected layouts; normal plan pickling clears prepared state.
             return _object, (type(value),), dict(vars(value)), None, None, _set_state
@@ -127,9 +136,9 @@ class _ForwardPickler(pickle.Pickler):
                 state[name] = _Unavailable(f'b12x prepared {name}')
             return _object, (type(value),), state, None, None, _set_state
         if isinstance(value, self.triton_functions):
-            from torch._dynamo.aot_compile_types import _deserialize_triton_kernel, _serialize_triton_kernel
+            from .torch_aot_api import deserialize_triton_kernel, serialize_triton_kernel
 
-            return _deserialize_triton_kernel, (_serialize_triton_kernel(value),)
+            return deserialize_triton_kernel, (serialize_triton_kernel(value),)
         if isinstance(value, types.MappingProxyType):
             return _mapping_proxy, (dict(value),)
         if isinstance(value, self.ffi_objects) or (not isinstance(value, type) and '<locals>' in type(value).__qualname__):
@@ -176,6 +185,7 @@ def dumps(forward):
 def loads(payload):
     token = _MODE.set(FakeTensorMode(allow_non_fake_inputs=True))
     _TENSOR_KINDS.set(WeakIdKeyDictionary())
+    _TENSOR_KEYS.set(WeakIdKeyDictionary())
     try:
         return _ForwardUnpickler(io.BytesIO(payload)).load()
     finally:

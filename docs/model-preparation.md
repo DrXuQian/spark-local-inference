@@ -971,8 +971,8 @@ their built PPU DSOs; this command imports their declarations from those paths:
 ```sh
 cd /sim/eec/shared/junfu.qx/spark-local-inference
 python -m qualify.ppu_box \
-  --quactlize-source /path/to/QUactlize \
-  --actlize-source /path/to/actlizeLA \
+  --quactlize-source /sim/eec/shared/junfu.qx/quactlize \
+  --actlize-source /sim/eec/shared/junfu.qx/actlizeLA \
   --quactlize-library /path/to/PPU-quactlize-serving.so \
   --actlize-library /path/to/libactlize_la_serving.so \
   --actlize-target ppu15 \
@@ -1024,8 +1024,29 @@ grids are padded to three dimensions, and the optional make_fx diagnostic metada
 flag is passed only where supported. The standalone qualification compiler now
 uses Torch2.9's real `CompiledArtifact.save/load` protocol with device-bound cache
 identity. CPU artifact round trips preserve aliases, mutable outputs and fresh
-storage-call bindings. This does not finish the complete model catalog's newer
-Dynamo guard/AOT serialization or qualify PPU native package export.
+storage-call bindings.
+
+The complete catalog now has a Torch2.9 adapter using bundled AOT entries and
+serialized Dynamo guards. Host validation covers worker metadata, deferred and
+real storage, runtime handle rebinding, exact dispatch keys, and rejection of
+changed shapes, scalar conditions and storage aliases. The saved catalog retains
+the selected static Triton config and rejects unfinished tuning. These host
+checks do not establish device execution: run the four new catalog cases on the
+box before attempting a model. They need no weights or QUactlize/actlizeLA DSO:
+
+```sh
+FLARE_RUN_CUDA_TESTS=1 python -m pytest -q \
+  tests/preparation/test_external_aot_cuda.py \
+  tests/components/test_flash_attn3_prepared_cuda.py -k catalog --tb=short
+```
+
+This exercises a metadata compiler worker, disk reload without compilation,
+frozen reduction kernels, fresh opaque bindings, and retained graph capture.
+The three additional FA3 `catalog` cases cover widths 1/7/128 through that same
+worker/cache path. Replay changes device inputs and checks outputs, cache writes
+and allocation stability. The seven previously reported FA3 passes do not cover
+these new cases. Full-model preparation, PPU package export and Rust replay still
+need separate qualification.
 
 The manifest also accepts `"operator_target": "ppu10"` or `"ppu15"` for explicit
 QUactlize/actlizeLA library selection. The default remains the NVIDIA debug target;

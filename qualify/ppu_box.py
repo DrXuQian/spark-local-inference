@@ -65,6 +65,8 @@ def device_suites(args, root, output):
             '--junitxml=' + str(output / 'attention-api.xml')], root, 'attention-api.xml'),
         ('attention-prepared', [python, '-m', 'pytest', '-q', 'tests/components/test_flash_attn3_prepared_cuda.py',
             '--junitxml=' + str(output / 'attention-prepared.xml')], root, 'attention-prepared.xml'),
+        ('compiled-catalog', [python, '-m', 'pytest', '-q', 'tests/preparation/test_external_aot_cuda.py',
+            '--junitxml=' + str(output / 'compiled-catalog.xml')], root, 'compiled-catalog.xml'),
         ('quactlize', [python, '-m', 'pytest', '-q', 'tests/serving/test_serving_device.py',
             '--junitxml=' + str(output / 'quactlize.xml')], args.quactlize_source, 'quactlize.xml'),
         ('actlize', [python, str(args.actlize_source / 'tests/serving_device.py'),
@@ -108,13 +110,24 @@ def check_interfaces(args):
 
     def preparation_api():
         import torch
-        from torch._inductor.standalone_compile import AOTCompiledArtifact
-        from torch._functorch._aot_autograd.aot_autograd_result import deserialize_bundled_cache_entry
         from ignition.preparation.aot import _GuardPickler
         from ignition.preparation.forward_metadata import dumps, loads
+        from ignition.preparation.torch_aot_api import TORCH29
 
-        if not callable(deserialize_bundled_cache_entry) or not isinstance(AOTCompiledArtifact, type):
-            raise RuntimeError('platform Torch does not provide the required compiled-forward serialization API')
+        if TORCH29:
+            from torch._dynamo.aot_compile import AOTCompiledFunction
+            from torch._functorch._aot_autograd.autograd_cache import BundledAOTAutogradCacheEntry
+            from ignition.preparation.inductor29 import BundledArtifact
+
+            if (not callable(AOTCompiledFunction.deserialize) or not isinstance(BundledAOTAutogradCacheEntry, type)
+                    or not callable(BundledArtifact.load_entry)):
+                raise RuntimeError('platform Torch 2.9 lacks the bundled forward/guard protocol')
+        else:
+            from torch._inductor.standalone_compile import AOTCompiledArtifact
+            from torch._functorch._aot_autograd.aot_autograd_result import deserialize_bundled_cache_entry
+
+            if not callable(deserialize_bundled_cache_entry) or not isinstance(AOTCompiledArtifact, type):
+                raise RuntimeError('platform Torch does not provide the required compiled-forward serialization API')
         if 'keep_graph' not in inspect.signature(torch.cuda.CUDAGraph).parameters:
             raise RuntimeError('platform Torch CUDAGraph lacks keep_graph for graph export')
         value = torch.empty(3, 11)
@@ -124,7 +137,7 @@ def check_interfaces(args):
             raise RuntimeError('platform Torch metadata serialization changed tensor aliases')
         import io
 
-        _GuardPickler({}, {}, {}, {}, io.BytesIO())
+        _GuardPickler(io.BytesIO()) if TORCH29 else _GuardPickler({}, {}, {}, {}, io.BytesIO())
         return 'AOT serialization/guards and retained graphs present; metadata aliases preserved (compilation/replay untested)'
 
     check('torch-preparation-api', preparation_api)

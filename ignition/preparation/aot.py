@@ -23,7 +23,6 @@ from types import MappingProxyType
 
 import torch
 from filelock import FileLock
-from torch._dynamo.aot_compile_types import SerializableCallable
 from torch._dynamo.guards import GuardsStatePickler, _Missing
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch._higher_order_ops.triton_kernel_wrap import kernel_side_table
@@ -33,6 +32,8 @@ from .compilation import (DEFAULT_CACHE_ROOT, _INVOCATIONS, _OPTIONS, _Invocatio
                           _byte_storage, _storage_region, _lower_storage, _compiler_recursion)
 from .device_binding import bind_device, relocate_inductor, restore_device, restore_prepared_device
 from .host_memory import release_unused
+from .torch_aot_api import (TORCH29, SerializableCallable, guard_locals,
+                            deserialize_triton_kernel, serialize_triton_kernel)
 
 _GUARD_LOCK = RLock()
 _GUARD_TENSOR_MODE = ContextVar("flare_guard_tensor_mode", default=None)
@@ -41,9 +42,6 @@ _CHECK_BINDINGS = ContextVar("flare_check_bindings", default=False)
 
 
 def _load_inductor(data, original, *, frozen=False):
-    from torch._functorch._aot_autograd.aot_autograd_result import deserialize_bundled_cache_entry
-    from torch._inductor.standalone_compile import AOTCompiledArtifact
-
     entry, kernels, constants = pickle.loads(data)
     if kernels or constants:
         raise ValueError("compiled native launches must use runtime kernel bindings")
@@ -55,7 +53,16 @@ def _load_inductor(data, original, *, frozen=False):
             for result in tuner.kernel.compile_results:
                 _materialize_selected_cubin(result)
     serialized = zlib.compress(pickle.dumps((entry, kernels, constants)), level=1)
-    compiled = deserialize_bundled_cache_entry(entry)
+    if TORCH29:
+        from .inductor29 import BundledArtifact
+
+        artifact = BundledArtifact.load_entry(entry)
+    else:
+        from torch._functorch._aot_autograd.aot_autograd_result import deserialize_bundled_cache_entry
+        from torch._inductor.standalone_compile import AOTCompiledArtifact
+
+        compiled = deserialize_bundled_cache_entry(entry)
+        artifact = AOTCompiledArtifact(compiled)
     if frozen and entry.compiled_fw.result._triton_bundle is not None:
         from .device_binding import _freeze_tuning_winners
 
@@ -63,11 +70,11 @@ def _load_inductor(data, original, *, frozen=False):
         _freeze_tuning_winners(entry.compiled_fw.result._triton_bundle)
     # Loading materializes bundled files in Triton's cache. Keep the portable copy compressed;
     # live kernel owners retain their binaries, launchers, and argument metadata independently.
-    for result in (entry, compiled.serialize()):
-        graph = result.compiled_fw.result
+    graphs = ((entry.compiled_fw.result,) if TORCH29 else
+              (entry.compiled_fw.result, compiled.serialize().compiled_fw.result))
+    for graph in graphs:
         if graph._triton_bundle is not None:
             graph._triton_bundle.kernel_artifacts.clear()
-    artifact = AOTCompiledArtifact(compiled)
     artifact._flare_graph = entry.compiled_fw.result
     return artifact, serialized
 
@@ -87,10 +94,22 @@ def _guard_object(cls):
 class _GuardPickler(GuardsStatePickler):
     """Exclude unguarded kernel resources from prepared Python objects."""
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if TORCH29:
+            import io
+            from .forward_metadata import _ForwardPickler
+
+            self.resources = _ForwardPickler(io.BytesIO())
+
     @classmethod
     def _unpickle_tensor(cls, meta_tensor, device, pytype, dispatch_keys_raw, grad, deferred=False):
         if deferred and _DEFERRED_BINDINGS.get():
             pytype = torch._subclasses.FakeTensor
+            if TORCH29:
+                keys = torch._C.DispatchKeySet.from_raw_repr(dispatch_keys_raw)
+                dispatch_keys_raw = keys.add(torch._C.DispatchKey.Python).add(
+                    torch._C.DispatchKey.PythonTLSSnapshot).raw_repr()
         mode = _GUARD_TENSOR_MODE.get()
         if mode is None:
             return super()._unpickle_tensor(meta_tensor, device, pytype, dispatch_keys_raw, grad)
@@ -113,12 +132,30 @@ class _GuardPickler(GuardsStatePickler):
             kinds = _TENSOR_KINDS.get()
             kind = torch._subclasses.FakeTensor if kinds is None else kinds.get(obj, torch._subclasses.FakeTensor)
             deferred = kind is torch._subclasses.FakeTensor
-            return type(self)._unpickle_tensor, (meta, obj.device, torch.Tensor if deferred else kind,
-                torch._C._dispatch_keys(obj).raw_repr(), obj.grad, deferred)
-        if isinstance(obj, _loaded_types('triton.runtime', 'JITFunction')):
-            from torch._dynamo.aot_compile_types import _deserialize_triton_kernel, _serialize_triton_kernel
+            keys = torch._C._dispatch_keys(obj)
+            if TORCH29:
+                from .forward_metadata import _TENSOR_KEYS
 
-            return _deserialize_triton_kernel, (_serialize_triton_kernel(obj),)
+                # Real tensor metadata retains its exact dispatch keys. A
+                # deferred FakeTensor has only the two extra wrapper keys;
+                # those belong to the compiler, not the future bound tensor.
+                keys = obj.dispatch_keys if obj.dispatch_keys is not None else keys.remove(
+                    torch._C.DispatchKey.Python).remove(torch._C.DispatchKey.PythonTLSSnapshot)
+                recorded = _TENSOR_KEYS.get()
+                if recorded is not None and obj in recorded:
+                    keys = torch._C.DispatchKeySet.from_raw_repr(recorded[obj])
+            return type(self)._unpickle_tensor, (meta, obj.device, torch.Tensor if deferred else kind,
+                keys.raw_repr(), obj.grad, deferred)
+        if isinstance(obj, _loaded_types('triton.runtime', 'JITFunction')):
+            return deserialize_triton_kernel, (serialize_triton_kernel(obj),)
+        if TORCH29:
+            # 2.9 does not expose the set of values visited by its guard tree.
+            # Keep object state, replacing only process-local resources using
+            # the same fail-on-access contract as metadata compiler workers.
+            result = NotImplemented if isinstance(obj, torch.Tensor) else self.resources.reducer_override(obj)
+            if result is not NotImplemented:
+                return result
+            return super().reducer_override(obj)
         if (hasattr(obj, '__dict__')
                 and type(obj).__module__.startswith(('ignition.', 'b12x.'))
                 and not inspect.isclass(obj) and not isinstance(obj, (torch.Tensor, torch.nn.Module))):
@@ -233,11 +270,10 @@ def _serialized_triton_launch(kernel, constants, arguments):
 
 def _deserialized_triton_launch(kernel_info):
     """Resolve the raw JIT whose fixed options were serialized separately."""
-    from torch._dynamo.aot_compile_types import _deserialize_triton_kernel, _serialize_triton_kernel
     from triton.runtime import JITFunction
     from triton.runtime.autotuner import Autotuner, Heuristics
 
-    kernel = _deserialize_triton_kernel(kernel_info)
+    kernel = deserialize_triton_kernel(kernel_info)
     # Import restores the module global, including decorators removed from the
     # traced launch. Reapplying them can tune again or duplicate fixed options.
     seen = set()
@@ -248,7 +284,7 @@ def _deserialized_triton_launch(kernel_info):
         kernel = kernel.fn
     if not isinstance(kernel, JITFunction):
         raise ValueError("serialized fixed Triton launch does not resolve to a JIT function")
-    if _serialize_triton_kernel(kernel) != kernel_info:
+    if serialize_triton_kernel(kernel) != kernel_info:
         raise ValueError("serialized fixed Triton launch resolves to a different function")
     return kernel
 
@@ -258,8 +294,21 @@ class StorageBackend(SerializableCallable):
         from torch._guards import detect_fake_mode
         from torch._inductor import standalone_compile
 
-        module = make_fx(module, tracing_mode='fake', _allow_non_fake_inputs=True,
-                         _disable_torch_fn_metadata_mode=True)(*examples)
+        trace_options = dict(tracing_mode='fake', _allow_non_fake_inputs=True)
+        if '_disable_torch_fn_metadata_mode' in inspect.signature(make_fx).parameters:
+            trace_options['_disable_torch_fn_metadata_mode'] = True
+        if TORCH29:
+            # 2.9's AOT capture supplies the worker's original metadata tensors
+            # alongside a new backend FakeTensorMode. Convert through that
+            # mode's storage-aware converter before make_fx checks ownership.
+            mode = detect_fake_mode()
+            rebound = [mode.from_tensor(value, static_shapes=True)
+                       if isinstance(value, torch._subclasses.FakeTensor) and value.fake_mode is not mode
+                       else value for value in examples]
+            if _signature(rebound) != _signature(examples):
+                raise BindingMismatch('Torch 2.9 metadata conversion changed input storage contracts')
+            examples = rebound
+        module = make_fx(module, **trace_options)(*examples)
         graph = module.graph
         arguments = [node for node in graph.nodes if node.op == 'placeholder']
         examples = [node.meta['val'] for node in arguments]
@@ -304,9 +353,15 @@ class StorageBackend(SerializableCallable):
         examples = [node.meta['val'] for node in arguments]
         module = torch.fx.GraphModule({}, graph)
         with _compiler_recursion(module):
-            self.artifact = standalone_compile(module, examples, dynamic_shapes='from_example_inputs',
-                fake_mode=detect_fake_mode(examples), options={'config_patches': dict(_OPTIONS if options is None else options)},
-                aot=True, donate_graph_module=True)
+            options = dict(_OPTIONS if options is None else options)
+            if TORCH29:
+                from .inductor29 import BundledArtifact
+
+                self.artifact = BundledArtifact.compile(module, examples, options)
+            else:
+                self.artifact = standalone_compile(module, examples, dynamic_shapes='from_example_inputs',
+                    fake_mode=detect_fake_mode(examples), options={'config_patches': options},
+                    aot=True, donate_graph_module=True)
         self._serialized_artifact = None
         self._tuning_frozen = False
         self._bound = None
@@ -336,7 +391,6 @@ class StorageBackend(SerializableCallable):
     @classmethod
     def serialize_compile_artifacts(cls, fn):
         from torch._library.custom_ops import _maybe_get_opdef
-        from torch._dynamo.aot_compile_types import _serialize_triton_kernel
 
         with _artifact_kernel_table():
             artifact = (fn.artifact.serialize() if fn._serialized_artifact is None
@@ -351,7 +405,7 @@ class StorageBackend(SerializableCallable):
                 kernel = kernel_side_table.get_kernel(kwargs['kernel_idx'])
                 constants = kernel_side_table.get_constant_args(kwargs['constant_args_idx'])
                 kernel, constants = _serialized_triton_launch(kernel, constants, kwargs['kwargs'])
-                name = ('triton', _serialize_triton_kernel(kernel), constants)
+                name = ('triton', serialize_triton_kernel(kernel), constants)
                 kwargs['kernel_idx'] = kwargs['constant_args_idx'] = None
                 leaves, _ = tree_flatten((args, kwargs))
             elif isinstance(target, torch._ops.OpOverload):
@@ -404,7 +458,8 @@ def _execute(forward):
 def aot_forward(forward, *, options=None):
     options = dict(_OPTIONS if options is None else options)
     sources = r'.*\.(?:_?handle|stream_handle|launch_order|plans\[\d+\])$'
-    with _guard_serialization(), torch.compiler.config.patch(unbacked_sources=sources):
+    enable = torch._dynamo.config.patch(enable_aot_compile=True) if TORCH29 else nullcontext()
+    with enable, _guard_serialization(), torch.compiler.config.patch(unbacked_sources=sources):
         return torch.compile(_execute, backend=partial(StorageBackend, options=options), fullgraph=True,
                              dynamic=False).aot_compile(((forward,), {}))
 
@@ -436,7 +491,8 @@ class BoundForward:
     def prepare_capture(self):
         """Retain execution guards and kernel owners after portable cache writes finish."""
         state = self.artifact._artifacts
-        if (tuple(state.signature.parameters) != ("forward",) or state.runtime_env.closure
+        closure = state.closure if TORCH29 else state.runtime_env.closure
+        if (tuple(state.signature.parameters) != ("forward",) or closure
                 or state.guard_manager is None or not isinstance(state.compiled_fn, StorageBackend)):
             raise RuntimeError("capture requires a storage-bound, closed compiled forward")
         backend = state.compiled_fn
@@ -594,7 +650,7 @@ class ForwardCache:
                     raise BindingMismatch("grouped forward type differs from its compiled representative")
                 if not artifact.guard_check(owner):
                     reason = artifact._artifacts.guard_manager.check_verbose(
-                        artifact.prepare_f_locals(owner))
+                        guard_locals(artifact, owner))
                     raise BindingMismatch(f"compiled forward guard differs: {reason}")
                 token = _CHECK_BINDINGS.set(True)
                 try:
@@ -946,7 +1002,7 @@ class ForwardCache:
         release_unused(generation=0)
         if not artifact.guard_check(forward):
             if required:
-                reason = artifact._artifacts.guard_manager.check_verbose(artifact.prepare_f_locals(forward))
+                reason = artifact._artifacts.guard_manager.check_verbose(guard_locals(artifact, forward))
                 raise BindingMismatch(f"rank-local forward does not match compiled guards: {reason}")
             return None
         # Dynamo guards omit some offsets and aliases checked by the storage backend.

@@ -11,6 +11,8 @@ from dataclasses import replace
 
 import torch
 
+from .torch_aot_api import TORCH29
+
 _DEVICE = ContextVar("flare_compiled_device", default=None)
 _FREEZE_TUNING = ContextVar("flare_compiled_tuning_winners", default=False)
 
@@ -107,10 +109,15 @@ def _freeze_tuning_winners(bundle):
             config.__dict__.clear()
             config.__dict__.update(result._flare_config_state)
         metadata = kernel.inductor_meta
-        if (metadata.get("coordinate_descent_tuning", False)
-                and kernel._should_coordesc_tune
-                and not getattr(config, "found_by_coordesc", False)):
-            raise ValueError(f"compiled kernel {entry.kernel_name} has pending coordinate-descent tuning")
+        if metadata.get("coordinate_descent_tuning", False):
+            if TORCH29:
+                from torch._inductor.runtime.hints import HeuristicType
+
+                coordesc = kernel.heuristic_type not in (HeuristicType.TEMPLATE, HeuristicType.USER_AUTOTUNE)
+            else:
+                coordesc = kernel._should_coordesc_tune
+            if coordesc and not getattr(config, "found_by_coordesc", False):
+                raise ValueError(f"compiled kernel {entry.kernel_name} has pending coordinate-descent tuning")
         if (metadata.get("combo_tuning_groups")
                 and not getattr(config, "found_by_combo_autotune", False)):
             raise ValueError(f"compiled kernel {entry.kernel_name} has pending combo tuning")

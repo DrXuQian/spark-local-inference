@@ -136,8 +136,16 @@ def test_storage_roundtrip_bypasses_imported_global_autotuner(
     restored.invocations[0].run([source], [output])
     assert len(launches) == 1
     args, options = launches[0]
-    assert len(args) == 2 and args[0] is source and args[1] is output
-    assert options["N"] == 32
+    import inspect
+
+    # Torch 2.9 supplies constexpr operands positionally; newer wrappers use
+    # keywords. Bind the actual JIT signature and check the same operands.
+    operands = inspect.signature(traced.fn.fn).bind(*args, **{
+        name: options[name] for name in traced.fn.arg_names if name in options}).arguments
+    assert operands['source'] is source and operands['output'] is output
+    assert operands['N'] == 32
+    if decorated is _heuristic_copy:
+        assert operands['BLOCK'] == 32
     assert options["num_warps"] == warps
     assert options["num_stages"] == 2
     assert options["enable_fp_fusion"] is False

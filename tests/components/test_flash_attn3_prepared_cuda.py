@@ -25,10 +25,19 @@ def library():
     return FlashAttention3Spec.read(extension.__file__).load('cuda:0')
 
 
+class CopyAndAttention:
+    def __init__(self, writer, attention):
+        self.writer, self.attention = writer, attention
+
+    def __call__(self):
+        self.writer()
+        return self.attention()
+
+
 @pytest.mark.parametrize('width', [1, 7, 128])
-@pytest.mark.parametrize('compiler', ['none', 'flare'])
+@pytest.mark.parametrize('compiler', ['none', 'flare', 'catalog'])
 @torch.no_grad()
-def test_prepared_copy_and_attention_replay(library, width, compiler):
+def test_prepared_copy_and_attention_replay(library, width, compiler, tmp_path, monkeypatch):
     device, rows, capacity = torch.device('cuda:0'), 3, 3 * width
     generator = torch.Generator().manual_seed(851)
     def random(shape):
@@ -54,16 +63,36 @@ def test_prepared_copy_and_attention_replay(library, width, compiler):
         attention = PreparedFlashAttention3(library, query, key, value, pages, lengths, starts, output, width=width)
         arena.freeze(); arena.finalize()
 
-        def forward():
-            writer()
-            return attention()
+        forward = CopyAndAttention(writer, attention)
 
         if compiler == 'flare':
             from ignition.preparation.compilation import compile_forward
 
             forward = compile_forward(forward)
+        elif compiler == 'catalog':
+            from ignition.preparation import aot
+            from ignition.preparation.compile_pool import CompilePool
+            from ignition.preparation.execution import GraphSignature
+
+            cache = aot.ForwardCache(namespace={'qualification': 'fa3-paged'}, device=device,
+                                     root=tmp_path, compile_workers=1)
+            signature = {'attention': GraphSignature('prefill', rows, width)}
+            compiled = cache.prepare_many({'attention': forward}, signature)['attention']
+            assert not compiled.cache_hit
+            assert compiled.artifact._artifacts.compiled_fn._tuning_frozen
+
+            def no_compile(*args, **kwargs):
+                raise AssertionError('the completed catalog must load without compiling')
+
+            with monkeypatch.context() as loading:
+                loading.setattr(aot, 'aot_forward', no_compile)
+                loading.setattr(CompilePool, 'submit_payload', no_compile)
+                loaded = cache.prepare_many({'attention': CopyAndAttention(writer, attention)}, signature)['attention']
+            assert loaded.cache_hit
+            loaded.prepare_capture()
+            forward = loaded
         forward(); forward(); stream.synchronize()
-        graph = torch.cuda.CUDAGraph()
+        graph = torch.cuda.CUDAGraph(keep_graph=True) if compiler == 'catalog' else torch.cuda.CUDAGraph()
         with torch.cuda.graph(graph, stream=stream):
             forward()
         try:

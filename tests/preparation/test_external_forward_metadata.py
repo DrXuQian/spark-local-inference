@@ -4,6 +4,7 @@
 
 import ctypes
 import io
+import pickle
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ from ignition.components.quactlize_helpers import PreparedQuactlizeHelpers
 from ignition.preparation.aot import _GuardPickler, _guard_object
 from ignition.preparation.forward_metadata import _Unavailable, dumps, loads
 from ignition.preparation.package_storage import PackageStorage
+from ignition.preparation.torch_aot_api import TORCH29
 
 
 def test_external_projection_metadata_keeps_aliases_and_excludes_native_owner():
@@ -47,11 +49,17 @@ def test_external_projection_metadata_keeps_aliases_and_excludes_native_owner():
 def test_guard_pickler_keeps_external_handle_without_importing_b12x():
     helper = PreparedQuactlizeHelpers.__new__(PreparedQuactlizeHelpers)
     helper.handle, helper.owner = 9876543, ctypes.CDLL(None)
-    pickler = _GuardPickler({id(helper.handle): helper.handle}, {}, {}, {}, io.BytesIO())
-    restore, args, state = pickler.reducer_override(helper)
-    assert restore is _guard_object and args == (PreparedQuactlizeHelpers,)
-    assert state['handle'] == helper.handle
-    assert type(state['owner']).__name__ == '_Missing'
+    if TORCH29:
+        buffer = io.BytesIO()
+        _GuardPickler(buffer).dump(helper)
+        restored = pickle.loads(buffer.getvalue())
+        assert vars(restored) == {'handle': helper.handle}
+    else:
+        pickler = _GuardPickler({id(helper.handle): helper.handle}, {}, {}, {}, io.BytesIO())
+        restore, args, state = pickler.reducer_override(helper)
+        assert restore is _guard_object and args == (PreparedQuactlizeHelpers,)
+        assert state['handle'] == helper.handle
+        assert type(state['owner']).__name__ == '_Missing'
 
 
 def test_fresh_metadata_process_never_imports_b12x_cute_or_peer_storage():
@@ -65,7 +73,8 @@ sys.meta_path.insert(0, RejectUnused())
 from ignition.preparation.forward_metadata import dumps, loads, _Unavailable
 from ignition.preparation.aot import _GuardPickler
 from ignition.components.quactlize_helpers import PreparedQuactlizeHelpers
-import io
+import io, pickle
+from ignition.preparation.torch_aot_api import TORCH29
 from ignition.recipes.qwen38.attention import QSAScratch
 from ignition.recipes.qwen38.mtp import MTPScratch
 from ignition.recipes.qwen38.gguf_weights import QwenGgufWeightLoader
@@ -84,7 +93,12 @@ assert values['b'].stride() == (11, 1) and values['b'].storage_offset() == 14
 assert isinstance(values['native'], _Unavailable)
 helper = PreparedQuactlizeHelpers.__new__(PreparedQuactlizeHelpers)
 helper.handle = 567890
-result = _GuardPickler({id(helper.handle): helper.handle}, {}, {}, {}, io.BytesIO()).reducer_override(helper)
-assert result[2]['handle'] == helper.handle
+if TORCH29:
+    buffer = io.BytesIO()
+    _GuardPickler(buffer).dump(helper)
+    assert pickle.loads(buffer.getvalue()).handle == helper.handle
+else:
+    result = _GuardPickler({id(helper.handle): helper.handle}, {}, {}, {}, io.BytesIO()).reducer_override(helper)
+    assert result[2]['handle'] == helper.handle
 '''
     subprocess.run([sys.executable, '-c', code], check=True, capture_output=True, text=True)

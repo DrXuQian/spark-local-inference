@@ -316,8 +316,14 @@
     session/planning/export orchestration still needs the remaining port work.
     The box has Torch2.9/Triton3.5: normalize direct compiled launch grids to
     three dimensions and omit the unsupported optional make_fx annotation flag.
-    Port the compiled-artifact/guard serialization to the platform's actual
-    APIs; Torch2.9 lacks the AOTCompiledArtifact used by the current Flare path.
+    Torch2.9 compiled-artifact/guard serialization now uses its bundled AOT
+    entry and Dynamo protocol. Host checks cover metadata worker rebinding,
+    deferred/real tensor guards, native handles, dispatch keys, shapes and aliases.
+    Static Triton winner freezing retains the selected compiled config and
+    rejects incomplete searches. The box still needs the new compiled-catalog
+    gate and the three FA3 attention-prepared `catalog` cases: worker compilation,
+    disk reload without compilation/search, retained capture and changed-input
+    allocation-stable replay. These device cases have not yet been run.
     The standalone qualification compiler now uses its real CompiledArtifact
     save/load protocol, with cache identity bound to the compiled device ordinal.
     Host round trips preserve mutable outputs, aliases and fresh opaque bindings.
