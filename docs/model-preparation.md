@@ -613,6 +613,67 @@ from the restored service. CPU context-switch tracing remains unavailable in
 this container, so the rare driver/host tails remain open; these measurements
 do not establish literal zero idle or a full-model performance result.
 
+Correlating graph launches with the sequential workload locates the tails below.
+Repeat, request and speculative-round numbers are one-based; each repeat uses
+the same eight requests. Request 6 has a seven-token prompt, seed 435 and a
+128-token output budget; request 8 uses seed 437 and a 256-token budget.
+
+| Trace | Repeat / request | Round boundary | Inter-round gap |
+| --- | --- | --- | --- |
+| Earlier adaptive package | 1 / 6 | 33 to 34 | 367.513 us |
+| Earlier package with OSRT | 1 / 8 | 138 to 139 | 141.311 us |
+| Earlier package with scheduling observations | 1 / 8 | 98 to 99 | 132.031 us |
+| Current package with yield probe | 6 / 6 | 18 to 19 | 448.282 us |
+
+The 448.282 us boundary connects two executions of the same width-one graph,
+each containing 249 kernels. The preceding graph ends with
+`triton_poi_fused_copy_storage_call_unsqueeze_view_7`; the following graph begins
+with integer-fill kernels that reset operator error flags. Its two surrounding
+boundaries take 15.328/15.904 us. The same request and round boundary in the other
+five repeats takes 15.424-16.160 us. No width transition, different graph, weight
+upload or extra compute kernel explains this outlier. Relative to the preceding
+graph's last kernel, the long event query returns at +300.710 us, the next input
+batch copy is submitted at +358.486 us, `cuGraphLaunch` starts at +398.670 us,
+and the next graph's first kernel starts at +448.282 us.
+
+The queried event is the oldest pending frame's `transferred` event in
+`GraphExecutor::poll`. Submission records `produced` after the complete graph,
+makes the output-copy stream wait for it, copies completion records and any
+sidecars, then records `transferred`. The CPU may read and recycle that frame
+only after the query succeeds. This query does not separate target decode from
+MTP. Two frames may be queued, so a slow host call need not empty the GPU queue.
+
+A separate API probe records 7,130,900 queries in a 48-request Nsight run.
+One query's 2.6516 ms diagnostic window agrees with a 2.6498 ms CUDA API trace;
+thread CPU time is 2.6512 ms, with no observed context switch and 60 minor page
+faults in the surrounding counter window. Two queued graph executions cover
+that interval, so it does not cause a large inter-round gap. That run instead
+has 342.107/488.570 us gaps at repeat/request 2/8 and 5/2, both at rounds 117 to
+118. Their first subsequent queries start 138.403/368.130 us after the preceding
+GPU work finishes. Thus late polling and long query calls are distinct
+observations; the event query is not the common cause of every tail.
+
+An unprofiled API control and a separate unprofiled signal-sampling control
+also observe occasional long host intervals. Instruction samples inside an
+active query reach `libcuda.so.1`; other samples occur after the CUDA call, in
+the probe's thread-clock system call. The probe brackets include that clock
+read, so their entire wall durations cannot all be assigned to CUDA. These
+diagnostics affect timing and do not replace uninstrumented service performance
+measurements. All 144 request choices and usage records across the three runs
+match the earlier workload for identical inputs. The diagnostic libraries are
+removed from the restored service. The observations narrow the investigation
+to host submission, driver execution and measurement/environment effects; they
+do not establish a specific internal driver, profiler or OS defect.
+
+Graph-internal gaps are tracked separately. In the yield-probe trace, the first
+uses of the speculative graph variants have 493.881-633.976 us gaps before
+GGUF row-lookup kernels. The intervening node is a four-byte error-flag memset
+taking about 0.320 us, not a weight transfer. Functions and graph executables
+were already loaded and uploaded at package startup. The later API-probe trace
+has two graph-internal gaps above 50 us, at 67.871/95.935 us before a width-two
+Q8 row lookup. These measurements do not yet identify the cause of those gaps
+or establish literal zero idle within the graph.
+
 The native replay tool loads this same exported package and compares isolated
 rounds with queued execution. Four 128-token cases each execute 22 width-six
 rounds. Tokens, logprobs and completion payloads match exactly; request generations

@@ -206,6 +206,18 @@
     tokens but shows no consistent gain in server publication intervals.
     Keep the existing loop; neither profiling/OS latency nor literal zero idle
     is resolved by removing yield. See model-preparation.md for measurements.
+    Request correlation puts the 448.282 us gap at repeat 6/request 6, rounds
+    18 to 19 of the same width-one graph. The other five identical boundaries
+    take 15.424-16.160 us. API/IP probes distinguish late polling, driver work
+    and diagnostic clock overhead; a separate 2.650 ms query is hidden by the
+    two-frame GPU queue. All 144 diagnostic request outputs agree. Root cause
+    remains open; these probes do not establish uninstrumented GPU gap bounds.
+
+[ ] Attribute graph-internal gaps before GGUF row lookup. First-use variants
+    show 493.881-633.976 us in one trace; a later trace has 67.871/95.935 us
+    width-two gaps. The intervening four-byte memset takes about 0.320 us,
+    and functions/graphs were preloaded. Do not classify these as weight offload
+    or equate inter-round gap measurements with complete within-graph occupancy.
 
 [x] Compare the same partial package with native fixed-sequence replay at batch
     one/width six. Four 128-token requests each execute 22 rounds; queued and
