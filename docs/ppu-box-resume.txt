@@ -1,27 +1,45 @@
 PPU box resume after the QSA / sampling failures (2026-11-06)
 ==========================================================
 
-The local handoff contains:
+The two wheels are now available directly in Git LFS under
+artifacts/ppu/20261106/wheels/ on feat/qwen38-gguf:
   actlize_la-0.2.1-1ppu10version221184ee6-py3-none-linux_x86_64.whl
   flashinfer_python-0.6.18+ppu.flare1-py3-none-any.whl
-  Source patches for actlizeLA, FlashInfer PPU and QUactlize's gate reporting.
-  run-ppu10-box.sh, SHA256SUMS, host evidence and nine FlashInfer device cases.
 
-Copy/unpack the handoff directory on the PPU box, update this framework branch,
-then run (replace /path/to/handoff with the unpacked directory):
+GitHub rejects new LFS objects in this public fork. The payloads are stored in
+DrXuQian/qwen4flash on branch artifacts/ppu-20261106; this repository's
+.lfsconfig routes LFS downloads there. The file paths and commands below remain
+in spark-local-inference. For browser downloads, use the qwen4flash artifact
+branch, since GitHub's fork file viewer does not use the external LFS endpoint.
+
+From the already configured PPU environment:
 
   cd /sim/eec/shared/junfu.qx/spark-local-inference
   git pull --ff-only
-  bash /path/to/handoff/run-ppu10-box.sh "$PWD"
+  git lfs install --local
+  git lfs pull --include="artifacts/ppu/20261106/wheels/*.whl" --exclude=""
+  python -m pip install --no-deps --force-reinstall \
+    artifacts/ppu/20261106/wheels/actlize_la-0.2.1-1ppu10version221184ee6-py3-none-linux_x86_64.whl \
+    artifacts/ppu/20261106/wheels/flashinfer_python-0.6.18+ppu.flare1-py3-none-any.whl
 
-The script verifies artifact hashes, installs only the two exact operator
-wheels with pip --no-deps, and keeps the platform Torch, Triton, TVM-FFI,
-FlashAttention and QUactlize packages. It expects the already configured PPU
-SDK environment and /usr/local/PPU_SDK/CUDA_SDK/targets/x86_64-linux/lib/libcublas.so.
-It compiles sampling during preparation on that box, runs the nine request-RNG
-device cases, then runs qualify.ppu_box's component/catalog gates. Test results
-are saved in a new directory. A skip, empty suite or failing case is a failure.
-No model downloads, RTX connection, b12x or cuTile install is performed.
+These are the same wheel bytes as the original local handoff. Git LFS checks
+their content hashes during download. --no-deps keeps the platform Torch,
+Triton, TVM-FFI, FlashAttention and QUactlize packages. Installing the wheel
+does not rebuild FlashInfer. The sampling module is compiled during first
+preparation against the box's SDK and TVM-FFI, then reused from the JIT cache.
+Serving does not compile. No model download, RTX connection, b12x or cuTile
+installation is needed.
+
+Run the focused eight-case retry below, or all component/catalog gates with a
+new output directory:
+
+  python -m qualify.ppu_box --actlize-target ppu10 --blas-api cublas \
+    --blas-library /usr/local/PPU_SDK/CUDA_SDK/targets/x86_64-linux/lib/libcublas.so \
+    --run-device-tests --output /tmp/ppu-box-20261106-lfs
+
+The separate handoff archive retains the operator source patches, host logs,
+nine additional FlashInfer RNG device cases and run-ppu10-box.sh. Downloading
+that archive is optional for installing these wheels or running framework gates.
 
 The ALA wheel is specifically ppu10 / SDK2.2.1-184ee6. Do not use this binary for
 ppu15; build a complete matching serving wheel for that target. Native ALA

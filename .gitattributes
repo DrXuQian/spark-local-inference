@@ -4,3 +4,6 @@ packaging/license-supplements/** -text
 
 # Preserve the bytes used by chat-template digests and embedded template parsing.
 ignition/recipes/*/assets/*.jinja text eol=lf
+
+# Installable PPU operator artifacts requested for box qualification.
+/artifacts/ppu/20261106/wheels/*.whl filter=lfs diff=lfs merge=lfs -text
