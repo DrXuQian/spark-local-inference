@@ -7,6 +7,18 @@ import pytest
 from qualify.ppu_box import parser, pytest_result, resolve_sources, device_suites
 
 
+def test_installed_actlize_symbolic_probe_uses_no_native_library_or_device(monkeypatch):
+    import torch
+    serving = pytest.importorskip('actlize_la.serving')
+    from qualify.ppu_box import check_actlize_tracing
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('symbolic catalog probe must not load a DSO or initialize a device')
+    monkeypatch.setattr(serving, 'NativeLibrary', forbidden)
+    monkeypatch.setattr(torch.cuda, '_lazy_init', forbidden)
+    assert 'symbolic serving handle accepted' in check_actlize_tracing()
+
+
 @pytest.mark.parametrize('tests,failures,errors,skipped,passed', [
     (4, 0, 0, 0, True), (0, 0, 0, 0, False), (4, 0, 0, 4, False),
     (4, 1, 0, 0, False), (4, 0, 1, 0, False), (4, 0, 0, 1, False)])

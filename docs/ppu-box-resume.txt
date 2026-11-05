@@ -1,0 +1,61 @@
+PPU box resume after the QSA / sampling failures (2026-11-06)
+==========================================================
+
+The local handoff contains:
+  actlize_la-0.2.1-1ppu10version221184ee6-py3-none-linux_x86_64.whl
+  flashinfer_python-0.6.18+ppu.flare1-py3-none-any.whl
+  Source patches for actlizeLA, FlashInfer PPU and QUactlize's gate reporting.
+  run-ppu10-box.sh, SHA256SUMS, host evidence and nine FlashInfer device cases.
+
+Copy/unpack the handoff directory on the PPU box, update this framework branch,
+then run (replace /path/to/handoff with the unpacked directory):
+
+  cd /sim/eec/shared/junfu.qx/spark-local-inference
+  git pull --ff-only
+  bash /path/to/handoff/run-ppu10-box.sh "$PWD"
+
+The script verifies artifact hashes, installs only the two exact operator
+wheels with pip --no-deps, and keeps the platform Torch, Triton, TVM-FFI,
+FlashAttention and QUactlize packages. It expects the already configured PPU
+SDK environment and /usr/local/PPU_SDK/CUDA_SDK/targets/x86_64-linux/lib/libcublas.so.
+It compiles sampling during preparation on that box, runs the nine request-RNG
+device cases, then runs qualify.ppu_box's component/catalog gates. Test results
+are saved in a new directory. A skip, empty suite or failing case is a failure.
+No model downloads, RTX connection, b12x or cuTile install is performed.
+
+The ALA wheel is specifically ppu10 / SDK2.2.1-184ee6. Do not use this binary for
+ppu15; build a complete matching serving wheel for that target. Native ALA
+resources are byte-identical to the previously tested 0.2.0 wheel. Only the
+Python fake binding is changed; the manifest records both source revisions.
+Do not edit installed Python files in place: that invalidates the package seal.
+
+FlashInfer is based on t-head/flashinfer-for-sail ppu/0.6.18 e502dcf, with the
+Flare prepared sampling interfaces from local-inference-lab/flashinfer 560fef1.
+It is a PPU source-containing wheel. The host-linked sampling.so is deliberately
+not shipped because the box must use its own SDK and TVM-FFI. Its distinct
+version creates a separate JIT cache; do not force reuse of older sampling AOT
+artifacts, whose FFI lacks row_independent_rng. Operator patch commits have not
+been pushed upstream by this framework change.
+
+For a focused retry after installation:
+
+  FLARE_RUN_CUDA_TESTS=1 FLARE_ACTLIZE_TARGET=ppu10 python -m pytest -q \
+    tests/components/test_actlize_qsa_cuda.py \
+    tests/components/test_external_sampling_cuda.py
+
+Expected: eight executed cases, no skips. The normal box runner additionally
+checks the installed bindings, native libraries and package identities. Its
+SymInt probe exercises the actual fake dispatcher without initializing a
+device; its sampling probe loads kernels during preparation and checks all
+five out operators. It never disables catalog compilation to mask incompatibility.
+
+Still requiring the PPU box:
+  1. QSA / sampling numerics and catalog replay after these package fixes.
+  2. Complete target + shared-MTP graph, including acceptance and state rollback.
+  3. Export on PPU, then Rust-only replay of the prepared package.
+  4. Complete-round timeline and allocation checks before a no-bubble claim.
+
+The existing small synthetic GGUF and partial-layer fixtures are sufficient
+for the next gates. A full model download or meaningful generated text is not
+required. Local host tests and SDK compilation do not establish these four
+device-level outcomes.

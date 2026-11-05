@@ -57,7 +57,7 @@ def test_qsa_pages_prefix_recovery_and_catalog_rebinding(tmp_path, monkeypatch, 
                         cached.setattr(aot, 'aot_forward', forbidden)
                         cached.setattr(CompilePool, 'submit_payload', forbidden)
                     graphs, compiled = capture_forwards({'qsa': f.forward},
-                        {'qsa': GraphSignature('prefill', 2, rows)}, session=session, device='cuda:0',
+                        {'qsa': GraphSignature('prefill', f.requests, rows)}, session=session, device='cuda:0',
                         stream=stream, pool=torch.cuda.graph_pool_handle(), cache_root=tmp_path,
                         compile_decoder=compilation == 'catalog', retain_graphs=True, report_catalog=False)
                 if compiled:

@@ -7,9 +7,26 @@
 import torch
 
 
+def require_prepared_sampling_api():
+    """Inspect the installed API without compiling kernels or initializing a device."""
+    import inspect
+    from flashinfer import sampling
+
+    missing = []
+    if not callable(getattr(sampling, '_top_p_renorm_workspace_size', None)):
+        missing.append('_top_p_renorm_workspace_size')
+    chain = getattr(sampling, 'chain_speculative_sampling', None)
+    if not callable(chain) or 'row_independent_rng' not in inspect.signature(chain).parameters:
+        missing.append('chain_speculative_sampling(row_independent_rng=...)')
+    if missing:
+        raise RuntimeError('installed FlashInfer lacks prepared sampling APIs: ' + ', '.join(missing)
+                           + '; install a platform wheel with the Flare sampling interfaces')
+    return sampling
+
+
 def probability_filter_workspace(rows, vocabulary, device):
     """Reserve FlashInfer's deterministic top-p workspace before graph capture."""
-    from flashinfer import sampling
+    sampling = require_prepared_sampling_api()
 
     return torch.empty(sampling._top_p_renorm_workspace_size(rows, vocabulary, True),
                        dtype=torch.uint8, device=device)

@@ -53,6 +53,25 @@ def pytest_result(path):
     return counts, counts['tests'] > 0 and not any(counts[k] for k in ('failures', 'errors', 'skipped'))
 
 
+def check_actlize_tracing():
+    """Exercise the real fake dispatcher with an unbound catalog handle on the host."""
+    import torch
+    import actlize_la.serving  # register the installed operator
+    from torch._subclasses.fake_tensor import FakeTensorMode
+    from torch.fx.experimental.symbolic_shapes import ShapeEnv
+
+    try:
+        shape_env = ShapeEnv()
+        with FakeTensorMode(shape_env=shape_env):
+            handle = shape_env.create_unbacked_symint()
+            source, output = torch.empty(1), torch.empty(1)
+            torch.ops.actlize_la.serving_out.default([source], [output], handle)
+    except Exception as exc:
+        raise RuntimeError('actlizeLA fake binding cannot trace a symbolic catalog handle; '
+                           'install the serving wheel with the SymInt fix (0.2.1 or compatible)') from exc
+    return 'symbolic serving handle accepted by the installed fake dispatcher; no native launch'
+
+
 def device_suites(args, root, output):
     python = sys.executable
     suites = [
@@ -243,6 +262,7 @@ def check_interfaces(args):
         return f'{args.blas_api} GemmEx, stream and caller-owned workspace API'
 
     check('quactlize-native', quactlize)
+    check('actlize-catalog-tracing', check_actlize_tracing)
     check('actlize-native', actlize)
     check('dense-blas', blas)
 
@@ -261,20 +281,17 @@ def check_interfaces(args):
     check('flash-attention3-api', flash_attention)
 
     def flashinfer():
-        from flashinfer import sampling
+        from ignition.components.flashinfer_sampling import require_prepared_sampling_api
 
-        if not callable(getattr(sampling, '_top_p_renorm_workspace_size', None)):
-            raise RuntimeError('missing _top_p_renorm_workspace_size; stock sampling API is insufficient')
-        parameters = inspect.signature(sampling.chain_speculative_sampling).parameters
-        if 'row_independent_rng' not in parameters:
-            raise RuntimeError('MTP verification requires chain_speculative_sampling(row_independent_rng=...)')
+        sampling = require_prepared_sampling_api()
         if not results['device']:
             raise RuntimeError('device required to load and check prepared sampling exports')
         import torch
 
         # Registration is lazy; load before checking torch.ops, outside capture.
         sampling.get_sampling_module()
-        for name in ('top_k_mask_logits_out', 'top_p_renorm_probs_out'):
+        for name in ('softmax_out', 'sampling_from_probs_out', 'chain_speculative_sampling_out',
+                     'top_k_mask_logits_out', 'top_p_renorm_probs_out'):
             getattr(torch.ops.flashinfer, name).default
         return 'caller-owned filtering outputs/workspace and per-request MTP RNG interface'
 
@@ -318,7 +335,8 @@ def main(argv=None):
     results = check_interfaces(args)
     if args.run_device_tests:
         required = ('device', 'torch', 'gguf', 'numpy', 'pytest', 'google.protobuf',
-                    'quactlize.serving', 'actlize_la.serving', 'quactlize-native', 'actlize-native', 'dense-blas')
+                    'quactlize.serving', 'actlize_la.serving', 'quactlize-native', 'actlize-native',
+                    'actlize-catalog-tracing', 'dense-blas', 'flashinfer-sampling')
         if not all(results[name] for name in required):
             print('Device suites not started: fix the failed device/operator prerequisites.', flush=True)
             return 1

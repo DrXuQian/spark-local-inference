@@ -431,11 +431,37 @@
     Torch2.9/Torch2.15; arithmetic, complete target/MTP and native replay still
     require device qualification. These gates require no model downloads.
 
-[ ] Correct upstream QUactlize a4207d6 installed-wheel device-test reporting:
+[x] Fix the reported QSA width-one fixture: request capacity is min(rows, 2),
+    with matching workspace, interval metadata and graph signature. Six host
+    geometry/interval checks reach the actual native binding boundary. The box
+    preflight now calls actlizeLA's real fake dispatcher with an unbacked SymInt,
+    before expensive catalog compilation, and checks all five prepared FlashInfer
+    sampling ops. Missing workspace/RNG interfaces are reported together before
+    scratch allocation. 29 related host checks pass on Torch2.9 and Torch2.15.
+
+[x] Prepare local operator fixes for the reported catalog/sampling failures.
+    actlizeLA 2e107e2 fixes fake serving lookup of an unbacked SymInt while keeping
+    concrete metadata and real handle lifetime checks; its complete 0.2.1 ppu10
+    wheel reuses byte-identical 4ea342e native resources with resealed Python
+    identity and explicit reuse provenance. 28 installed-wheel host checks pass.
+    FlashInfer 7a7989e ports the five prepared out operators, AIR workspace sizing
+    and per-request chain RNG into t-head/flashinfer-for-sail ppu/0.6.18. Thirteen
+    tracing checks pass on Torch2.9/Torch2.15. The real sampling/renorm/FFI sources
+    compile and link for ppu_10 with SDK2.2.1-184ee6; the 0.6.18+ppu.flare1 wheel
+    includes PPU JIT sources, not a host-linked sampling binary. See
+    docs/ppu-box-resume.txt for installation and gates. Operator fixes are local
+    commits/patches, not claims of upstream merge or PPU execution. Rerun the six
+    QSA and two sampling cases on the box; full target/MTP and bubble measurements
+    remain unqualified.
+
+[x] Prepare the QUactlize installed-wheel reporting fix in local commit 653b46e:
     tools/verify_installed_wheel.py does not set FLARE_RUN_CUDA_TESTS for its
     Flare subprocess and accepts pytest exit zero without checking skipped
-    cases. Use the framework gate with FLARE_RUN_CUDA_TESTS=1 and require ten
-    executed cases; upstream's device PASS marker alone is not qualification.
+    cases. The patch sets the opt-in, retains the verified DSO for secondary
+    owners, clears inherited pytest selection, and requires successful JUnit
+    counts with no skips (at least ten Flare cases). Five real pytest subprocess
+    host accounting checks pass. Upstream merge and real device execution are
+    still pending; the unpatched device PASS marker alone is not qualification.
 
 [ ] Measure external GGUF shared/routed expert overlap. GgufMoeWorkspace bypasses
     the b12x ConcurrentSharedExpert branch even when stream_overlap is enabled.

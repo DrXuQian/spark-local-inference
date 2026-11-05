@@ -22,18 +22,19 @@ class Forward:
 
 
 class Fixture:
-    def __init__(self, library, rows=7):
+    def __init__(self, library, rows=7, *, device='cuda:0'):
         from actlize_la.serving import qsa_workspace_specs
         from actlize_la.serving.flare import bind_qsa
         from ignition.recipes.qwen38.attention import QSAState, QSAMetadata, RotaryTables
 
-        device = torch.device('cuda:0')
+        device = torch.device(device)
         self.rows = rows
+        self.requests = min(rows, 2)
         self.context = max(2176, ((2051 + rows + 63) // 64) * 64)
         self.pages = self.context // 64
         self.state = QSAState.allocate(pages=self.pages, slots=3, device=device,
             draft_tokens=7, kv_dtype=torch.bfloat16)
-        self.metadata = QSAMetadata.allocate(tokens=self.rows, batch=2, context=self.context, device=device)
+        self.metadata = QSAMetadata.allocate(tokens=self.rows, batch=self.requests, context=self.context, device=device)
         config = SimpleNamespace(head_dim=256, rope_parameters=dict(partial_rotary_factor=.25,
             mrope_section=[11, 11, 10], rope_theta=10000000))
         self.rotary = RotaryTables.allocate(config, self.context + 32, device)
@@ -45,7 +46,7 @@ class Fixture:
                 raw_index_key=(self.rows, 128), index_q_norm_weight=(128,),
                 index_k_norm_weight=(128,)).items()}
         self.work = {name: torch.zeros(shape, dtype=dtype, device=device)
-            for name, (shape, dtype) in qsa_workspace_specs(self.rows, 2).items()}
+            for name, (shape, dtype) in qsa_workspace_specs(self.rows, self.requests).items()}
         self.operation = bind_qsa(library, **self.inputs, rotary=self.rotary, state=self.state,
             metadata=self.metadata, live_rows=self.live, workspace=self.work)
         self.observed = torch.zeros_like(self.work['output'])
@@ -109,14 +110,14 @@ class Fixture:
         m.request_ids.fill_(-1); m.request_ids[:width].fill_(0)
         m.query_positions.fill_(-1); m.query_positions[:width].copy_(torch.arange(first, first + width))
         m.rope_positions.zero_(); m.rope_positions[:width].copy_(self.positions[first:first + width])
-        m.raw_state_slot_ids.copy_(torch.tensor([1, -1]))
+        m.raw_state_slot_ids.fill_(-1); m.raw_state_slot_ids[0] = 1
         m.slot_mapping.fill_(-1)
         p = torch.arange(first, first + width)
         m.slot_mapping[:width].copy_(self.perm[p // 64] * 64 + p % 64)
-        m.query_start_loc.copy_(torch.tensor([0, width, width], dtype=torch.int32))
-        m.sequence_lengths.copy_(torch.tensor([first + width, 0], dtype=torch.int32))
-        m.num_accepted_tokens.copy_(torch.tensor([accepted, 0], dtype=torch.int32))
-        m.is_prefilling.fill_(width > 7); self.live.fill_(2 if width else 0)
+        m.query_start_loc.fill_(width); m.query_start_loc[0] = 0
+        m.sequence_lengths.zero_(); m.sequence_lengths[0] = first + width
+        m.num_accepted_tokens.zero_(); m.num_accepted_tokens[0] = accepted
+        m.is_prefilling.fill_(width > 7); self.live.fill_(self.requests if width else 0)
 
     def check(self, before):
         s, m, first, width = self.state, self.metadata, self.first, self.width
