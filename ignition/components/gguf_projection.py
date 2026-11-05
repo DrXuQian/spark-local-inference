@@ -12,6 +12,8 @@ from .gguf_weights import GgufWeight
 
 def projection_workspace_bytes(source, weight: GgufWeight, *, ids=None):
     """Query bounded scratch without expanding weights or creating a CUDA handle."""
+    if weight.packed is not None:
+        raise ValueError('canonical GGUF weights require the selected native PPU projection library')
     from quactlize.cuda_compat import Problem, query
 
     indexed = ids is not None

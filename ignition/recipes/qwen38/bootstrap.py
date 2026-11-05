@@ -127,6 +127,7 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
     dense_blas_library = operator_libraries.pop('dense_blas', None)
     quactlize_helpers = operator_libraries.pop('quactlize_helpers', None)
     flash_attention3 = operator_libraries.pop('flash_attention3', None)
+    quactlize_packing = getattr(operator_libraries['gguf_projection_library'], 'packing', None)
     operators = None if config.gguf_inputs is None else config.gguf_inputs.operator_identity()
     if config.actlize is not None:
         report('actlizeLA GDN/QSA · BF16 KV and snapshots · ' + config.actlize.target)
@@ -141,7 +142,8 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
     if package_storage is not None:
         transient.enter_context(package_storage.transient())
     weights = ModelWeights.load(manifest, device, progress=progress, shard=shard,
-        shard_hyperconnections=config.shard_hyperconnections, quactlize_helpers=quactlize_helpers)
+        shard_hyperconnections=config.shard_hyperconnections,
+        quactlize_helpers=quactlize_helpers, quactlize_packing=quactlize_packing)
     if weights.vision is not None:
         from transformers.models.qwen4_exp.modeling_qwen4_exp import Qwen4ExpVisionModel
         from .vision import PreparedVision, VisionScratch
@@ -164,7 +166,8 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
                 shard_hyperconnections=config.shard_hyperconnections, **mtp_kwargs)
         else:
             mtp_weights = MTPWeights.load_gguf(manifest.draft, manifest, device,
-                read_mode=manifest.read_mode, quactlize_helpers=quactlize_helpers, **mtp_kwargs)
+                read_mode=manifest.read_mode, quactlize_helpers=quactlize_helpers,
+                quactlize_packing=quactlize_packing, **mtp_kwargs)
     host_storage = {} if package_storage is None else {"host_allocator": package_storage.host_allocate}
     if config.gguf_inputs is None:
         table = PLETable.load(manifest, device, tokens=config.token_capacity, progress=progress, **host_storage)

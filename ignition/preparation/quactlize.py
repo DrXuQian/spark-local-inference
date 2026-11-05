@@ -52,7 +52,10 @@ class QuactlizeLibrarySpec:
         return cls(path, digest, target)
 
     def identity(self):
-        return dict(abi='qpm_v1', target=self.target, library=self.sha256)
+        result = dict(abi='qpm_v1', target=self.target, library=self.sha256)
+        if self.target != 'nvidia':
+            result.update(expert_layout='canonical_kpack_v1', q5_1_execution='packed_auto_v1')
+        return result
 
     def load(self, device):
         if self.read(self.path).sha256 != self.sha256:
@@ -63,8 +66,12 @@ class QuactlizeLibrarySpec:
             raise ValueError('QUactlize requires a CUDA-compatible device')
         if self.target != 'nvidia':
             from quactlize.compat.native import Library
+            from .gguf_packing import GgufPacker
 
-            return Library(self.path)
+            library = Library(self.path)
+            library.packed = Library(self.path, packed_route=0)
+            library.packing = GgufPacker(library)
+            return library
         if torch.cuda.get_device_capability(device) != (12, 0):
             raise ValueError('the configured QUactlize matmul record implementation requires an SM120 device')
         return CudaMatmulLibrary(self.path)

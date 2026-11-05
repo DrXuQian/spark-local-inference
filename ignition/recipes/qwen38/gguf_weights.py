@@ -139,6 +139,9 @@ class QwenGgufWeightLoader(GgufWeightLoader):
         """Map target or shared-MTP expert names into the existing Qwen component."""
         if type(layer) is not int or layer < 0:
             raise ValueError('Qwen GGUF layer must be a nonnegative integer')
+        if (getattr(getattr(self.manifest, 'quactlize', None), 'target', None) in ('ppu10', 'ppu15')
+                and self.quactlize_packing is None):
+            raise ValueError('PPU routed experts require the selected QUactlize canonical weight producer')
         prefix = f'blk.{layer}'
         # Down projections constrain the intermediate partition's block boundary.
         import gguf
@@ -150,10 +153,14 @@ class QwenGgufWeightLoader(GgufWeightLoader):
         align = max(gguf.GGML_QUANT_SIZES[gguf.GGMLQuantizationType[t.encoding]][0]
                     for t in (down, shared_down))
         extent = self.shard.partition(640, alignment=align)
-        experts = GgufExperts(
-            self.load_quantized_group(tuple(f'{prefix}.ffn_{part}_exps.weight' for part in ('gate', 'up')),
-                                      row_ranges=(extent, extent)),
-            self.load_quantized(f'{prefix}.ffn_down_exps.weight', columns=extent))
+        gate_up = self.load_quantized_group(tuple(f'{prefix}.ffn_{part}_exps.weight' for part in ('gate', 'up')),
+                                           row_ranges=(extent, extent))
+        if self.quactlize_packing is not None:
+            gate_up = self.quactlize_packing(gate_up)
+        down_weight = self.load_quantized(f'{prefix}.ffn_down_exps.weight', columns=extent)
+        if self.quactlize_packing is not None:
+            down_weight = self.quactlize_packing(down_weight)
+        experts = GgufExperts(gate_up, down_weight)
         if cache_shared:
             import torch
 
@@ -169,7 +176,8 @@ class QwenGgufWeightLoader(GgufWeightLoader):
         return QwenMoeWeights(self.load_tensor(f'{prefix}.ffn_gate_inp.weight'), experts, shared)
 
 
-def load_model(manifest, device, *, progress=None, shard=TensorParallelShard(0, 1), quactlize_helpers=None):
+def load_model(manifest, device, *, progress=None, shard=TensorParallelShard(0, 1),
+               quactlize_helpers=None, quactlize_packing=None):
     import torch
     from .decoder import DecoderLayerWeights, ModelWeights
     from .model import create_model_tree
@@ -179,7 +187,7 @@ def load_model(manifest, device, *, progress=None, shard=TensorParallelShard(0, 
     layers = []
     language = tree.model.language_model
     with QwenGgufWeightLoader(manifest, device, progress=progress, shard=shard,
-            read_mode=manifest.read_mode, quactlize_helpers=quactlize_helpers) as loader:
+            read_mode=manifest.read_mode, quactlize_helpers=quactlize_helpers, quactlize_packing=quactlize_packing) as loader:
         embedding = loader.load_quantized('token_embd.weight')
         _parameter(tree, 'lm_head.weight', loader.load_dense('output.weight', rows=shard.partition(248320)))
         loader.load_hyperconnection(language.hyper_connection_mixer, 'output_hc')

@@ -71,6 +71,8 @@ def device_suites(args, root, output):
         ('gguf-read', [python, '-m', 'pytest', '-q', 'tests/preparation/test_gguf_weights_cuda.py',
             '-k', 'native_reads or selected_blocks or changed_file or pread_',
             '--junitxml=' + str(output / 'gguf-read.xml')], root, 'gguf-read.xml'),
+        ('gguf-packed', [python, '-m', 'pytest', '-q', 'tests/preparation/test_gguf_packing_cuda.py',
+            '--junitxml=' + str(output / 'gguf-packed.xml')], root, 'gguf-packed.xml'),
         ('quactlize', [python, '-m', 'pytest', '-q', 'tests/serving/test_serving_device.py',
             '--junitxml=' + str(output / 'quactlize.xml')], args.quactlize_source, 'quactlize.xml'),
         ('actlize', [python, str(args.actlize_source / 'tests/serving_device.py'),
@@ -150,8 +152,14 @@ def check_interfaces(args):
         import ctypes as C
         from quactlize.compat.native import Library, Sizes, problem
         from quactlize.compat.serving_native import Library as HelpersLibrary
+        from ignition.components.gguf_weights import GgufWeight
+        from ignition.preparation.gguf_packing import GgufPacker
+        import gguf
+        import torch
 
         library = Library(args.quactlize_library)
+        packed_library = Library(args.quactlize_library, packed_route=0)
+        producer = GgufPacker(library)
         HelpersLibrary(args.quactlize_library)
         checked = 0
         for qtype in (7, 8, 10, 11, 12, 13, 14):
@@ -162,10 +170,26 @@ def check_interfaces(args):
                     call = problem(qtype, rows, n, k, experts=512, topk=10, channels=channels)
                     sizes = Sizes()
                     library.check(library.query(C.byref(call), None, C.byref(sizes)))
-                    if not sizes.raw_bytes or not sizes.workspace_bytes or sizes.output_bytes != rows * 10 * n * 2:
+                    if not sizes.raw_bytes or sizes.output_bytes != rows * 10 * n * 2:
                         raise RuntimeError('matmul query returned incompatible Qwen geometry')
                     checked += 1
-        return f'PPU matmul v1 ({checked} Qwen geometry queries), router/SwiGLU v2, row lookup v1'
+        for qtype, n, k in ((7, 2560, 640), (8, 2560, 640), (8, 1280, 2560), (12, 1280, 2560), (13, 1280, 2560)):
+            kind = gguf.GGMLQuantizationType(qtype)
+            block, width = gguf.GGML_QUANT_SIZES[kind]
+            raw = torch.empty(512 * n * k // block * width, dtype=torch.uint8, device='meta')
+            descriptor, planes = producer.describe(GgufWeight(raw, kind.name, qtype, (512, n, k)))
+            for rows in (1, 9):
+                consumer = packed_library if qtype == 7 else library
+                call = problem(qtype, rows, n, k, experts=512, topk=10, channels=10, layout=1)
+                sizes = Sizes()
+                consumer.check(consumer.query(C.byref(call), C.byref(descriptor), C.byref(sizes)))
+                if (sizes.raw_bytes or (sizes.low_bytes, sizes.high_bytes, sizes.units_bytes) !=
+                        (planes.low_bytes, planes.high_bytes, planes.units_bytes)):
+                    raise RuntimeError('canonical producer/consumer weight layouts differ')
+                if qtype == 7 and (sizes.route not in (2, 3) or sizes.expanded_weight_bytes):
+                    raise RuntimeError('Q5_1 query did not select the direct packed route')
+                checked += 1
+        return f'PPU raw/canonical matmul ({checked} Qwen queries), Q5_1 packed native16, router/SwiGLU v2, rows v1'
 
     def actlize():
         import ctypes as C

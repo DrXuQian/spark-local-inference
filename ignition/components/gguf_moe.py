@@ -21,7 +21,7 @@ class GgufExperts:
                 or self.gate_up.experts != self.down.experts
                 or self.gate_up.in_features != self.down.out_features
                 or self.gate_up.out_features != 2 * self.down.in_features
-                or self.gate_up.raw.device != self.down.raw.device):
+                or self.gate_up.device != self.down.device):
             raise ValueError('GGUF experts require gate/up [E,2I,H] and down [E,H,I] on one device')
 
     @property
@@ -59,7 +59,7 @@ class GgufMoeWorkspace:
         if (type(chunk_rows) is not int or chunk_rows < 1 or type(top_k) is not int
                 or not 0 < top_k <= experts.num_experts):
             raise ValueError('GGUF expert workspace requires positive rows and valid top-k')
-        device, hidden, width = experts.gate_up.raw.device, experts.hidden_size, experts.intermediate_size
+        device, hidden, width = experts.gate_up.device, experts.hidden_size, experts.intermediate_size
         def empty(shape, dtype):
             return torch.empty(shape, dtype=dtype, device=device) if buffers is None else buffers.zeros(shape, dtype)
         gate_up = empty((chunk_rows, top_k, 2 * width), torch.bfloat16)

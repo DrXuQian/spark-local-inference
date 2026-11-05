@@ -350,12 +350,31 @@
     platform CUDA copy API. Retain source identity/mutation checks, destination
     disjointness, exact packed bytes and confirmed-drain ownership. Target/MTP
     dense preparation uses the selected QUactlize helpers on an explicit stream.
-    Real-file host checks pass on Torch2.9 and Torch2.15. Device transfer and native
-    decode gates remain unrun; qualify.ppu_box now includes the gguf-read suite.
+    Real-file host checks pass on Torch2.9 and Torch2.15; qualify.ppu_box includes
+    the gguf-read suite. The four native dense-decoder cases remain unrun.
     The box rejected cuda-python Runtime initialization with status 35 despite
     working Torch allocations and PPU SDK library paths. Both pread readers now
     bind platform Driver API copies using Torch's existing context/stream. SDK
-    C-ABI tests pass; rerun the six box read cases, which disable the Runtime import.
+    C-ABI tests pass. The user reports all six box read cases passing after this
+    change, including exact bytes and strided conversion with Runtime imports disabled.
+
+[x] Connect QUactlize d90cb0d canonical GPU packing to target/shared-MTP loading.
+    Query exact arrangements and plane sizes from the selected DSO, pack each
+    routed projection once, drain and release its raw copy before reading the
+    next projection. Prepared weights retain only low/high/units planes and the
+    complete descriptor. Q5_1 uses the explicit packed AUTO native16 entry;
+    Q8_0/K formats use canonical matmul v1. Weight bytes stay compressed and the
+    queried plane sum must equal the original GGUF byte budget. Host native
+    contracts, metadata/export declarations and fake-op checks pass on Torch2.9
+    and Torch2.15. No new in-framework shuffle kernel is introduced.
+
+[ ] Qualify canonical GPU packing and consumption on PPU with the separate
+    gguf-packed suite. Ten small-file cases cover Q5_1/Q8_0/Q4_K/Q5_K, widths
+    1/9, direct graph replay and Q5_1 worker/cache rebinding. Check raw release,
+    changed/duplicate/inactive/invalid routes, native16 arithmetic and allocation
+    stability. These device cases remain unrun; host checks do not qualify
+    packing numerics, complete target/MTP graphs or throughput. Keep the existing
+    eight-row expert chunk until complete forwards justify a different capacity.
 
 [ ] Measure external GGUF shared/routed expert overlap. GgufMoeWorkspace bypasses
     the b12x ConcurrentSharedExpert branch even when stream_overlap is enabled.

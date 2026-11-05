@@ -37,10 +37,18 @@ def contract(tmp_path_factory):
 #include "quactlize/compat/contract.hpp"
 #include <string>
 static thread_local std::string error;
-extern "C" int query(qpm_problem_v1 const *p, void const *, qpm_sizes_v1 *s) {
-    try { *s = quactlize::compat::layout(*p, nullptr).sizes; return 0; }
+extern "C" int query(qpm_problem_v1 const *p, quactlize_ppu_placed_arrangement_v2 const *a, qpm_sizes_v1 *s) {
+    try { *s = quactlize::compat::layout(*p, a).sizes; return 0; }
     catch (std::exception const &e) { error = e.what(); return 20; }
 }
+extern "C" int query_packed(qpm_problem_v1 const *p, quactlize_ppu_placed_arrangement_v2 const *a, qpm_sizes_v1 *s) {
+    try { *s = quactlize::compat::layout(*p, a, true, QPM_PACKED_AUTO).sizes; return 0; }
+    catch (std::exception const &e) { error = e.what(); return 20; }
+}
+// A host query fixture must never execute the device producer.
+extern "C" int quactlize_ppu_prepare_fully_quantized_dev_for_arrangement_v2(
+    uint8_t const *, uint8_t *, uint8_t *, uint8_t *, int, int, int, int,
+    quactlize_ppu_placed_arrangement_v2 const *, void *) { return QPM_RUNTIME; }
 extern "C" int validate(qpm_problem_v1 const *p, qpm_buffers_v1 const *b) {
     try { auto l = quactlize::compat::layout(*p, nullptr);
           quactlize::compat::validate(*p, l, *b); return 0; }
@@ -56,6 +64,7 @@ extern "C" char const *last_error() { return error.c_str(); }
     lib = C.CDLL(str(library))
     lib.query.argtypes = [C.POINTER(native.Problem), C.c_void_p, C.POINTER(native.Sizes)]
     lib.query.restype = C.c_int
+    lib.query_packed.argtypes, lib.query_packed.restype = lib.query.argtypes, C.c_int
     lib.validate.argtypes = [C.POINTER(native.Problem), C.POINTER(native.Buffers)]
     lib.validate.restype = C.c_int
     lib.last_error.restype = C.c_char_p
@@ -69,7 +78,12 @@ extern "C" char const *last_error() { return error.c_str(); }
             if rc:
                 raise ValueError(lib.last_error().decode())
 
-    return HostContract()
+    from types import SimpleNamespace
+
+    result = HostContract()
+    result.lib = lib
+    result.packed = SimpleNamespace(query=lib.query_packed, check=result.check)
+    return result
 
 
 def operands(m, *, n=640, k=640, qtype=7, indexed=True, channels=1, padding=0):
@@ -150,7 +164,8 @@ def test_invalid_stride_and_weight_extent_are_rejected(contract):
     with FakeTensorMode():
         source, weight, output, ids = operands(9, n=37, indexed=False)
         with pytest.raises(ValueError, match='extent'):
-            projection_sizes(contract, source, GgufWeight(weight.raw[:-1], weight.encoding, weight.qtype, weight.shape), output)
+            short = torch.empty(weight.raw.numel() - 1, dtype=weight.raw.dtype, device=weight.raw.device)
+            projection_sizes(contract, source, GgufWeight(short, weight.encoding, weight.qtype, weight.shape), output)
         overlapping = torch.empty_strided(source.shape, (1, 1), device=source.device, dtype=source.dtype)
         with pytest.raises(ValueError, match='overlapping input tokens'):
             projection_sizes(contract, overlapping, weight, output)

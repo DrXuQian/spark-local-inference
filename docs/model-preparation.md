@@ -462,8 +462,9 @@ even for `cudaFree(0)`, while Torch could allocate device memory. The reported
 driver and runtime library paths were already inside the PPU SDK. The driver
 binding preserves exact byte pitches and the existing drain-before-reuse rule;
 absence of Torch's current driver context is an error, not a new context request.
-Host C-ABI checks pass against NVIDIA and PPU SDK headers. Device copies still
-need the box gate below after this change.
+Host C-ABI checks pass against NVIDIA and PPU SDK headers. The user reports all
+six box read cases below passing after this change; this qualifies the file/copy
+boundary, not the native dense decoder or expert arithmetic.
 
 Explicit PPU GGUF loading requires `pread` and prepared QUactlize helpers.
 Target and shared-MTP dense expansion use the selected helpers on a private
@@ -756,9 +757,13 @@ python -m qualify.qwen38_gguf_http --url http://127.0.0.1:18081 \
 
 ### PPU port preparation
 
-The checked QUactlize interface is
-[`feat/ppu-flash-next` at 8519e9a](https://github.com/DrXuQian/QUactlize/tree/8519e9a76830a513ab8ede806063a02590c710b7/quactlize/compat).
-Its 24 new serving-helper host tests pass, and `serving.cu` compiles with SDK
+The canonical expert path requires QUactlize
+[`feat/ppu-flash-next` at d90cb0d](https://github.com/DrXuQian/QUactlize/tree/d90cb0d880b9114768b98c8a69a0a5a6b07c3253)
+or a compatible later revision, with matching Python declarations and a rebuilt
+PPU DSO. This revision supplies Q5_1 canonical packing/packed native16 AUTO
+entries and Q8_0 K640 geometry. Earlier serving-helper checks used
+[`8519e9a`](https://github.com/DrXuQian/QUactlize/tree/8519e9a76830a513ab8ede806063a02590c710b7/quactlize/compat):
+its 24 host tests pass, and `serving.cu` compiles with SDK
 2.1.1 for `ppu_10`. This adds the missing rounding, routing and device-indexed
 row contracts to the previous matmul ABI; the earlier 203 host ABI/reader/shape
 checks were on 01810ca5. The separate SM120 debugging library builds with CUDA
@@ -907,8 +912,8 @@ earlier isolated tails, or qualify the remaining PPU operators and target export
 
 | Operation | Required contract | Current PPU source and remaining work |
 | --- | --- | --- |
-| GGUF projections and MoE | Q5_1, Q8_0, Q2_K–Q6_K; H2560/I640; 512 experts, top10; BF16 operands/output, FP32 accumulation | New QU raw path admits these shapes. Canonical packing retains stricter alignment. Prepared bindings and native replay pass with the explicit NVIDIA implementation of the new records; each capacity still needs PPU validation. |
-| Expert workspace | Resident packed weights, bounded expansion, changing device IDs | New QU scratch is linear in routed rows; weight expansion is bounded by four experts × 512 output columns. M≤8 selects SIMT; larger M selects grouped TC. Do not reuse NVIDIA's eight-row prefill chunk without checking this route change. |
+| GGUF projections and MoE | Q5_1, Q8_0, Q2_K–Q6_K; H2560/I640; 512 experts, top10; BF16 operands/output, FP32 accumulation | QU d90cb0d canonical preparation is connected, including Q5_1 packed native16 and Q8_0 K640. Producer/consumer host queries pass. Raw bindings/replay passed on the explicit NVIDIA debug implementation; canonical device numerics and every production capacity still need PPU validation. |
+| Expert workspace | Resident packed weights, bounded expansion, changing device IDs | Matmul v1 uses SIMT at M≤8 and grouped TC above eight, with expansion bounded by four experts × 512 output columns. Q5_1 packed AUTO uses direct SIMT/TC without expanded weights; indexed TC still needs routing scratch. Query each capacity and measure full forwards before changing expert chunk size. |
 | Router | FP32 route weights, original tie rule, inactive rows | QU serving v2 selects raw logits with descending-ID ties, selected-logit softmax and a device live count. Framework binding and sticky error propagation are implemented; device qualification remains. |
 | SwiGLU | BF16 SiLU followed by multiply and BF16 output | QU serving v2 explicitly supports `round_silu=True`. Shared/routed GGUF experts select it with the helper library. Earlier v1 arithmetic remains unchanged and is not used by this binding. |
 | Token embedding / PLE | Device-indexed Q8_0 rows of width2560 and IQ4_NL rows of width160; inactive IDs and changing live counts | QU serving row lookup v1 accepts device int64 IDs and an int32 live count, retaining raw GGUF bytes. Embedding and staged PLE binding are implemented; qualify actual graphs on PPU. |
@@ -1104,8 +1109,47 @@ With `FLARE_QUACTLIZE_HELPERS_LIBRARY` set to the selected PPU DSO, also run
 `tests/components/test_quactlize_helpers_cuda.py -k dense_preparation` through
 pytest. Its four cases compare selected Q8_0/IQ4_NL dense ranges against
 independent GGUF decoding in FP16 and BF16, with the NVIDIA debug module disabled.
-These device gates remain unrun locally; host file/routing checks do not qualify
-CUDA transfers or native decoder arithmetic.
+The user reports the six read cases above passing on PPU. The four native dense
+decoder cases remain unrun; the read gate does not qualify decoder arithmetic.
+
+Routed expert weights now use the selected QUactlize producer during loading.
+Each target or shared-MTP gate/up group is read with the existing per-expert
+concatenation, packed on a preparation stream, then drained before its raw
+device copy is released. Down projection loading follows the same sequence.
+The producer must report byte-neutral low/high/units planes and a complete
+arrangement descriptor; the consumer queries that exact descriptor. Q8_0 has
+no high plane. Only one projection needs both raw and packed storage at once.
+Embedding/PLE lookup retains original GGUF blocks; dense projections retain
+their once-decoded FP16/BF16 storage.
+
+Q5_1 selects the explicit packed native16 AUTO entry: its query must report a
+direct SIMT/TC route without expanded weights or grouped activation/output
+buffers. Q8_0 and K formats use canonical storage through matmul v1; canonical
+storage does not imply a direct packed TC kernel. Existing expert execution
+chunks remain at most eight rows. No throughput improvement is claimed before
+complete-forward measurement. The selected DSO hash and layout policy enter
+preparation identity. Compilation metadata carries the plane tensors and
+descriptor, while native export declares only those compressed planes as
+weights. Serving never performs this packing.
+
+The separate `gguf-packed` suite creates small GGUF expert files, without a
+model download. After rebuilding QUactlize from the revision above, run:
+
+```sh
+PYTHONPATH=/sim/eec/shared/junfu.qx/quactlize${PYTHONPATH:+:$PYTHONPATH} \
+FLARE_TEST_PPU_MATMUL_LIBRARY=/path/to/rebuilt-PPU-quactlize.so \
+FLARE_RUN_CUDA_TESTS=1 python -m pytest -q \
+  tests/preparation/test_gguf_packing_cuda.py --tb=short
+```
+
+Its ten cases exercise file read, GPU packing, raw-copy release and prepared
+projection replay for Q5_1/Q8_0/Q4_K/Q5_K at widths 1/9. Q5_1 additionally checks
+AOT worker compilation, disk-cache reload with a fresh native handle and no
+recompilation. Routes change across duplicate, inactive and invalid IDs, with
+poisoned inactive input, sticky error checks and allocation-stable replay.
+Independent GGUF decoding supplies the native16 numerical reference. Host ABI,
+metadata and fake-export checks pass on Torch2.9/Torch2.15; these ten device
+cases remain unrun. They are not complete target/MTP or native package gates.
 
 The user reports the following gate passing on PPU. It exercises this session through `capture_forwards`, with
 alternating one-row and seven-row graphs sharing scratch, strided state reads,

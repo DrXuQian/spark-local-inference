@@ -12,6 +12,8 @@ class PreparedGgufEmbedding:
     """Decode only requested token rows into fixed caller-owned storage."""
 
     def __init__(self, weight: GgufWeight, ids, output, *, session, name, num_rows=None):
+        if weight.packed is not None:
+            raise ValueError('GGUF row lookup requires original raw GGUF blocks')
         if (len(weight.shape) != 2 or ids.ndim != 1 or ids.dtype != torch.int64
                 or output.shape != (ids.numel(), weight.in_features)
                 or output.dtype not in (torch.bfloat16, torch.float16)

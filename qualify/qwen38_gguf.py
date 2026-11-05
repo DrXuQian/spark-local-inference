@@ -291,10 +291,12 @@ def prepare(args):
         if not args.actlize_qsa:
             attention_libraries['actlize_qsa_library'] = None
         projection_library = attention_libraries['gguf_projection_library']
+        quactlize_packing = getattr(projection_library, 'packing', None)
         print('Loading fixture vocabulary and actual GGUF blocks', flush=True)
         embedding, head = fixture_rows(output, quactlize_helpers=quactlize_helpers)
         blocks = []
-        with QwenGgufWeightLoader(manifest, 'cuda:0', read_mode='pread', quactlize_helpers=quactlize_helpers) as loader:
+        with QwenGgufWeightLoader(manifest, 'cuda:0', read_mode='pread', quactlize_helpers=quactlize_helpers,
+                                 quactlize_packing=quactlize_packing) as loader:
             for index in args.layers:
                 with torch.device('meta'):
                     module = Qwen4ExpTextDecoderLayer(config, index)
@@ -306,7 +308,8 @@ def prepare(args):
                 blocks.append((index, module, attention, loader.load_moe(index, cache_shared=True)))
                 print(f'Loaded complete target block {index}', flush=True)
         mtp = MTPWeights.load_gguf(inspect_gguf_checkpoint(args.mtp), structure, 'cuda:0',
-            embedding_weight=embedding, lm_head_weight=head, read_mode='pread', quactlize_helpers=quactlize_helpers)
+            embedding_weight=embedding, lm_head_weight=head, read_mode='pread',
+            quactlize_helpers=quactlize_helpers, quactlize_packing=quactlize_packing)
         print('Loaded shared-Q8 MTP', flush=True)
         frame = torch.zeros(1, dtype=torch.int32, device='cuda')
         sequence = torch.zeros(1, dtype=torch.int64, device='cuda')

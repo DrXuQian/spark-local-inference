@@ -14,11 +14,28 @@ _undrained_decoders = []
 
 
 @dataclass(frozen=True)
+class GgufPlanes:
+    low: object
+    high: object | None
+    units: object
+    arrangement: tuple[int, ...]
+
+
+@dataclass(frozen=True)
 class GgufWeight:
     raw: object
     encoding: str
     qtype: int
     shape: tuple[int, ...]
+    packed: GgufPlanes | None = None
+
+    def __post_init__(self):
+        if (self.raw is None) == (self.packed is None):
+            raise ValueError('GGUF weights must own exactly one raw or packed representation')
+
+    @property
+    def device(self):
+        return self.raw.device if self.packed is None else self.packed.low.device
 
     @property
     def in_features(self):
@@ -33,7 +50,8 @@ class GgufWeight:
         return self.shape[0] if len(self.shape) == 3 else 1
 
 
-declare_container_fields('ignition.components.gguf_weights.GgufWeight', ('raw',))
+declare_container_fields('ignition.components.gguf_weights.GgufPlanes', ('low', 'high', 'units'))
+declare_container_fields('ignition.components.gguf_weights.GgufWeight', ('raw', 'packed'))
 
 
 class GgufWeightLoader(DirectWeightLoader):
@@ -44,11 +62,12 @@ class GgufWeightLoader(DirectWeightLoader):
     Model recipes own the mapping from these names to their modules.
     """
 
-    def __init__(self, manifest, *args, quactlize_helpers=None, **kwargs):
+    def __init__(self, manifest, *args, quactlize_helpers=None, quactlize_packing=None, **kwargs):
         if not isinstance(manifest, GgufCheckpoint):
             raise TypeError("GGUF loading requires an inspected GgufCheckpoint")
         super().__init__(manifest, *args, **kwargs)
         self.quactlize_helpers = quactlize_helpers
+        self.quactlize_packing = quactlize_packing
         self._decode_stream = self._decode_pending = None
         if getattr(getattr(manifest, 'quactlize_helpers', None), 'target', None) in ('ppu10', 'ppu15'):
             if self.read_mode != 'pread' or quactlize_helpers is None:

@@ -59,7 +59,7 @@ class ModelWeights:
     def load(cls, manifest: CheckpointManifest, device: torch.device,
              *, progress: Callable[[str], None] | None = None,
              shard: TensorParallelShard = TensorParallelShard(0, 1),
-             shard_hyperconnections: bool = False, quactlize_helpers=None) -> ModelWeights:
+             shard_hyperconnections: bool = False, quactlize_helpers=None, quactlize_packing=None) -> ModelWeights:
         from ignition.preparation.qwen38_gguf import QwenGgufCheckpoint, operator_target
 
         device = torch.device(device)
@@ -85,7 +85,8 @@ class ModelWeights:
         if isinstance(manifest, QwenGgufCheckpoint):
             from .gguf_weights import load_model
 
-            return load_model(manifest, device, progress=progress, shard=shard, quactlize_helpers=quactlize_helpers)
+            return load_model(manifest, device, progress=progress, shard=shard,
+                              quactlize_helpers=quactlize_helpers, quactlize_packing=quactlize_packing)
         from .vision import VisionWeights
 
         tree = create_model_tree(manifest)
