@@ -86,7 +86,10 @@ def test_external_session_catalog_replays_alternating_state_transfers(tmp_path):
                     stream.synchronize()
                     assert torch.cuda.memory_stats()['allocation.all.allocated'] == allocated
                     selected = chosen[active]
-                    expected_hidden[selected] = values[selected]
+                    # Hidden checkpoints reserve slot zero. Generic row scatter
+                    # also serves request-indexed arrays, where row zero is valid.
+                    saved = selected[selected > 0]
+                    expected_hidden[saved] = values[saved]
                     expected_stored[selected] = values.float()[selected] + 1
                     torch.testing.assert_close(hidden.cpu(), expected_hidden, rtol=0, atol=0)
                     torch.testing.assert_close(stored.cpu(), expected_stored, rtol=0, atol=0)

@@ -52,6 +52,24 @@ def test_hidden_checkpoints_preserve_unselected_physical_slots():
     assert torch.equal(pool.backing[[0, 2, 4, 5]], before[[0, 2, 4, 5]])
 
 
+def test_hidden_kernel_reserves_null_slot_while_generic_scatter_can_write_row_zero():
+    from triton.runtime.interpreter import InterpretedFunction
+    from ignition.components.state import _save_hidden, _scatter_rows
+
+    source = torch.arange(4 * 35).reshape(4, 35).to(torch.bfloat16)
+    hidden = torch.full((5, 35), -7., dtype=torch.bfloat16)
+    stored = hidden.clone()
+    slots = torch.tensor([0, 3, 2, -1], dtype=torch.int64)
+    active = torch.tensor([1, 1, 0, 1], dtype=torch.int32)
+    InterpretedFunction(_save_hidden.fn)[(4,)](source, hidden, slots, active, 35, 35, 35, 64)
+    InterpretedFunction(_scatter_rows.fn)[(4, 1)](source, slots, stored, active, 35, 1, 35, 35, 5, 64)
+    expected = torch.full_like(hidden, -7.)
+    expected[3] = source[1]
+    torch.testing.assert_close(hidden, expected, rtol=0, atol=0)
+    expected[0] = source[0]
+    torch.testing.assert_close(stored, expected, rtol=0, atol=0)
+
+
 def test_declared_state_extent_does_not_depend_on_rank_local_device_memory():
     class Storage:
         def device_allocate(self, name, shape, dtype, *, group, maximum, units):
