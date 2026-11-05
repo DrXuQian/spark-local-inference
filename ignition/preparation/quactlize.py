@@ -2,7 +2,7 @@
 
 """Explicit QUactlize matmul and serving-helper library inputs."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 from pathlib import Path
 
@@ -36,6 +36,7 @@ class QuactlizeLibrarySpec:
     path: Path
     sha256: str
     target: str = 'nvidia'
+    package_sha256: str | None = None
 
     def __post_init__(self):
         if self.target not in ('nvidia', 'ppu10', 'ppu15'):
@@ -51,15 +52,35 @@ class QuactlizeLibrarySpec:
             raise ValueError('QUactlize library changed during input inspection')
         return cls(path, digest, target)
 
+    @classmethod
+    def installed(cls, *, target):
+        if target not in ('ppu10', 'ppu15'):
+            raise ValueError('installed QUactlize discovery requires an explicit PPU target')
+        try:
+            from quactlize import get_library_info
+        except ImportError as exc:
+            raise ValueError('install the complete QUactlize PPU wheel (0.2.0 or compatible newer version)') from exc
+        info = get_library_info(target=target)
+        # The package verifies its Python bindings and complete native resource
+        # closure without importing Torch or initializing a device context.
+        return replace(cls.read(info['library_path'], target=target), package_sha256=info['manifest_sha256'])
+
+    def validate(self):
+        current = (self.installed(target=self.target) if self.package_sha256 is not None
+                   else self.read(self.path, target=self.target))
+        if current != self:
+            raise ValueError('QUactlize library or package changed after input inspection')
+
     def identity(self):
         result = dict(abi='qpm_v1', target=self.target, library=self.sha256)
         if self.target != 'nvidia':
             result.update(expert_layout='canonical_kpack_v1', q5_1_execution='packed_auto_v1')
+        if self.package_sha256 is not None:
+            result['package_manifest'] = self.package_sha256
         return result
 
     def load(self, device):
-        if self.read(self.path).sha256 != self.sha256:
-            raise ValueError('QUactlize library changed after input inspection')
+        self.validate()
         import torch
 
         if torch.device(device).type != 'cuda':
@@ -83,11 +104,12 @@ class QuactlizeHelpersSpec(QuactlizeLibrarySpec):
         result = dict(router='v2', swiglu='v2', gather_rows='v1', library=self.sha256)
         if self.target != 'nvidia':
             result['target'] = self.target
+        if self.package_sha256 is not None:
+            result['package_manifest'] = self.package_sha256
         return result
 
     def load(self, device):
-        if self.read(self.path).sha256 != self.sha256:
-            raise ValueError('QUactlize helpers library changed after input inspection')
+        self.validate()
         import torch
         from quactlize.serving import Serving
         from ignition.components.quactlize_helpers import PreparedQuactlizeHelpers
@@ -102,3 +124,20 @@ class QuactlizeHelpersSpec(QuactlizeLibrarySpec):
             stream = torch.cuda.Stream(device=index)
             # prepare warms all variants and synchronizes this explicit stream.
             return PreparedQuactlizeHelpers(Serving(self.path, device=index, stream=stream))
+
+
+def resolve_quactlize(matmul_path=None, helpers_path=None, *, target):
+    """Explicit paths win; a PPU selection otherwise uses the installed wheel."""
+    default = None
+    specs = []
+    for path, cls in ((matmul_path, QuactlizeLibrarySpec), (helpers_path, QuactlizeHelpersSpec)):
+        if path is not None:
+            spec = cls.read(path, target=target)
+        elif target in ('ppu10', 'ppu15'):
+            if default is None:
+                default = QuactlizeLibrarySpec.installed(target=target)
+            spec = cls(default.path, default.sha256, default.target, default.package_sha256)
+        else:
+            spec = None
+        specs.append(spec)
+    return tuple(specs)

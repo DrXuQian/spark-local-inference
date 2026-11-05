@@ -21,8 +21,8 @@ from ignition.preparation import provenance
 
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get('FLARE_RUN_CUDA_TESTS') != '1' or not os.environ.get('FLARE_TEST_PPU_MATMUL_LIBRARY'),
-    reason='requires a real PPU and updated FLARE_TEST_PPU_MATMUL_LIBRARY')
+    os.environ.get('FLARE_RUN_CUDA_TESTS') != '1',
+    reason='requires a real PPU and installed QUactlize PPU wheel or explicit test DSO')
 
 
 class PackedForward:
@@ -52,7 +52,7 @@ def test_file_pack_and_prepared_projection_replay(tmp_path, monkeypatch, qtype, 
     from ignition.preparation.aot import ForwardCache
     from ignition.preparation.execution import GraphSignature
 
-    path = os.environ['FLARE_TEST_PPU_MATMUL_LIBRARY']
+    path = os.environ.get('FLARE_TEST_PPU_MATMUL_LIBRARY')
     library = native.Library(path)
     library.packed = native.Library(path, packed_route=0)
     packer = GgufPacker(library)

@@ -376,6 +376,22 @@
     packing numerics, complete target/MTP graphs or throughput. Keep the existing
     eight-row expert chunk until complete forwards justify a different capacity.
 
+[x] Resolve installed QUactlize 0.2.0 (a4207d6) for explicit PPU manifests and
+    partial-layer/box qualification. Matmul/helpers paths are optional overrides;
+    discovery verifies the complete package without device initialization.
+    Bind the manifest as well as the public DSO into preparation identity and
+    reject private-runtime/binding changes before loading. Actual wheel imports,
+    discovery and 40 native host queries pass; framework host checks pass on
+    Torch2.9/Torch2.15. The checked artifact is ppu10/SDK2.2.1-184ee6; installed
+    PPU numerical/graph execution is still unrun. The ten-case packing gate now
+    accepts the installed wheel directly, without a source path or DSO variable.
+
+[ ] Correct upstream QUactlize a4207d6 installed-wheel device-test reporting:
+    tools/verify_installed_wheel.py does not set FLARE_RUN_CUDA_TESTS for its
+    Flare subprocess and accepts pytest exit zero without checking skipped
+    cases. Use the framework gate with FLARE_RUN_CUDA_TESTS=1 and require ten
+    executed cases; upstream's device PASS marker alone is not qualification.
+
 [ ] Measure external GGUF shared/routed expert overlap. GgufMoeWorkspace bypasses
     the b12x ConcurrentSharedExpert branch even when stream_overlap is enabled.
     Serial work inside one graph is not evidence of a host launch bubble.

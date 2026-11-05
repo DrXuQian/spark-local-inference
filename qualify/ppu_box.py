@@ -27,10 +27,11 @@ def existing_path(value):
 
 def parser():
     result = argparse.ArgumentParser(description=__doc__)
-    result.add_argument('--quactlize-source', type=existing_path, required=True)
+    result.add_argument('--quactlize-source', type=existing_path,
+                        help='development checkout; requires an explicit --quactlize-library')
     result.add_argument('--actlize-source', type=existing_path, required=True)
-    result.add_argument('--quactlize-library', type=existing_path, required=True,
-                        help='PPU DSO exporting both matmul v1 and serving helpers v2/v1')
+    result.add_argument('--quactlize-library', type=existing_path,
+                        help='PPU DSO override; defaults to the installed QUactlize wheel')
     result.add_argument('--actlize-library', type=existing_path, required=True)
     result.add_argument('--actlize-target', choices=('ppu10', 'ppu15'), required=True)
     result.add_argument('--blas-library', type=existing_path, required=True)
@@ -52,7 +53,7 @@ def pytest_result(path):
 
 def device_suites(args, root, output):
     python = sys.executable
-    return (
+    suites = (
         ('framework', [python, '-m', 'pytest', '-q',
             'tests/components/test_quactlize_helpers_cuda.py',
             'tests/components/test_ppu_gguf_projection_cuda.py',
@@ -82,6 +83,21 @@ def device_suites(args, root, output):
             '--library', str(args.actlize_library), '--target', args.actlize_target,
             '--results', str(output / 'actlize-aux.json')], args.actlize_source, 'actlize-aux.json'),
     )
+    return tuple(suite for suite in suites if suite[0] != 'quactlize' or args.quactlize_source is not None)
+
+
+def resolve_sources(args):
+    """A development checkout must not silently shadow the installed wheel."""
+    if args.quactlize_source is not None and args.quactlize_library is None:
+        raise ValueError('--quactlize-source requires --quactlize-library; omit both to test the installed wheel')
+    sources = [(args.actlize_source, 'actlize_la')]
+    if args.quactlize_source is not None:
+        sources.insert(0, (args.quactlize_source, 'quactlize'))
+    for source, package in sources:
+        entry = source / package / ('serving' if package == 'actlize_la' else 'serving.py')
+        if not entry.exists():
+            raise ValueError(f'{source}: updated {package} serving package is missing')
+    return tuple(source for source, _ in sources)
 
 
 def check_interfaces(args):
@@ -271,13 +287,21 @@ def main(argv=None):
     if args.run_device_tests and args.output.exists():
         options.error('--output already exists; select a new directory to keep test results separate')
     root = Path(__file__).resolve().parents[1]
-    sources = (args.quactlize_source, args.actlize_source)
-    for source, package in zip(sources, ('quactlize', 'actlize_la'), strict=True):
-        entry = source / package / ('serving' if package == 'actlize_la' else 'serving.py')
-        if not entry.exists():
-            options.error(f'{source}: updated {package} serving package is missing')
-    # Use the exact requested source declarations with the explicitly named DSOs.
+    try:
+        sources = resolve_sources(args)
+    except ValueError as exc:
+        options.error(str(exc))
+    # Only explicitly selected development declarations override installed packages.
     sys.path[:0] = [str(p) for p in sources]
+    if args.quactlize_library is None:
+        from ignition.preparation.quactlize import QuactlizeLibrarySpec
+
+        try:
+            args.quactlize_library = QuactlizeLibrarySpec.installed(target=args.actlize_target).path
+        except Exception as exc:
+            print(f'FAIL quactlize-installed: {type(exc).__name__}: {exc}', flush=True)
+            return 1
+        print(f'PASS quactlize-installed: {args.quactlize_library}', flush=True)
     results = check_interfaces(args)
     if args.run_device_tests:
         required = ('device', 'torch', 'gguf', 'numpy', 'pytest', 'google.protobuf',
@@ -295,6 +319,9 @@ def main(argv=None):
                    QUACTLIZE_SERVING_LIBRARY=str(args.quactlize_library),
                    FLARE_ACTLIZE_LIBRARY=str(args.actlize_library), FLARE_ACTLIZE_TARGET=args.actlize_target,
                    FLARE_TEST_BLAS_LIBRARY=str(args.blas_library), FLARE_TEST_BLAS_API=args.blas_api)
+        if args.quactlize_source is None:
+            print('NOT RUN quactlize source suite: no development checkout selected; '
+                  'framework QUactlize numerical/graph gates remain enabled.', flush=True)
         for name, command, cwd, result in device_suites(args, root, output):
             log = output / (name + '.log')
             print(f'RUN {name}: output in {log}', flush=True)

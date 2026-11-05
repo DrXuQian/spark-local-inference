@@ -757,6 +757,30 @@ python -m qualify.qwen38_gguf_http --url http://127.0.0.1:18081 \
 
 ### PPU port preparation
 
+The complete QUactlize wheel is available in the
+[`0.2.0` packaging change at a4207d6](https://github.com/DrXuQian/QUactlize/tree/a4207d6b74571235f741ffc0ab7a6bc16e9d2a28).
+Install the built wheel with `python -m pip install --no-deps /path/to/quactlize-0.2.0-py3-none-linux_x86_64.whl`.
+When it is published in the configured PPU artifacts index, use
+`python -m pip install --only-binary=quactlize quactlize==0.2.0`.
+This artifact declares **ppu10**, built with SDK **2.2.1-184ee6**. It is not a
+ppu15/ppu17 or NVIDIA binary; select a wheel built for the actual platform.
+Installation and library discovery do not build device code or replace Torch.
+
+For an explicit `operator_target: "ppu10"` or `"ppu15"`, the GGUF input manifest
+may omit `quactlize_abi_library` and `quactlize_helpers_library`. Both roles then
+resolve through `quactlize.get_library_info(target=...)` from the installed
+package; explicit paths override their respective roles. Discovery validates the
+package resources before device initialization. The reported preparation
+identity includes both the public DSO and the complete package manifest, so a
+private runtime or Python binding update invalidates the old identity. Resources
+are checked again before native loading. A missing package, incompatible target
+or changed resource is an error, with no source/system-library fallback.
+
+The actual 0.2.0 wheel passes isolated installed imports/discovery and 40 native
+host ABI queries with its matching SDK runtime. Framework selection, changed
+private-resource identity and override checks pass on Torch2.9/Torch2.15. These
+are host checks; packed PPU arithmetic and graph replay remain unrun locally.
+
 The canonical expert path requires QUactlize
 [`feat/ppu-flash-next` at d90cb0d](https://github.com/DrXuQian/QUactlize/tree/d90cb0d880b9114768b98c8a69a0a5a6b07c3253)
 or a compatible later revision, with matching Python declarations and a rebuilt
@@ -989,29 +1013,35 @@ For the first PPU box qualification, use the platform's Python 3.12 environment
 with its Torch and FlashInfer artifacts. Install only the small missing test
 dependencies (`pytest`, `numpy`, `gguf==0.19.0`, `protobuf>=7.35.1,<8`) and this
 repository with `pip install --no-deps -e .`. Do not use the NVIDIA `prepare`
-extra for this check. Keep QUactlize and actlizeLA source checkouts matching
-their built PPU DSOs; this command imports their declarations from those paths:
+extra for this check. Install the complete QUactlize wheel described above.
+Keep the actlizeLA source checkout matching its built PPU DSO. With matching
+ppu10 libraries, the installed-wheel check is:
 
 ```sh
 cd /sim/eec/shared/junfu.qx/spark-local-inference
 python -m qualify.ppu_box \
-  --quactlize-source /sim/eec/shared/junfu.qx/quactlize \
   --actlize-source /sim/eec/shared/junfu.qx/actlizeLA \
-  --quactlize-library /path/to/PPU-quactlize-serving.so \
   --actlize-library /path/to/libactlize_la_serving.so \
-  --actlize-target ppu15 \
+  --actlize-target ppu10 \
   --blas-library /path/to/libacblas.so --blas-api acblas \
   --run-device-tests --output /path/to/new-ppu-test-directory
 ```
 
-Use `ppu10` when that is the actual library target. Omit `--run-device-tests`
+Select the actual matching target; the current 0.2.0 artifact supports ppu10.
+Omit `--run-device-tests`
 and `--output` to inspect interfaces first. The command checks real exported
 symbols/descriptor sizes, valid Qwen matmul geometry, sampling workspace and
 `row_independent_rng` support. It then runs the framework's BLAS/GGUF/helper
-graph tests and both libraries' numerical, convolution/transaction and graph
-tests in separate processes. It also exercises the actual external GDN sequence,
+graph tests and actlizeLA's numerical, convolution/transaction and graph tests
+in separate processes. It also exercises the actual external GDN sequence,
 HC, full-width MTP feedback and PLE bindings. Skips are failures of device qualification.
 Results and logs stay in the new output directory; no model is downloaded.
+For development, explicitly supply both `--quactlize-source` and
+`--quactlize-library` to use a checkout and include its upstream serving suite.
+An optional DSO override alone uses installed Python declarations. The normal
+wheel check reports the unavailable upstream source suite as NOT RUN; all
+framework QUactlize numerical/graph gates remain enabled. It does not claim the
+upstream source suite passed.
 The GGUF helper test creates tiny Q8_0/IQ4_NL files and replays changing token
 IDs, route counts, poisoned inactive rows and sticky repeated-call errors in
 one graph. Its compilation test checks actual Flare storage lowering.
@@ -1133,14 +1163,16 @@ descriptor, while native export declares only those compressed planes as
 weights. Serving never performs this packing.
 
 The separate `gguf-packed` suite creates small GGUF expert files, without a
-model download. After rebuilding QUactlize from the revision above, run:
+model download. After installing the complete wheel, run from the Flare checkout:
 
 ```sh
-PYTHONPATH=/sim/eec/shared/junfu.qx/quactlize${PYTHONPATH:+:$PYTHONPATH} \
-FLARE_TEST_PPU_MATMUL_LIBRARY=/path/to/rebuilt-PPU-quactlize.so \
 FLARE_RUN_CUDA_TESTS=1 python -m pytest -q \
   tests/preparation/test_gguf_packing_cuda.py --tb=short
 ```
+
+The test discovers the installed wheel using its declared default target.
+`FLARE_TEST_PPU_MATMUL_LIBRARY` remains an optional test-only DSO override.
+Expect ten executed cases; skipped cases do not qualify a device.
 
 Its ten cases exercise file read, GPU packing, raw-copy release and prepared
 projection replay for Q5_1/Q8_0/Q4_K/Q5_K at widths 1/9. Q5_1 additionally checks
@@ -1163,7 +1195,8 @@ FLARE_RUN_CUDA_TESTS=1 python -m pytest -q \
 It needs no model download or external operator DSOs. It validates framework
 state transfer and catalog orchestration, not a complete target/MTP round.
 For partial-layer qualification, pass `--operator-target ppu10` or `ppu15`,
-`--actlize-qsa`, and all five library paths to `python -m qualify.qwen38_gguf`.
+`--actlize-qsa`, and the actlizeLA/BLAS/FA3 paths to `python -m qualify.qwen38_gguf`.
+QUactlize matmul and helpers use the installed wheel unless their paths are supplied.
 The target must match the installed platform and library builds.
 
 The manifest also accepts `"operator_target": "ppu10"` or `"ppu15"` for explicit

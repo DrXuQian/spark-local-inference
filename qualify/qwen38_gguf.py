@@ -245,8 +245,8 @@ def prepare(args):
     if args.actlize_qsa and args.actlize_library is None:
         raise ValueError('--actlize-qsa requires an explicit --actlize-library')
     if args.operator_target.startswith('ppu'):
-        missing = [name for name in ('actlize_library', 'quactlize_abi_library', 'quactlize_helpers_library',
-                                     'dense_blas_library', 'flash_attention3_library') if getattr(args, name) is None]
+        missing = [name for name in ('actlize_library', 'dense_blas_library', 'flash_attention3_library')
+                   if getattr(args, name) is None]
         if missing or not args.actlize_qsa:
             raise ValueError('PPU qualification requires --actlize-qsa and all external libraries; missing '
                              + ', '.join('--' + name.replace('_', '-') for name in missing))
@@ -261,23 +261,25 @@ def prepare(args):
     config = Qwen4ExpTextConfig.from_dict(json.loads(raw)['text_config'])
     structure = CheckpointManifest(frontend, {}, (), {'config.json': CONFIG_SHA256}, '', {})
     manifest = component_checkpoint(args.target_shard, args.metadata, args.layers)
+    from ignition.preparation.quactlize import resolve_quactlize
+
+    target = args.operator_target
+    quant_target = 'nvidia' if target == 'cuda_sm120' else target
+    quant, helpers = resolve_quactlize(args.quactlize_abi_library, args.quactlize_helpers_library,
+                                      target=quant_target)
     with ModuleImages() as images, PackageStorage(device=0) as storage:
         torch.cuda.set_device(0)
         from ignition.preparation.actlize import ActlizeLibrarySpec
-        from ignition.preparation.quactlize import QuactlizeHelpersSpec, QuactlizeLibrarySpec
         from ignition.preparation.flash_attn3 import FlashAttention3Spec
         from ignition.preparation.qwen38_gguf import GgufInputs
 
-        target = args.operator_target
-        quant_target = 'nvidia' if target == 'cuda_sm120' else target
         operator_inputs = GgufInputs(args.target_shard, args.mtp, args.frontend, 'pread',
             None if args.actlize_library is None else ActlizeLibrarySpec.read(args.actlize_library, target=target),
-            None if args.quactlize_abi_library is None else QuactlizeLibrarySpec.read(args.quactlize_abi_library, target=quant_target),
+            quant,
             dense_blas=dense_blas,
             flash_attention3=None if args.flash_attention3_library is None else
                 FlashAttention3Spec.read(args.flash_attention3_library),
-            quactlize_helpers=None if args.quactlize_helpers_library is None else
-                QuactlizeHelpersSpec.read(args.quactlize_helpers_library, target=quant_target))
+            quactlize_helpers=helpers)
         external = external_operators(operator_inputs)
         if external and not args.actlize_qsa:
             raise ValueError('complete external operator qualification requires --actlize-qsa')
@@ -314,7 +316,7 @@ def prepare(args):
         frame = torch.zeros(1, dtype=torch.int32, device='cuda')
         sequence = torch.zeros(1, dtype=torch.int64, device='cuda')
         table, ple_caps = fixture_table(output, 64, storage, sequence, frame,
-            external=args.actlize_library is not None and args.quactlize_helpers_library is not None)
+            external=args.actlize_library is not None and quactlize_helpers is not None)
         weights = SimpleNamespace(blocks=tuple(blocks), embedding=embedding, head=head,
             final_mixer=mtp.module.hyper_connection_mixer, ple_caps=ple_caps, shard=TensorParallelShard(0, 1))
         state = HybridStatePool.allocate(5, 'cuda:0', speculative_tokens=7, storage=storage, kv_dtype=kv_dtype)
@@ -457,7 +459,7 @@ if __name__ == '__main__':
     parser.add_argument('--operator-target', choices=('cuda_sm120', 'ppu10', 'ppu15'), default='cuda_sm120',
                         help='actual target of the external QUactlize and actlizeLA libraries')
     parser.add_argument('--quactlize-helpers-library', type=Path,
-                        help='explicit QUactlize serving v2/v1 DSO, independent of the matmul DSO')
+                        help='QUactlize serving DSO override; PPU defaults to the installed wheel')
     parser.add_argument('--flash-attention3-library', type=Path,
                         help='installed flash_attn_3._C extension for BF16 ordinary MTP attention')
     for name in ('target-shard', 'metadata', 'mtp', 'frontend', 'output'):
@@ -468,7 +470,7 @@ if __name__ == '__main__':
     parser.add_argument('--actlize-qsa', action='store_true',
                         help='also bind external QSA, with BF16 KV pages and matching snapshots')
     parser.add_argument('--quactlize-abi-library', type=Path,
-                        help='qualify the explicit native matmul-record ABI implementation')
+                        help='QUactlize matmul DSO override; PPU defaults to the installed wheel')
     parser.add_argument('--dense-blas-library', type=Path,
                         help='use this cuBLAS-compatible library for unquantized projections')
     parser.add_argument('--dense-blas-api', choices=('cublas', 'acblas'),

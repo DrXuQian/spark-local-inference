@@ -11,7 +11,7 @@ from types import MappingProxyType
 
 from .checkpoint import CheckpointError
 from .actlize import ActlizeLibrarySpec
-from .quactlize import QuactlizeHelpersSpec, QuactlizeLibrarySpec
+from .quactlize import QuactlizeHelpersSpec, QuactlizeLibrarySpec, resolve_quactlize
 from .blas import BlasLibrarySpec
 from .flash_attn3 import FlashAttention3Spec
 from .gguf import GgufCheckpoint, file_identity, inspect_gguf_checkpoint
@@ -77,7 +77,7 @@ class GgufInputs:
         target = value.get('operator_target', 'cuda_sm120')
         if target not in ('cuda_sm120', 'ppu10', 'ppu15'):
             raise CheckpointError('operator_target must be cuda_sm120, ppu10 or ppu15')
-        if 'operator_target' in value and not any(key in value for key in
+        if 'operator_target' in value and target == 'cuda_sm120' and not any(key in value for key in
                 ('actlize_library', 'quactlize_abi_library', 'quactlize_helpers_library')):
             raise CheckpointError('operator_target requires an explicitly selected operator library')
         if value['read_mode'] not in ('auto', 'bounce', 'gds', 'pread'):
@@ -89,13 +89,15 @@ class GgufInputs:
             paths.append((directory / value[key]).resolve(strict=True))
         if not paths[0].is_file() or not paths[1].is_file() or not paths[2].is_dir():
             raise CheckpointError('GGUF input requires two files and a frontend directory')
-        libraries = []
-        for key, spec in (('actlize_library', ActlizeLibrarySpec), ('quactlize_abi_library', QuactlizeLibrarySpec),
-                          ('quactlize_helpers_library', QuactlizeHelpersSpec)):
+        library_paths = {}
+        for key in ('actlize_library', 'quactlize_abi_library', 'quactlize_helpers_library'):
             if key in value and (not isinstance(value[key], str) or not value[key]):
                 raise CheckpointError(f'{key} requires a native library path')
-            library_target = 'nvidia' if spec is not ActlizeLibrarySpec and target == 'cuda_sm120' else target
-            libraries.append(None if key not in value else spec.read(directory / value[key], target=library_target))
+            library_paths[key] = directory / value[key] if key in value else None
+        actlize = (None if library_paths['actlize_library'] is None
+                   else ActlizeLibrarySpec.read(library_paths['actlize_library'], target=target))
+        quactlize, helpers = resolve_quactlize(library_paths['quactlize_abi_library'],
+            library_paths['quactlize_helpers_library'], target='nvidia' if target == 'cuda_sm120' else target)
         try:
             blas = BlasLibrarySpec.read(directory, value['dense_blas']) if 'dense_blas' in value else None
         except ValueError as exc:
@@ -106,7 +108,7 @@ class GgufInputs:
             if not isinstance(path, str) or not path:
                 raise CheckpointError('flash_attention3_library requires a native library path')
             fa3 = FlashAttention3Spec.read(directory / path)
-        return cls(*paths, value['read_mode'], libraries[0], libraries[1], blas, libraries[2], fa3)
+        return cls(*paths, value['read_mode'], actlize, quactlize, blas, helpers, fa3)
 
 
 def operator_identity(actlize, quactlize, dense_blas=None, quactlize_helpers=None, flash_attention3=None):
