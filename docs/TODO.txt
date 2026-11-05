@@ -313,6 +313,11 @@
     changing packed suffixes and sticky bounds errors; these await box execution.
     Explicit PPU operator target identities now select the libraries, but normal
     session/planning/export orchestration still needs the remaining port work.
+    The box has Torch2.9/Triton3.5: normalize direct compiled launch grids to
+    three dimensions and omit the unsupported optional make_fx annotation flag.
+    Port the compiled-artifact/guard serialization to the platform's actual
+    APIs; Torch2.9 lacks the AOTCompiledArtifact used by the current Flare path.
+    Direct capture success does not qualify the compiled/exported path.
 
 [ ] Exercise per-message checkpoint restore and prefill graph selection through
     Qwen, GLM, DeepSeek, MiMo, Step, and Nemotron services. See

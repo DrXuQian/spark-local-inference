@@ -5,6 +5,7 @@
 
 import hashlib
 import gc
+import inspect
 import math
 import operator
 import os
@@ -331,11 +332,15 @@ class ForwardTracer:
         with config.patch(fake_tensor_allow_unsafe_data_ptr_access=False):
             self.mode = FakeTensorMode(allow_non_fake_inputs=True, static_shapes=True)
         self.inputs = {}
+        self.trace_options = dict(tracing_mode='fake', _allow_non_fake_inputs=True)
+        # This optional flag only suppresses torch_fn diagnostic annotations.
+        # Platform Torch builds predating it retain their normal annotations.
+        if '_disable_torch_fn_metadata_mode' in inspect.signature(make_fx).parameters:
+            self.trace_options['_disable_torch_fn_metadata_mode'] = True
 
     def __call__(self, fn):
         with self.mode:
-            module = make_fx(fn, tracing_mode='fake', _allow_non_fake_inputs=True,
-                             _disable_torch_fn_metadata_mode=True)()
+            module = make_fx(fn, **self.trace_options)()
         for node in module.graph.nodes:
             if node.op == 'get_attr':
                 value = operator.attrgetter(node.target)(module)

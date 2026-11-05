@@ -18,7 +18,7 @@ from torch.utils._pytree import tree_flatten, tree_unflatten, treespec_loads
 
 from ignition.preparation import aot
 from ignition.preparation.compilation import _Invocation
-from ignition.preparation.triton import _launch_options, prepare_triton, warmup_triton
+from ignition.preparation.triton import PreparedTriton, _launch_options, launch_triton, prepare_triton, warmup_triton
 
 
 @triton.jit
@@ -59,9 +59,9 @@ def test_warmup_normalizes_fixed_config_and_preserves_trace_options(warps):
     prepared = prepare_triton(kernel, ("source", "output"), (1,), **original)
     assert prepared.compiled is compiled
     assert list(prepared.options.items()) == list(original.items())
-    assert warmups == [(("source", "output"), dict(grid=(1,), **expected))]
+    assert warmups == [(("source", "output"), dict(grid=(1, 1, 1), **expected))]
     assert warmup_triton(kernel, ("source", "output"), (1,), **original) is compiled
-    assert warmups[-1] == (("source", "output"), dict(grid=(1,), **expected))
+    assert warmups[-1] == (("source", "output"), dict(grid=(1, 1, 1), **expected))
 
 
 @pytest.mark.parametrize("warps", [1, 8])
@@ -83,7 +83,38 @@ def test_prepared_launch_traces_through_torch_fixed_config_without_cuda(monkeypa
     assert type(traced) is Autotuner and len(traced.configs) == 1
     assert traced.fn is _copy_launch
     assert traced.configs[0].all_kwargs() == Config({}, num_warps=warps).all_kwargs()
-    assert warmups == [dict(grid=(1,), **_launch_options(options))]
+    assert warmups == [dict(grid=(1, 1, 1), **_launch_options(options))]
+
+
+@pytest.mark.parametrize('grid', [(7,), (7, 2), (7, 2, 3)])
+def test_direct_compiled_launcher_receives_three_dimensions(grid):
+    from triton.compiler.compiler import CompiledKernel
+
+    # Execute Triton's actual Python runner, recording the native launch ABI.
+    # No kernel is loaded and no device arithmetic is claimed by this host test.
+    class HostLaunch(CompiledKernel):
+        def _init_handles(self):
+            pass
+
+        def __getitem__(self, grid):
+            runner = super().__getitem__(grid)
+            return lambda *args: runner(*args, stream=7)
+
+    native = object.__new__(HostLaunch)
+    native.name, native.src, native.module = 'host_launch_abi', None, None
+    native.function, native.packed_metadata = 101, ()
+    launches = []
+    native._run = lambda *args: launches.append(args)
+    kernel = SimpleNamespace(warmup=lambda *args, **kwargs: native)
+    operands = ('source', 'output')
+    prepare_triton(kernel, operands, grid)()
+    launch_triton(kernel, native, operands, grid)
+    # Previously serialized owners may retain a short grid as well.
+    PreparedTriton(kernel, native, operands, grid, {})()
+    assert len(launches) == 3
+    for call in launches:
+        assert call[:3] == grid + (1,) * (3 - len(grid))
+        assert call[3:6] == (7, 101, ()) and call[-2:] == operands
 
 
 def test_plain_backend_options_are_not_promoted_to_an_autotuner_config():

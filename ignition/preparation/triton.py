@@ -25,6 +25,13 @@ def _launch_options(options):
     return result
 
 
+def _launch_grid(grid):
+    # JIT launchers pad short grids; CompiledKernel's direct launcher does not.
+    if not 1 <= len(grid) <= 3:
+        raise ValueError('prepared Triton launches require one to three grid dimensions')
+    return tuple(grid) + (1,) * (3 - len(grid))
+
+
 @dataclass
 class PreparedTriton:
     kernel: object
@@ -34,24 +41,22 @@ class PreparedTriton:
     options: dict
 
     def __call__(self):
-        if torch.compiler.is_compiling() or get_proxy_mode() is not None:
-            torch.library.wrap_triton(self.kernel)[self.grid](*self.args, **self.options)
-        else:
-            self.compiled[self.grid](*self.args)
+        launch_triton(self.kernel, self.compiled, self.args, self.grid, **self.options)
 
 
 def warmup_triton(kernel, args, grid, **options):
     """Prepare the same raw specialization as the later wrapped launch."""
-    return kernel.warmup(*args, grid=grid, **_launch_options(options))
+    return kernel.warmup(*args, grid=_launch_grid(grid), **_launch_options(options))
 
 
 def prepare_triton(kernel, args, grid, **options):
     compiled = warmup_triton(kernel, args, grid, **options)
     # Torch's wrapped launch accepts caller options, not raw Config defaults.
-    return PreparedTriton(kernel, compiled, args, grid, options)
+    return PreparedTriton(kernel, compiled, args, _launch_grid(grid), options)
 
 
 def launch_triton(kernel, compiled, args, grid, **options):
+    grid = _launch_grid(grid)
     if torch.compiler.is_compiling() or get_proxy_mode() is not None:
         torch.library.wrap_triton(kernel)[grid](*args, **options)
     else:
