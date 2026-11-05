@@ -898,7 +898,7 @@ earlier isolated tails, or qualify the remaining PPU operators and target export
 | Shared MTP attention | Ratio0, paged causal GQA, D256, page64, changing device lengths | Ordinary NVIDIA attention passes actual shared-Q8 MTP tests at 1/7/128 with BF16 pages. Local PPU FA2 f600591 requires pages divisible by256; the narrow FA3 box build disables paging/append/D256. Qualify a matching FA3 build and prepared output/workspace ABI. |
 | Dense BF16 / HC projections | Preserve actual dimensions, strided outputs and FP32 accumulation | Explicit `dense_blas` selection binds cuBLAS or acBLAS GemmEx with caller-owned scratch. CPU ABI and layout tests pass; compiled device capture and native export with this selection remain unqualified. |
 | RMSNorm / HC / ShortConv / MTP feedback | Exact dtype/rounding, inactive rows and complete mutable history | actlizeLA bindings cover GDN convolution/norm, four-stream HC and full-width MTP feedback. External scratch survives tuning/trim; raw convolution slot0 uses its new valid-slot history contract. Device composition tests remain unrun locally. |
-| PLE hash and gating | Read-only committed history, int64 hashes, dilation3, BF16 gate boundaries | actlizeLA provides the operators; framework wiring remains. |
+| PLE hash and gating | Read-only committed history, int64 hashes, dilation3, BF16 gate boundaries | External binding preserves staged IQ4_NL readiness and aliases only expired norm intermediates. Geometry/export host tests pass; four composed graph cases await a device. |
 | RoPE / sampling / state helpers | Device lengths, request-local RNG and graph-safe mutable metadata | Qualify the PPU FlashInfer interfaces and target compilation. Installing FlashInfer alone does not prove its caller-owned sampling ABI. |
 | Native graph export | Capture and export on the deployment platform; replay after Python exits | SDK2.1.1 declares graph/VMM/event APIs. Qualify the CUDA facade, module-image recorder, PPU ELF globals/parameters and relocations. Current export uses CUPTI and CUDA module metadata; API names alone do not prove this boundary. |
 
@@ -932,8 +932,10 @@ The ordinary projection dispatcher and the Qwen cache/configuration modules
 (`attention_state`, `cache_layout`, `state_layout`, `config`) can be imported
 without b12x. Cache, MTP rollback and snapshot layouts retain their existing
 byte geometry. This does **not** remove b12x from complete Qwen preparation:
-PLE, ordinary MTP attention and preparation orchestration still have pending
-replacements. The platform FlashInfer build must also supply
+Ordinary MTP attention and preparation orchestration still have pending
+replacements. PLE selects the new path when both external helper libraries are
+present; a package-owned mapped mailbox avoids its legacy b12x allocator.
+The platform FlashInfer build must also supply
 Flare's caller-owned top-k/top-p workspace interfaces and request-local chain
 sampling RNG contract; a successful `import flashinfer` does not establish them.
 
@@ -980,11 +982,15 @@ symbols/descriptor sizes, valid Qwen matmul geometry, sampling workspace and
 `row_independent_rng` support. It then runs the framework's BLAS/GGUF/helper
 graph tests and both libraries' numerical, convolution/transaction and graph
 tests in separate processes. It also exercises the actual external GDN sequence,
-HC and full-width MTP feedback bindings. Skips are failures of device qualification.
+HC, full-width MTP feedback and PLE bindings. Skips are failures of device qualification.
 Results and logs stay in the new output directory; no model is downloaded.
 The GGUF helper test creates tiny Q8_0/IQ4_NL files and replays changing token
 IDs, route counts, poisoned inactive rows and sticky repeated-call errors in
 one graph. Its compilation test checks actual Flare storage lowering.
+The PLE test stages rows from a small IQ4_NL file before replay, then checks
+hash publication, lookup, projections, norm/gating, dilation3 convolution and
+history in one graph. It covers changing packed lengths, raw slot0, inactive
+rows and immutable committed token history. It does not time native host I/O.
 
 Passing this command qualifies those components, not complete PPU model
 serving. Full b12x-free recipe composition, ordinary MTP paged attention,

@@ -9,18 +9,19 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass, fields
+from typing import TYPE_CHECKING
 
 import torch
-from b12x.preparation import PreparationSession, PreparedCall
-from b12x.sequence import ple_embedding, short_conv
-from safetensors import safe_open
+
+if TYPE_CHECKING:
+    from b12x.preparation import PreparationSession
+    from b12x.sequence import ple_embedding
 
 from ignition.components.linear import UnquantizedProjection
 from ignition.preparation.checkpoint import CheckpointManifest
 from ignition.progress import phase
 from ignition.preparation.qwen38 import PLE_PREFIX, TEXT_PREFIX
 from ignition.preparation.scratch import planned_scratch, prime_owners
-from ignition.preparation.tuning import declare, register_finalizer
 
 PLE_LAYER_PREFIX = f"{TEXT_PREFIX}.layers.1.ple"
 TABLE_ROWS = 320001536
@@ -29,6 +30,8 @@ TABLE_BYTES = TABLE_ROWS * 90
 
 
 def _read_small(manifest: CheckpointManifest, name: str) -> torch.Tensor:
+    from safetensors import safe_open
+
     metadata = manifest.tensors[name]
     if metadata.nbytes > 1024:
         raise ValueError(f"{name} exceeds the PLE geometry/scalar read limit")
@@ -49,6 +52,8 @@ def _read_small(manifest: CheckpointManifest, name: str) -> torch.Tensor:
 
 
 def _caps(config: dict, device, tokens: int, sequences: int, *, rank=0, world_size=1):
+    from b12x.sequence import ple_embedding
+
     eos = config["eos_token_id"]
     return ple_embedding.Caps(
         device=device,
@@ -71,6 +76,8 @@ def _caps(config: dict, device, tokens: int, sequences: int, *, rank=0, world_si
 
 def table_layout(manifest: CheckpointManifest, device, *, rank=0, world_size=1):
     """Validate exact checkpoint geometry without allocating its table."""
+    from b12x.sequence import ple_embedding
+
     config = json.loads((manifest.snapshot / "config.json").read_text())["text_config"]
     caps = _caps(config, torch.device(device), 1, 1, rank=rank, world_size=world_size)
     geometry = ple_embedding.compute_geometry(
@@ -108,6 +115,7 @@ class PLETable:
 
     @classmethod
     def load(cls, manifest, device, *, tokens, progress=None, host_allocator=None):
+        from b12x.sequence import ple_embedding
         from b12x.sequence._shared.disk_table import MappedHostAllocation
         from ignition.preparation.runtime_package import FileSource
 
@@ -273,6 +281,57 @@ def _validate_geometry(module: torch.nn.Module) -> None:
             raise ValueError("PLE requires exact FP32 zero-centered group norm weights")
 
 
+def _validate_operands(module, projections, source, scratch, convolution_state, metadata, table, mode):
+    _validate_geometry(module)
+    if mode not in ("decode", "prefill"):
+        raise ValueError("PLE graph mode must be decode or prefill")
+    if (
+        source.ndim not in (2, 3)
+        or math.prod(source.shape[1:]) != 10240
+        or source.dtype != torch.bfloat16
+        or not source.is_contiguous()
+    ):
+        raise ValueError(
+            "PLE source must be contiguous BF16 [tokens,10240] or [tokens,4,2560]"
+        )
+    if source.ndim == 3 and tuple(source.shape[1:]) != (4, 2560):
+        raise ValueError("PLE residual streams must have shape [tokens,4,2560]")
+    tokens, device = source.shape[0], source.device
+    if device != table.layout.caps.device or device.type != "cuda":
+        raise ValueError("PLE table and graph operands must share a CUDA device")
+    for field, width in zip(
+        fields(scratch), (2560, 10240, 2560, 10240, 10240, 10240, 10240)
+    ):
+        tensor = getattr(scratch, field.name)
+        if (
+            tuple(tensor.shape) != (tokens, width)
+            or tensor.dtype != torch.bfloat16
+            or tensor.device != device
+            or not tensor.is_contiguous()
+        ):
+            raise ValueError(f"PLE scratch {field.name} has incompatible geometry")
+    if (
+        convolution_state.ndim != 3
+        or convolution_state.shape[1] != 10240
+        or convolution_state.shape[2] < 9
+    ):
+        raise ValueError("PLE convolution history requires [slots,10240,9+drafts]")
+    if metadata.num_seqs.item() or metadata.num_tokens.item():
+        raise ValueError("PLE preparation requires zero live counts")
+    if set(projections) != {"key_proj", "value_proj"}:
+        raise ValueError("PLE requires key_proj and value_proj BF16 weights")
+    for parameter in (
+        module.conv1d.weight,
+        module.norm_key.weight,
+        module.norm_query.weight,
+        module.norm_conv.weight,
+    ):
+        if parameter.device != device:
+            raise ValueError("canonical PLE parameters must share the graph device")
+    sequences = metadata.query_start_loc.numel() - 1
+    return sequences
+
+
 class PreparedPLE:
     """Recorded PLE lookup, BF16 projections, canonical gates, and convolution.
 
@@ -281,6 +340,14 @@ class PreparedPLE:
     stay inside the complete forward graph. Exported contribution and history
     storage is caller-owned and remains valid across shared graph-pool replays.
     """
+
+    def __new__(cls, *args, session, **kwargs):
+        if (getattr(session, 'actlize_helpers', None) is not None
+                and getattr(session, 'quactlize_helpers', None) is not None):
+            from .actlize_ple import PreparedActlizePLE
+
+            return PreparedActlizePLE(*args, session=session, **kwargs)
+        return super().__new__(cls)
 
     def __init__(
         self,
@@ -300,20 +367,9 @@ class PreparedPLE:
         runtime=None,
         coordinator=None,
     ):
-        _validate_geometry(module)
-        if mode not in ("decode", "prefill"):
-            raise ValueError("PLE graph mode must be decode or prefill")
-        if (
-            source.ndim not in (2, 3)
-            or math.prod(source.shape[1:]) != 10240
-            or source.dtype != torch.bfloat16
-            or not source.is_contiguous()
-        ):
-            raise ValueError(
-                "PLE source must be contiguous BF16 [tokens,10240] or [tokens,4,2560]"
-            )
-        if source.ndim == 3 and tuple(source.shape[1:]) != (4, 2560):
-            raise ValueError("PLE residual streams must have shape [tokens,4,2560]")
+        from b12x.sequence import short_conv
+
+        sequences = _validate_operands(module, projections, source, scratch, convolution_state, metadata, table, mode)
         self.module, self.table, self.scratch, self.metadata = (
             module,
             table,
@@ -322,38 +378,6 @@ class PreparedPLE:
         )
         self.mode, self.source, self.state = mode, source, convolution_state
         self.tokens, self.device = source.shape[0], source.device
-        if self.device != table.layout.caps.device or self.device.type != "cuda":
-            raise ValueError("PLE table and graph operands must share a CUDA device")
-        for field, width in zip(
-            fields(scratch), (2560, 10240, 2560, 10240, 10240, 10240, 10240)
-        ):
-            tensor = getattr(scratch, field.name)
-            if (
-                tuple(tensor.shape) != (self.tokens, width)
-                or tensor.dtype != torch.bfloat16
-                or tensor.device != self.device
-                or not tensor.is_contiguous()
-            ):
-                raise ValueError(f"PLE scratch {field.name} has incompatible geometry")
-        if (
-            convolution_state.ndim != 3
-            or convolution_state.shape[1] != 10240
-            or convolution_state.shape[2] < 9
-        ):
-            raise ValueError("PLE convolution history requires [slots,10240,9+drafts]")
-        if metadata.num_seqs.item() or metadata.num_tokens.item():
-            raise ValueError("PLE preparation requires zero live counts")
-        if set(projections) != {"key_proj", "value_proj"}:
-            raise ValueError("PLE requires key_proj and value_proj BF16 weights")
-        for parameter in (
-            module.conv1d.weight,
-            module.norm_key.weight,
-            module.norm_query.weight,
-            module.norm_conv.weight,
-        ):
-            if parameter.device != self.device:
-                raise ValueError("canonical PLE parameters must share the graph device")
-        sequences = metadata.query_start_loc.numel() - 1
         caps = _caps(table.config, self.device, self.tokens, sequences,
                      rank=getattr(table.layout.caps, 'tp_rank', 0), world_size=getattr(table.layout.caps, 'tp_size', 1))
         from ignition.components.ngram_delivery import PreparedPLELookup
@@ -426,6 +450,8 @@ class PreparedPLE:
 
     def _prepare_binding(self, plan, args, session, name, public_bind, *,
                          attribute, bind_plan=False, workspace=None):
+        from b12x.preparation import PreparedCall
+        from ignition.preparation.tuning import declare, register_finalizer
 
         def prepare_call(prepared):
             specs = plan.scratch_specs() if bind_plan else prepared.layout.scratch_specs()
@@ -446,6 +472,8 @@ class PreparedPLE:
         return getattr(self, attribute)
 
     def __call__(self, source: torch.Tensor) -> torch.Tensor:
+        from b12x.sequence import short_conv
+
         if source is not self.source and (
             source.data_ptr() != self.source.data_ptr()
             or source.shape != self.source.shape
@@ -489,6 +517,7 @@ class PreparedPLEConvolution:
     """Phase-specific history update after the shared PLE projections and gates."""
 
     def __init__(self, module, scratch, state, metadata, *, mode, session, name, workspace):
+        from b12x.sequence import short_conv
         from ignition.components.recurrent import prepare_sequence_binding
 
         caps = short_conv.Caps(device=scratch.normalized.device, mode=mode, channels=10240,
@@ -506,6 +535,8 @@ class PreparedPLEConvolution:
             set_binding=lambda binding: setattr(self, "binding", binding))
 
     def __call__(self):
+        from b12x.sequence import short_conv
+
         short_conv.run(self.binding)
 
 

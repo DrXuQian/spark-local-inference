@@ -296,9 +296,11 @@
     model-preparation.md#ppu-port-preparation and test_blas_projection_cuda.py.
 
 [ ] Finish b12x-free Qwen GGUF preparation using external QUactlize/actlizeLA
-    operators. Routing, rounded SwiGLU, rows, GDN sequence, HC and MTP feedback
-    bindings are implemented; PLE, ordinary paged GQA and preparation dependency
-    cleanup remain. Qualify FlashInfer's
+    operators. Routing, rounded SwiGLU, rows, GDN sequence, HC, PLE and MTP feedback
+    bindings are implemented; ordinary paged GQA and preparation dependency
+    cleanup remain. PLE retains raw IQ4_NL delivery, hash publication/readiness,
+    BF16 gate boundaries and dilation3 history; its four graph tests await a
+    device. Qualify FlashInfer's
     caller-owned sampling workspace and row-independent RNG interfaces.
     Preserve consumed-prefix state, compile/capture lifetimes and native replay.
 

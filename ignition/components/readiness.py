@@ -21,7 +21,6 @@ def record_timestamp(timestamps, frame, slot):
 
 def wait_for_readiness(source, event, timings, frame, interval, barrier_input, barrier_output, barrier_handle):
     from cuda.bindings import driver
-    from ignition.components.collectives import _all_reduce
 
     record_timestamp(timings, frame, 3 * interval)
     stream = torch.cuda.current_stream(source.device)
@@ -31,6 +30,8 @@ def wait_for_readiness(source, event, timings, frame, interval, barrier_input, b
         raise RuntimeError(f"embedding readiness wait failed: {status}")
     record_timestamp(timings, frame, 3 * interval + 1)
     if barrier_handle > 0:
+        from ignition.components.collectives import _all_reduce
+
         _all_reduce(barrier_input, barrier_output, barrier_handle - 1)
     record_timestamp(timings, frame, 3 * interval + 2)
 
@@ -53,13 +54,15 @@ class ReadinessTimings:
 
 class PreparedReadinessWait:
     def __init__(self, timings, interval, *, runtime, session, coordinator, name):
-        from ignition.components.collectives import PreparedAllReduce
-
         if type(interval) is not int or not 0 <= interval < timings.timestamps.shape[1] // 3:
             raise ValueError("readiness interval is outside its timestamp buffer")
         self.timings, self.interval = timings, interval
         self.input = torch.zeros((1, 8), dtype=torch.bfloat16, device=timings.frame.device)
         self.output = torch.zeros_like(self.input)
-        self.barrier = PreparedAllReduce(self.input, self.output, runtime=runtime, session=session,
-                                        coordinator=coordinator, name=name)
-        self.handle = 0 if self.barrier.single else self.barrier.handle + 1
+        self.barrier, self.handle = None, 0
+        if runtime is not None:
+            from ignition.components.collectives import PreparedAllReduce
+
+            self.barrier = PreparedAllReduce(self.input, self.output, runtime=runtime, session=session,
+                                            coordinator=coordinator, name=name)
+            self.handle = 0 if self.barrier.single else self.barrier.handle + 1

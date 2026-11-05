@@ -77,17 +77,26 @@ def fixture_rows(directory):
         return embedding, head
 
 
-def fixture_table(directory, tokens, storage, sequence, frame):
-    from b12x.sequence import ple_embedding, ple_hash
+def fixture_table(directory, tokens, storage, sequence, frame, *, external=False):
     from ignition.components.readiness import ReadinessTimings
     from ignition.preparation.runtime_package import FileSource
-    from ignition.recipes.qwen38.gguf_ple import GgufPLELayout, GgufPLETable
+    from ignition.recipes.qwen38.gguf_ple import GgufPLECaps, GgufPLEGeometry, GgufPLELayout, GgufPLETable
 
-    caps = ple_embedding.Caps(device='cuda:0', max_tokens=tokens, max_seqs=1, vocab_size=248320,
-        eos_token_id=248044, max_order=3, heads_per_order=8, dense_layer_ordinal=0,
-        base_table_size=101, embedding_dim=2560, tp_size=1, tp_rank=0, quant_mode='bf16')
-    hash_caps = ple_hash.Caps(**{field: getattr(caps, field) for field in ple_hash.Caps.__dataclass_fields__})
-    geometry = ple_hash.compute_geometry(hash_caps)
+    if external:
+        from actlize_la.serving import ple_geometry
+
+        caps = hash_caps = GgufPLECaps(torch.device('cuda:0'), 248044)
+        geometry = ple_geometry(vocab_size=248320, base_size=101)
+        geometry_buffers = GgufPLEGeometry.allocate(geometry, 'cuda:0')
+    else:
+        from b12x.sequence import ple_embedding, ple_hash
+
+        caps = ple_embedding.Caps(device='cuda:0', max_tokens=tokens, max_seqs=1, vocab_size=248320,
+            eos_token_id=248044, max_order=3, heads_per_order=8, dense_layer_ordinal=0,
+            base_table_size=101, embedding_dim=2560, tp_size=1, tp_rank=0, quant_mode='bf16')
+        hash_caps = ple_hash.Caps(**{field: getattr(caps, field) for field in ple_hash.Caps.__dataclass_fields__})
+        geometry = ple_hash.compute_geometry(hash_caps)
+        geometry_buffers = ple_hash.allocate_geometry(geometry, device='cuda:0')
     path = directory / 'fixture-ple.gguf'
     if not path.exists():
         rng = np.random.default_rng(225)
@@ -102,7 +111,7 @@ def fixture_table(directory, tokens, storage, sequence, frame):
     mailbox.host_view.zero_()
     ready = torch.cuda.Event(external=True); ready.record()
     table = GgufPLETable({'vocab_size': 248320}, GgufPLELayout(hash_caps, geometry),
-        ple_hash.allocate_geometry(geometry, device='cuda:0'),
+        geometry_buffers,
         torch.zeros((rows, 90), dtype=torch.uint8, device='cuda'),
         torch.full((tokens, hash_caps.head_count), -1, dtype=torch.int64, device='cuda'), mailbox, ready,
         ((FileSource(path, tensor.data_offset, tensor.n_bytes),),), sequence, ReadinessTimings.allocate(frame, 1))
@@ -267,7 +276,8 @@ def prepare(args):
         print('Loaded shared-Q8 MTP', flush=True)
         frame = torch.zeros(1, dtype=torch.int32, device='cuda')
         sequence = torch.zeros(1, dtype=torch.int64, device='cuda')
-        table, ple_caps = fixture_table(output, 64, storage, sequence, frame)
+        table, ple_caps = fixture_table(output, 64, storage, sequence, frame,
+            external=args.actlize_library is not None and args.quactlize_helpers_library is not None)
         from ignition.preparation.actlize import ActlizeLibrarySpec
         from ignition.preparation.quactlize import QuactlizeHelpersSpec, QuactlizeLibrarySpec
         from ignition.preparation.qwen38_gguf import GgufInputs

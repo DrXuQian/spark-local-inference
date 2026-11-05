@@ -59,6 +59,7 @@ def device_suites(args, root, output):
             'tests/components/test_blas_projection_cuda.py',
             'tests/components/test_actlize_gdn_sequence_cuda.py',
             'tests/components/test_actlize_mixing_cuda.py',
+            'tests/components/test_actlize_ple_cuda.py',
             '--junitxml=' + str(output / 'framework.xml')], root, 'framework.xml'),
         ('quactlize', [python, '-m', 'pytest', '-q', 'tests/serving/test_serving_device.py',
             '--junitxml=' + str(output / 'quactlize.xml')], args.quactlize_source, 'quactlize.xml'),

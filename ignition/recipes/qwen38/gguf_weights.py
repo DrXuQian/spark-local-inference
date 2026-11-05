@@ -196,7 +196,13 @@ def load_model(manifest, device, *, progress=None, shard=TensorParallelShard(0, 
         ple = language.layers[1].ple
         for part in ('key', 'value'):
             _parameter(ple, part + '_proj.weight', loader.load_dense(f'blk.1.ple_{part}.weight'))
-        _parameter(ple, 'conv1d.weight', loader.load_tensor('blk.1.ple_conv1d.weight').unsqueeze(1))
+        convolution = loader.load_tensor('blk.1.ple_conv1d.weight')
+        if manifest.actlize is not None:
+            converted = convolution.bfloat16()
+            if not torch.equal(converted.float(), convolution.float()):
+                raise ValueError('PLE convolution cannot retain its checkpoint values in BF16')
+            convolution = converted
+        _parameter(ple, 'conv1d.weight', convolution.unsqueeze(1))
         for part in ('key', 'query', 'conv'):
             _parameter(ple, f'norm_{part}.weight', loader.load_norm_delta(f'blk.1.ple_norm_{part}.weight'))
     torch.cuda.synchronize(device)

@@ -6,11 +6,6 @@
 import torch
 import triton
 import triton.language as tl
-from b12x.preparation import PreparedCall
-from b12x.preparation.types import plan_from_handle, require_prepared
-from b12x.sequence import ple_embedding
-
-from ignition.preparation.tuning import declare
 from ignition.components.readiness import PreparedReadinessWait, wait_for_readiness
 
 
@@ -43,6 +38,8 @@ def _requests(token_ids: torch.Tensor, query_start: torch.Tensor, history: torch
               primes: torch.Tensor, offsets: torch.Tensor, ids: torch.Tensor,
               requests: torch.Tensor, mailbox: torch.Tensor, sequence: torch.Tensor,
               plan: int) -> None:
+    from b12x.preparation.types import plan_from_handle, require_prepared
+
     selected = plan_from_handle(plan)
     if selected.component_id not in ('sequence.ple_embedding', 'sequence.ple_hash'):
         raise ValueError('PLE requests require a prepared hash or embedding plan')
@@ -65,6 +62,8 @@ def _lookup(source: torch.Tensor, weight: torch.Tensor, scales: torch.Tensor,
             scale: torch.Tensor, ids: torch.Tensor, count: torch.Tensor, out: torch.Tensor,
             timings: torch.Tensor, frame: torch.Tensor, barrier_input: torch.Tensor,
             barrier_output: torch.Tensor, barrier: int, plan: int, event: int) -> None:
+    from b12x.preparation.types import plan_from_handle, require_prepared
+
     wait_for_readiness(source, event, timings, frame, 0, barrier_input, barrier_output, barrier)
     state = require_prepared(plan_from_handle(plan), "sequence.ple_embedding", out.device)
     state.run_lookup(weight, scales.view(torch.float8_e4m3fn), scale, ids, count, out,
@@ -86,6 +85,10 @@ class PreparedPLELookup:
         return super().__new__(cls)
 
     def __init__(self, table, metadata, output, caps, *, session, name, runtime=None, coordinator=None):
+        from b12x.preparation import PreparedCall
+        from b12x.sequence import ple_embedding
+        from ignition.preparation.tuning import declare
+
         self.metadata, self.output = metadata, output
         self.geometry, self.scale = table.geometry, table.scale
         self.mailbox, self.sequence = table.mailbox.device_view, table.sequence

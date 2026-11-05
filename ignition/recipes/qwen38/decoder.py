@@ -425,5 +425,5 @@ class PreparedDecoder:
     def device_errors(self):
         from ignition.components.operator_errors import device_errors
 
-        return device_errors(self.embedding, self.ple.embedding_lookup, self.final_mixer,
+        return device_errors(self.embedding, self.ple, self.ple.embedding_lookup, self.final_mixer,
             *(operation for layer in self.layers for operation in layer))
