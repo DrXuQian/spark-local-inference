@@ -127,12 +127,13 @@ class MTPWeights:
 
     @classmethod
     def load_gguf(cls, manifest, structure_manifest, device, *, embedding_weight, lm_head_weight,
-                  progress=None, read_mode=None, shard=TensorParallelShard(0, 1)):
+                  progress=None, read_mode=None, shard=TensorParallelShard(0, 1), quactlize_helpers=None):
         from .gguf_weights import QwenGgufWeightLoader, _parameter
 
         module = create_mtp_modules(structure_manifest)
         before = torch.cuda.memory_allocated(device)
-        with QwenGgufWeightLoader(manifest, device, progress=progress, read_mode=read_mode, shard=shard) as loader:
+        with QwenGgufWeightLoader(manifest, device, progress=progress, read_mode=read_mode,
+                shard=shard, quactlize_helpers=quactlize_helpers) as loader:
             prefix = 'blk.48.nextn'
             _parameter(module, 'pre_fc_norm_embedding.weight', loader.load_norm_delta(f'{prefix}.enorm.weight', dtype=torch.bfloat16))
             _parameter(module, 'pre_fc_norm_hidden.weight', loader.load_norm_delta(f'{prefix}.hnorm.weight', dtype=torch.bfloat16))

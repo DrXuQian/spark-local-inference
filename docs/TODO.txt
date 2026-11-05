@@ -343,7 +343,15 @@
     libraries admit PPU capability values while retaining memory/single-device
     checks. PPU patch setup targets platform Torch2.9/Triton3.5 sources with exact
     context checks. Host validation passes; actual box discovery, full GGUF loading
-    and export remain unqualified. The GGUF reader still imports b12x.
+    and export remain unqualified.
+
+[x] Remove b12x from explicit local GGUF pread and loading progress. Metadata-only
+    Torch views route inspected ranges through bounded O_DIRECT staging and the
+    platform CUDA copy API. Retain source identity/mutation checks, destination
+    disjointness, exact packed bytes and confirmed-drain ownership. Target/MTP
+    dense preparation uses the selected QUactlize helpers on an explicit stream.
+    Real-file host checks pass on Torch2.9 and Torch2.15. Device transfer and native
+    decode gates remain unrun; qualify.ppu_box now includes the gguf-read suite.
 
 [ ] Measure external GGUF shared/routed expert overlap. GgufMoeWorkspace bypasses
     the b12x ConcurrentSharedExpert branch even when stream_overlap is enabled.

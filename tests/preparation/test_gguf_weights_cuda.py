@@ -118,6 +118,59 @@ def test_changed_file_is_rejected_before_queued_transfer(checkpoint):
             loader.load_quantized('blk.0.hc_attn_up.weight')
 
 
+def test_pread_strided_bf16_expansion_and_staging_lifetime(checkpoint):
+    from ignition.components.gguf_weights import GgufWeightLoader
+    from ignition.preparation.gguf_pread import ALIGNMENT, BLOCK_BYTES
+
+    manifest, _, _, _, bf16 = checkpoint
+    with GgufWeightLoader(manifest, 'cuda:0', read_mode='pread') as loader:
+        session = loader._session
+        destination = torch.full((4, 3), -19., device='cuda', dtype=torch.float32)
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            session(destination[:, 1], loader._sources['bf16.weight'])
+            session.flush()
+        expected = torch.full((4, 3), -19., dtype=torch.float32)
+        expected[:, 1] = torch.from_numpy(bf16).view(torch.bfloat16).float()
+        torch.testing.assert_close(destination.cpu(), expected, rtol=0, atol=0)
+        stats = session.stats()
+        assert stats['bf16_expansion_bytes'] == bf16.nbytes
+        assert stats['pinned_staging_bytes'] <= 3 * BLOCK_BYTES + 2 * ALIGNMENT
+        assert stats['torch_copy_bytes'] == 0
+        assert not session.pending
+    assert session.staging is None and session.expanded is None and not session.files
+
+
+def test_pread_overlapping_destinations_rejected_before_write(checkpoint):
+    from ignition.components.gguf_weights import GgufWeightLoader
+
+    manifest, *_ = checkpoint
+    destination = torch.full((8,), -19., device='cuda', dtype=torch.float32)
+    with pytest.raises(ValueError, match='overlapping checkpoint destinations'):
+        with GgufWeightLoader(manifest, 'cuda:0', read_mode='pread') as loader:
+            loader._session(destination, loader._sources['norm.weight'])
+            loader._session(destination[1:5], loader._sources['norm.weight'][:4])
+            loader._session.flush()
+    assert torch.all(destination == -19.).item()
+
+
+def test_pread_multiple_blocks_keep_file_and_destination_tails(tmp_path):
+    from ignition.components.gguf_weights import GgufWeightLoader
+    from ignition.preparation.gguf import inspect_gguf_checkpoint
+    from ignition.preparation.gguf_pread import BLOCK_BYTES
+
+    values = (np.arange(2 * (BLOCK_BYTES + 13), dtype=np.int32) % 127).astype(np.int8).reshape(2, -1)
+    path = tmp_path / 'wide.gguf'
+    writer = gguf.GGUFWriter(path, 'qwen4exp')
+    writer.add_tensor('wide.weight', values)
+    writer.write_header_to_file(); writer.write_kv_data_to_file(); writer.write_tensors_to_file(); writer.close()
+    with GgufWeightLoader(inspect_gguf_checkpoint(path), 'cuda:0', read_mode='pread') as loader:
+        actual = loader.load_tensor('wide.weight', extent=(slice(None), slice(1, None)))
+        assert np.array_equal(actual.cpu().numpy(), values[:, 1:])
+        assert loader._session.payload_bytes == values[:, 1:].nbytes
+
+
 def test_file_to_quantized_projection_graph(checkpoint):
     from ignition.components.gguf_weights import GgufWeightLoader
     from ignition.components.gguf_projection import projection_workspace_bytes

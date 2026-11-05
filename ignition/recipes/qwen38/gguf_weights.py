@@ -169,7 +169,7 @@ class QwenGgufWeightLoader(GgufWeightLoader):
         return QwenMoeWeights(self.load_tensor(f'{prefix}.ffn_gate_inp.weight'), experts, shared)
 
 
-def load_model(manifest, device, *, progress=None, shard=TensorParallelShard(0, 1)):
+def load_model(manifest, device, *, progress=None, shard=TensorParallelShard(0, 1), quactlize_helpers=None):
     import torch
     from .decoder import DecoderLayerWeights, ModelWeights
     from .model import create_model_tree
@@ -178,7 +178,8 @@ def load_model(manifest, device, *, progress=None, shard=TensorParallelShard(0, 
     before = torch.cuda.memory_allocated(device)
     layers = []
     language = tree.model.language_model
-    with QwenGgufWeightLoader(manifest, device, progress=progress, shard=shard, read_mode=manifest.read_mode) as loader:
+    with QwenGgufWeightLoader(manifest, device, progress=progress, shard=shard,
+            read_mode=manifest.read_mode, quactlize_helpers=quactlize_helpers) as loader:
         embedding = loader.load_quantized('token_embd.weight')
         _parameter(tree, 'lm_head.weight', loader.load_dense('output.weight', rows=shard.partition(248320)))
         loader.load_hyperconnection(language.hyper_connection_mixer, 'output_hc')

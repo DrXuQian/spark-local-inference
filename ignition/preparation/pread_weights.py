@@ -8,7 +8,7 @@ import os
 from b12x.loader._checkpoint import DirectWeightSession
 
 from .checkpoint_source import BLOCK_BYTES
-from .remote_weights import chunks, destinations_overlap
+from .weight_ranges import chunks, destinations_overlap
 
 
 class PreadWeightSession(DirectWeightSession):

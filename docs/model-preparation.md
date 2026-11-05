@@ -447,9 +447,18 @@ be passed to b12x's projection overlap helpers.
 
 Hosts whose containers prohibit `io_uring` can explicitly select
 `read_mode='pread'` on the loader. This preparation-only transport retains native
-O_DIRECT reads, uses 8 MiB of pinned staging plus bounded read/conversion buffers,
-and checks source identities and destination overlap. Existing default transport
-selection is unchanged; read errors never switch transport automatically.
+O_DIRECT reads and checks source identities and destination overlap. Local GGUF
+pread now uses POSIX reads and platform CUDA copies without importing b12x,
+including when loading progress is enabled. Metadata-only Torch views describe
+the selected ranges. Its pinned staging is bounded at 4 MiB plus 8 KiB for
+alignment, with another 8 MiB only when converting stored BF16 to FP32. Other
+checkpoint transports retain their existing readers. Read errors never switch
+transport automatically.
+
+Explicit PPU GGUF loading requires `pread` and prepared QUactlize helpers.
+Target and shared-MTP dense expansion use the selected helpers on a private
+preparation stream, retaining raw input and output until the work drains. The
+NVIDIA debug decoder remains available on the original debug path.
 
 GGUF preparation now connects packed routed experts, packed token lookup,
 host-resident IQ4_NL PLE delivery, and the shared-Q8 MTP to the Qwen recipe.
@@ -1066,8 +1075,27 @@ before final selection. Planning and weight admission retain single-device and
 memory checks. CLI patch setup applies exact-context fixes to the platform
 Torch2.9.0/Triton3.5.0 sources, accepting vendor version suffixes; keep those
 platform wheels. Host checks cover admission, visibility and patch application.
-Full PPU export remains unqualified: GGUF reading still depends on b12x, and
-operator numerics, device discovery and native export require box validation.
+GGUF pread and dense decoding are now connected without b12x on the external
+path. Operator numerics, device discovery and native export require box validation;
+full PPU export remains unqualified.
+
+The following device gate creates only tiny synthetic GGUF files and needs no
+model download or external operator DSO. It tests exact bytes, expert gate/up
+joins, selected blocks, BF16 conversion, source changes, destination overlap and
+bounded transfers crossing a 4 MiB boundary:
+
+```sh
+FLARE_RUN_CUDA_TESTS=1 python -m pytest -q \
+  tests/preparation/test_gguf_weights_cuda.py \
+  -k 'native_reads or selected_blocks or changed_file or pread_' --tb=short
+```
+
+With `FLARE_QUACTLIZE_HELPERS_LIBRARY` set to the selected PPU DSO, also run
+`tests/components/test_quactlize_helpers_cuda.py -k dense_preparation` through
+pytest. Its four cases compare selected Q8_0/IQ4_NL dense ranges against
+independent GGUF decoding in FP16 and BF16, with the NVIDIA debug module disabled.
+These device gates remain unrun locally; host file/routing checks do not qualify
+CUDA transfers or native decoder arithmetic.
 
 The user reports the following gate passing on PPU. It exercises this session through `capture_forwards`, with
 alternating one-row and seven-row graphs sharing scratch, strided state reads,

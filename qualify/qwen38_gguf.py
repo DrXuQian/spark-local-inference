@@ -56,7 +56,7 @@ def component_checkpoint(path, metadata_path, layers):
                            len(inventory), file_identity(path)),), MappingProxyType(metadata), 248320)
 
 
-def fixture_rows(directory):
+def fixture_rows(directory, *, quactlize_helpers=None):
     """Bounded synthetic endpoints; all real block weights come from the shard."""
     path = directory / 'fixture-vocabulary.gguf'
     if not path.exists():
@@ -66,7 +66,8 @@ def fixture_rows(directory):
         writer = gguf.GGUFWriter(path, 'qwen4exp')
         writer.add_tensor('token_embd.weight', raw, raw_dtype=gguf.GGMLQuantizationType.Q8_0)
         writer.write_header_to_file(); writer.write_kv_data_to_file(); writer.write_tensors_to_file(); writer.close()
-    with GgufWeightLoader(inspect_gguf_checkpoint(path), 'cuda:0', read_mode='pread') as loader:
+    with GgufWeightLoader(inspect_gguf_checkpoint(path), 'cuda:0', read_mode='pread',
+                         quactlize_helpers=quactlize_helpers) as loader:
         embedding = loader.load_quantized('token_embd.weight')
         head = loader.load_dequantized('token_embd.weight')
         # Keep the real vocabulary projection size, with distinct active logits.
@@ -262,27 +263,6 @@ def prepare(args):
     manifest = component_checkpoint(args.target_shard, args.metadata, args.layers)
     with ModuleImages() as images, PackageStorage(device=0) as storage:
         torch.cuda.set_device(0)
-        print('Loading fixture vocabulary and actual GGUF blocks', flush=True)
-        embedding, head = fixture_rows(output)
-        blocks = []
-        with QwenGgufWeightLoader(manifest, 'cuda:0', read_mode='pread') as loader:
-            for index in args.layers:
-                with torch.device('meta'):
-                    module = Qwen4ExpTextDecoderLayer(config, index)
-                module.eval().requires_grad_(False)
-                for label, field in (('attn', 'attn_hyper_connection'), ('ffn', 'mlp_hyper_connection')):
-                    loader.load_hyperconnection(getattr(module, field), f'blk.{index}.hc_{label}')
-                attention = (loader.load_attention(module.self_attn, index) if index % 4 == 3
-                             else loader.load_gdn(module.linear_attn, index))
-                blocks.append((index, module, attention, loader.load_moe(index, cache_shared=True)))
-                print(f'Loaded complete target block {index}', flush=True)
-        mtp = MTPWeights.load_gguf(inspect_gguf_checkpoint(args.mtp), structure, 'cuda:0',
-            embedding_weight=embedding, lm_head_weight=head, read_mode='pread')
-        print('Loaded shared-Q8 MTP', flush=True)
-        frame = torch.zeros(1, dtype=torch.int32, device='cuda')
-        sequence = torch.zeros(1, dtype=torch.int64, device='cuda')
-        table, ple_caps = fixture_table(output, 64, storage, sequence, frame,
-            external=args.actlize_library is not None and args.quactlize_helpers_library is not None)
         from ignition.preparation.actlize import ActlizeLibrarySpec
         from ignition.preparation.quactlize import QuactlizeHelpersSpec, QuactlizeLibrarySpec
         from ignition.preparation.flash_attn3 import FlashAttention3Spec
@@ -311,6 +291,27 @@ def prepare(args):
         if not args.actlize_qsa:
             attention_libraries['actlize_qsa_library'] = None
         projection_library = attention_libraries['gguf_projection_library']
+        print('Loading fixture vocabulary and actual GGUF blocks', flush=True)
+        embedding, head = fixture_rows(output, quactlize_helpers=quactlize_helpers)
+        blocks = []
+        with QwenGgufWeightLoader(manifest, 'cuda:0', read_mode='pread', quactlize_helpers=quactlize_helpers) as loader:
+            for index in args.layers:
+                with torch.device('meta'):
+                    module = Qwen4ExpTextDecoderLayer(config, index)
+                module.eval().requires_grad_(False)
+                for label, field in (('attn', 'attn_hyper_connection'), ('ffn', 'mlp_hyper_connection')):
+                    loader.load_hyperconnection(getattr(module, field), f'blk.{index}.hc_{label}')
+                attention = (loader.load_attention(module.self_attn, index) if index % 4 == 3
+                             else loader.load_gdn(module.linear_attn, index))
+                blocks.append((index, module, attention, loader.load_moe(index, cache_shared=True)))
+                print(f'Loaded complete target block {index}', flush=True)
+        mtp = MTPWeights.load_gguf(inspect_gguf_checkpoint(args.mtp), structure, 'cuda:0',
+            embedding_weight=embedding, lm_head_weight=head, read_mode='pread', quactlize_helpers=quactlize_helpers)
+        print('Loaded shared-Q8 MTP', flush=True)
+        frame = torch.zeros(1, dtype=torch.int32, device='cuda')
+        sequence = torch.zeros(1, dtype=torch.int64, device='cuda')
+        table, ple_caps = fixture_table(output, 64, storage, sequence, frame,
+            external=args.actlize_library is not None and args.quactlize_helpers_library is not None)
         weights = SimpleNamespace(blocks=tuple(blocks), embedding=embedding, head=head,
             final_mixer=mtp.module.hyper_connection_mixer, ple_caps=ple_caps, shard=TensorParallelShard(0, 1))
         state = HybridStatePool.allocate(5, 'cuda:0', speculative_tokens=7, storage=storage, kv_dtype=kv_dtype)

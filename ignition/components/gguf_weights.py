@@ -10,6 +10,9 @@ from ignition.preparation.rebuild_manifest import declare_container_fields
 from .weights import DirectWeightLoader, _aligned_range
 
 
+_undrained_decoders = []
+
+
 @dataclass(frozen=True)
 class GgufWeight:
     raw: object
@@ -41,10 +44,15 @@ class GgufWeightLoader(DirectWeightLoader):
     Model recipes own the mapping from these names to their modules.
     """
 
-    def __init__(self, manifest, *args, **kwargs):
+    def __init__(self, manifest, *args, quactlize_helpers=None, **kwargs):
         if not isinstance(manifest, GgufCheckpoint):
             raise TypeError("GGUF loading requires an inspected GgufCheckpoint")
         super().__init__(manifest, *args, **kwargs)
+        self.quactlize_helpers = quactlize_helpers
+        self._decode_stream = self._decode_pending = None
+        if getattr(getattr(manifest, 'quactlize_helpers', None), 'target', None) in ('ppu10', 'ppu15'):
+            if self.read_mode != 'pread' or quactlize_helpers is None:
+                raise ValueError('PPU GGUF loading requires explicit pread and prepared QUactlize helpers')
 
     def _selected_names(self):
         return {name for name in super()._selected_names()
@@ -94,9 +102,10 @@ class GgufWeightLoader(DirectWeightLoader):
         packed staging is released after the asynchronous conversion completes.
         """
         import torch
-        from quactlize.cuda_compat import gather_rows
         from ignition.preparation import provenance
 
+        if self._decode_pending is not None:
+            raise RuntimeError('previous dense GGUF decode did not drain')
         dtype = torch.bfloat16 if dtype is None else dtype
         metadata = self.manifest.tensors[name]
         if (len(metadata.shape) != 2 or metadata.component == 'ple_tables'
@@ -106,8 +115,27 @@ class GgufWeightLoader(DirectWeightLoader):
         sources = provenance.lookup(weight.raw)['sources']
         output = torch.empty(weight.shape, device=self.device, dtype=dtype)
         ids = torch.arange(weight.shape[0], device=self.device, dtype=torch.int64)
-        error = torch.empty((), device=self.device, dtype=torch.int32)
-        gather_rows(weight.raw, ids, output, None, error, weight.qtype, weight.shape[0])
+        error = torch.zeros((), device=self.device, dtype=torch.int32)
+        if self.quactlize_helpers is None:
+            from quactlize.cuda_compat import gather_rows
+
+            gather_rows(weight.raw, ids, output, None, error, weight.qtype, weight.shape[0])
+        else:
+            if self._decode_stream is None:
+                self._decode_stream = torch.cuda.Stream(device=self.device)
+            self._decode_pending = (weight, ids, output, error)
+            try:
+                self._decode_stream.wait_stream(torch.cuda.current_stream(self.device))
+                with torch.cuda.stream(self._decode_stream):
+                    self.quactlize_helpers.gather_rows(weight.raw, ids, output, None, error, weight.qtype, weight.shape[0])
+            finally:
+                try:
+                    self._decode_stream.synchronize()
+                except BaseException:
+                    _undrained_decoders.append(self)
+                    raise
+                else:
+                    self._decode_pending = None
         if error.item():
             raise RuntimeError(f'{name}: external GGUF decoder rejected dense row geometry')
         provenance.record_sources(output, sources, packing='gguf_dequantized',

@@ -46,6 +46,25 @@ def gguf_table(tmp_path, qtype, width):
     return GgufWeight(torch.from_numpy(np.array(table.data)).cuda(), kind.name, qtype, (7, width)), expected
 
 
+@pytest.mark.parametrize('dtype', [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize('qtype', [8, 20])
+def test_gguf_dense_preparation_uses_selected_native_decoder(session, tmp_path, monkeypatch, dtype, qtype):
+    import sys
+    from ignition.components.gguf_weights import GgufWeightLoader
+    from ignition.preparation.gguf import inspect_gguf_checkpoint
+
+    gguf_table(tmp_path, qtype, 640)
+    path = tmp_path / (gguf.GGMLQuantizationType(qtype).name + '.gguf')
+    raw = np.array(gguf.GGUFReader(path).tensors[0].data)
+    expected = torch.from_numpy(gguf.dequantize(raw, gguf.GGMLQuantizationType(qtype))).to(dtype)
+    # Loading must use the selected external library, even if no debug decoder exists.
+    monkeypatch.setitem(sys.modules, 'quactlize.cuda_compat', None)
+    with torch.cuda.stream(torch.cuda.default_stream()), GgufWeightLoader(inspect_gguf_checkpoint(path), 'cuda:0', read_mode='pread',
+            quactlize_helpers=session.quactlize_helpers) as loader:
+        actual = loader.load_dequantized('token_embd.weight', rows=(1, 6), columns=(32, 608), dtype=dtype)
+    torch.testing.assert_close(actual.cpu(), expected[1:6, 32:608], rtol=0, atol=0)
+
+
 @pytest.mark.parametrize('tokens', [1, 2, 4, 8, 17])
 @pytest.mark.parametrize('qtype,width', [(8, 2560), (20, 160)])
 def test_file_lookup_routing_and_rounded_activation_share_one_graph(session, tmp_path, tokens, qtype, width):

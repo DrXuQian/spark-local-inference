@@ -96,6 +96,18 @@ def test_ppu_weight_admission_keeps_memory_and_single_device_checks(monkeypatch)
         decoder.ModelWeights.load(manifest, 'cuda:0')
 
 
+def test_ppu_weight_reader_requires_explicit_transport_and_native_decoder():
+    from ignition.components.gguf_weights import GgufWeightLoader
+
+    manifest = checkpoint()
+    with pytest.raises(ValueError, match='pread and prepared QUactlize helpers'):
+        GgufWeightLoader(manifest, 'cuda:0', read_mode='pread')
+    with pytest.raises(ValueError, match='pread and prepared QUactlize helpers'):
+        GgufWeightLoader(manifest, 'cuda:0', read_mode='auto', quactlize_helpers=object())
+    helper = object()
+    assert GgufWeightLoader(manifest, 'cuda:0', read_mode='pread', quactlize_helpers=helper).quactlize_helpers is helper
+
+
 @pytest.fixture
 def platform_package(tmp_path, monkeypatch):
     """A CUDA property provider, used only to exercise the real child protocol."""

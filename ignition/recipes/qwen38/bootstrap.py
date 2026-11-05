@@ -141,7 +141,7 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
     if package_storage is not None:
         transient.enter_context(package_storage.transient())
     weights = ModelWeights.load(manifest, device, progress=progress, shard=shard,
-        shard_hyperconnections=config.shard_hyperconnections)
+        shard_hyperconnections=config.shard_hyperconnections, quactlize_helpers=quactlize_helpers)
     if weights.vision is not None:
         from transformers.models.qwen4_exp.modeling_qwen4_exp import Qwen4ExpVisionModel
         from .vision import PreparedVision, VisionScratch
@@ -164,7 +164,7 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
                 shard_hyperconnections=config.shard_hyperconnections, **mtp_kwargs)
         else:
             mtp_weights = MTPWeights.load_gguf(manifest.draft, manifest, device,
-                read_mode=manifest.read_mode, **mtp_kwargs)
+                read_mode=manifest.read_mode, quactlize_helpers=quactlize_helpers, **mtp_kwargs)
     host_storage = {} if package_storage is None else {"host_allocator": package_storage.host_allocate}
     if config.gguf_inputs is None:
         table = PLETable.load(manifest, device, tokens=config.token_capacity, progress=progress, **host_storage)

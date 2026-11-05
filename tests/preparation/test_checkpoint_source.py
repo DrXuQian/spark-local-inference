@@ -329,18 +329,18 @@ def test_adapter_preserves_packed_rows_and_cpu_pointer_records(tmp_path, streams
 
 
 def test_wide_rows_preserve_bf16_expansion_and_destination_stride():
-    from ignition.preparation import remote_weights
+    from ignition.preparation import weight_ranges
 
-    with mock.patch.object(remote_weights, "BLOCK_BYTES", 8):
-        actual = list(remote_weights.chunks(100, 12, 2, 20, 1000, 32, 1))
+    with mock.patch.object(weight_ranges, "BLOCK_BYTES", 8):
+        actual = list(weight_ranges.chunks(100, 12, 2, 20, 1000, 32, 1))
     assert actual == [(100, 8, 1, 20, 1000, 32), (120, 8, 1, 20, 1032, 32),
                       (108, 4, 1, 20, 1016, 32), (128, 4, 1, 20, 1048, 32)]
-    assert list(remote_weights.chunks(0, 0, 1, 0, 0, 0, 0)) == []
+    assert list(weight_ranges.chunks(0, 0, 1, 0, 0, 0, 0)) == []
 
 
 def test_strided_destination_intersection_matches_written_bytes():
     import random
-    from ignition.preparation.remote_weights import destinations_overlap
+    from ignition.preparation.weight_ranges import destinations_overlap
 
     randomizer = random.Random(192)
     for _ in range(500):

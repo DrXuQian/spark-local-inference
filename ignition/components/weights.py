@@ -900,6 +900,14 @@ class DirectWeightLoader:
 
     @contextmanager
     def _loading_display(self):
+        from ignition.preparation.gguf import GgufCheckpoint
+
+        if isinstance(self.manifest, GgufCheckpoint) and self.read_mode == 'pread':
+            with phase(self.progress, self.progress_label) as stage:
+                stats = {}
+                yield stats
+                stage.update(f"{stats['payload_bytes'] / (1 << 30):.2f} GiB transferred")
+            return
         from b12x.loader import CheckpointDisplay
 
         with phase(self.progress, self.progress_label) as stage, CheckpointDisplay(
@@ -915,7 +923,6 @@ class DirectWeightLoader:
 
     def __enter__(self):
         import torch
-        from b12x.loader import DirectWeightSession
 
         if self._stack is not None:
             raise RuntimeError("weight loader context is already open")
@@ -940,14 +947,21 @@ class DirectWeightLoader:
                 from ignition.preparation.gguf import GgufCheckpoint
 
                 if isinstance(self.manifest, GgufCheckpoint):
-                    from ignition.preparation.gguf_weights import GgufWeightSession
+                    if read_mode == 'pread':
+                        from ignition.preparation.gguf_pread import GgufPreadSession
 
-                    transfer = GgufWeightSession(self.manifest, device=self.device.index, read_mode=read_mode)
+                        transfer = GgufPreadSession(self.manifest, device=self.device.index)
+                    else:
+                        from ignition.preparation.gguf_weights import GgufWeightSession
+
+                        transfer = GgufWeightSession(self.manifest, device=self.device.index, read_mode=read_mode)
                 elif read_mode == 'pread':
                     from ignition.preparation.pread_weights import PreadWeightSession
 
                     transfer = PreadWeightSession(device=self.device.index)
                 else:
+                    from b12x.loader import DirectWeightSession
+
                     transfer = DirectWeightSession(device=self.device.index, read_mode=read_mode)
                 self._session = stack.enter_context(transfer)
             else:
@@ -967,7 +981,7 @@ class DirectWeightLoader:
                     if self._display is not None:
                         self._display.advance(self._session.payload_bytes)
 
-            # b12x validates source view mutations through tensor version counters.
+            # Readers validate source view mutations through tensor version counters.
             with torch.inference_mode(False):
                 self._sources = dict(self._session.weights(
                     paths(),
@@ -992,7 +1006,7 @@ class DirectWeightLoader:
 
     def __exit__(self, *exc):
         try:
-            if exc[0] is None and self._display is not None:
+            if exc[0] is None and self._load_stats is not None:
                 try:
                     self._load_stats.update(self._session.stats())
                 except BaseException:
@@ -1014,7 +1028,7 @@ class DirectWeightLoader:
         from ignition.preparation.tensor_metadata import record_numeric_tensor
 
         if not self._session(destination, source):
-            raise RuntimeError("b12x rejected the direct weight transfer")
+            raise RuntimeError("checkpoint reader rejected the direct weight transfer")
         if numeric:
             record_numeric_tensor(destination)
         if self._display is not None:
