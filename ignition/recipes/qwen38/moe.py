@@ -7,22 +7,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import torch
-from b12x.gemm import blockscaled
-from b12x.moe import fused_moe
-from b12x.preparation import PreparationSession
 
-from ignition.components.expert_overlap import ConcurrentSharedExpert
 from ignition.components.linear import UnquantizedProjection
 from ignition.components.mlp import PreparedMLP
 from ignition.components.moe import PreparedRoutedExperts, PreparedRouter, RouterScratch
 from ignition.components.weights import MLPWeights
 from ignition.preparation.qwen38 import TEXT_PREFIX
 from ignition.preparation.scratch import ScratchArena
-from ignition.preparation.tuning import register_finalizer
 
-from .weights import QwenWeightLoader
+if TYPE_CHECKING:
+    from b12x.gemm import blockscaled
+    from b12x.moe import fused_moe
+    from b12x.preparation import PreparationSession
+    from .weights import QwenWeightLoader
 
 
 @dataclass(frozen=True)
@@ -208,6 +208,9 @@ class PreparedQwenMoe:
         self.concurrent_shared = None
         if (source.shape[0] <= 256 and isinstance(workspace, ScratchArena) and workspace is projection_workspace
                 and workspace.overlap):
+            from ignition.components.expert_overlap import ConcurrentSharedExpert
+            from ignition.preparation.tuning import register_finalizer
+
             self.concurrent_shared = ConcurrentSharedExpert(self.shared,
                 parallel_plans=(self.router_projection.plan, self.routing.plan, self.experts.plan),
                 gate_projection=self.shared.gate_projection, session=session, workspace=workspace)

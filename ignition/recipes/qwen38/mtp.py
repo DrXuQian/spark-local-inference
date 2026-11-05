@@ -7,21 +7,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
 
 import torch
-from b12x.preparation import PreparedCall
-from b12x.sequence import mtp_feedback
 
 from ignition.components.embedding import PreparedEmbedding
 from ignition.components.linear import QuantizedProjection, UnquantizedProjection
-from ignition.preparation.fixtures import mtp_feedback as feedback_fixtures
 from ignition.preparation.scratch import ScratchArena, planned_scratch, prime_owners
-from ignition.preparation.tuning import declare, register_finalizer
 
 from .attention import PreparedAttention, QSAScratch
 from .hyperconnection import HyperconnectionScratch, PreparedHyperconnection
 from .moe import PreparedQwenMoe, QwenMoeScratch
-from .mtp_weights import MTPWeights
+
+if TYPE_CHECKING:
+    from .mtp_weights import MTPWeights
 
 
 @dataclass(frozen=True)
@@ -109,6 +108,11 @@ class PreparedMTPFeedback:
         return super().__new__(cls)
 
     def __init__(self, module, token_embedding, target_hidden, output, workspace, *, session, name):
+        from b12x.preparation import PreparedCall
+        from b12x.sequence import mtp_feedback
+        from ignition.preparation.fixtures import mtp_feedback as feedback_fixtures
+        from ignition.preparation.tuning import declare, register_finalizer
+
         self.eps = module.config.rms_norm_eps
         self.kwargs = {
             "token_embedding": token_embedding,
@@ -145,6 +149,8 @@ class PreparedMTPFeedback:
         register_finalizer(session, finalize, workspace=workspace)
 
     def __call__(self):
+        from b12x.sequence import mtp_feedback
+
         return mtp_feedback.run(self.binding, eps=self.eps)
 
 

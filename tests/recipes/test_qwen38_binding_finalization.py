@@ -85,7 +85,7 @@ def session(monkeypatch):
         else:
             session.finalizers.append(callback)
 
-    for module in (attention, vision, ple, varlen_attention):
+    for module in (tuning, vision, varlen_attention):
         monkeypatch.setattr(module, "register_finalizer", finalizer)
     for module in (attention, vision):
         monkeypatch.setattr(module, "QuantizedProjection", lambda *args, **kwargs: None)
@@ -96,27 +96,29 @@ def session(monkeypatch):
 def test_qsa_binding_refreshes_selected_payload_and_resized_workspace(
     monkeypatch, session
 ):
+    from b12x.attention import paged_kv_write, qsa
+
     plan, writer = Plan(), Plan()
     captured = {}
     monkeypatch.setattr(
-        attention.qsa, "Caps", lambda **kwargs: SimpleNamespace(**kwargs)
+        qsa, "Caps", lambda **kwargs: SimpleNamespace(**kwargs)
     )
     monkeypatch.setattr(
-        attention.qsa, "invocation_from_tensors", lambda *args, **kwargs: kwargs
+        qsa, "invocation_from_tensors", lambda *args, **kwargs: kwargs
     )
 
     def declare(caps, **kwargs):
         captured["caps"] = caps
         return plan
 
-    monkeypatch.setattr(attention.qsa, "plan", declare)
+    monkeypatch.setattr(qsa, "plan", declare)
     monkeypatch.setattr(
-        attention.qsa,
+        qsa,
         "bind",
         lambda plan, **kwargs: SimpleNamespace(version=plan.version, **kwargs),
     )
-    monkeypatch.setattr(attention.paged_kv_write, "Caps", lambda **kwargs: kwargs)
-    monkeypatch.setattr(attention.paged_kv_write, "plan", lambda caps: writer)
+    monkeypatch.setattr(paged_kv_write, "Caps", lambda **kwargs: kwargs)
+    monkeypatch.setattr(paged_kv_write, "plan", lambda caps: writer)
     device = torch.device("cpu")
     source = torch.zeros((16, 2560), dtype=torch.bfloat16)
     scratch = attention.QSAScratch.allocate(16, device)

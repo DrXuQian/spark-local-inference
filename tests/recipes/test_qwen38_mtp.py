@@ -37,6 +37,8 @@ def test_persistent_views_keep_full_residual_and_bounded_logits_separate():
 
 def test_feedback_refresh_and_private_benchmark_preserve_input_state(monkeypatch):
     from b12x._lib.scratch import ScratchBufferSpec
+    from b12x.sequence import mtp_feedback
+    from ignition.preparation import tuning
 
     arena = ScratchArena("cpu")
     spec = lambda n: (ScratchBufferSpec(name="feedback", shape=(n,), dtype=torch.uint8, device=torch.device("cpu")),)
@@ -44,10 +46,10 @@ def test_feedback_refresh_and_private_benchmark_preserve_input_state(monkeypatch
     plan.scratch_specs = lambda: spec(plan.size)
     plan.request = lambda **kwargs: SimpleNamespace(**kwargs)
     requests, resources = [], {}
-    monkeypatch.setattr(mtp.mtp_feedback, "Caps", lambda **kwargs: kwargs)
-    monkeypatch.setattr(mtp.mtp_feedback, "plan", lambda *args, **kwargs: plan)
-    monkeypatch.setattr(mtp.mtp_feedback, "bind", lambda p, **kwargs: SimpleNamespace(version=p.version, **kwargs))
-    monkeypatch.setattr(mtp, "register_finalizer", lambda s, fn, *, workspace: workspace.register_finalizer(fn))
+    monkeypatch.setattr(mtp_feedback, "Caps", lambda **kwargs: kwargs)
+    monkeypatch.setattr(mtp_feedback, "plan", lambda *args, **kwargs: plan)
+    monkeypatch.setattr(mtp_feedback, "bind", lambda p, **kwargs: SimpleNamespace(version=p.version, **kwargs))
+    monkeypatch.setattr(tuning, "register_finalizer", lambda s, fn, *, workspace: workspace.register_finalizer(fn))
 
     def resource(session, key, factory):
         if key not in resources:

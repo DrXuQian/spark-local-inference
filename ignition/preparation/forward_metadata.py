@@ -8,6 +8,7 @@ import ctypes
 import io
 import pickle
 import socket
+import sys
 import types
 from contextvars import ContextVar
 from threading import Lock, RLock, local
@@ -71,32 +72,44 @@ def _mapping_proxy(values):
     return types.MappingProxyType(values)
 
 
+def _loaded_types(module, *names):
+    """Resource objects imply their defining modules are already loaded.
+
+    Metadata serialization must not initialize an unused compiler/operator
+    package merely to identify objects which cannot occur in this forward.
+    """
+    namespace = vars(sys.modules[module]) if module in sys.modules else {}
+    return tuple(value for name in names if isinstance(value := namespace.get(name), type))
+
+
 class _ForwardPickler(pickle.Pickler):
     def __init__(self, file):
         super().__init__(file, protocol=pickle.HIGHEST_PROTOCOL)
         self.storages = {}
+        self.sessions = _loaded_types('b12x.preparation', 'PreparationSession')
+        self.devices = _loaded_types('b12x.preparation.device', 'DetectedDevice')
+        self.slots = _loaded_types('b12x.preparation.types', '_PreparedSlot')
+        self.prepared = _loaded_types('b12x.preparation.types', '_Prepared')
+        self.triton_functions = _loaded_types('triton.runtime', 'JITFunction')
+        self.ffi_objects = _loaded_types('tvm_ffi.core', 'CObject')
+        self.compiler_resources = (
+            *_loaded_types('triton.compiler', 'CompiledKernel'),
+            *_loaded_types('cutlass.base_dsl.jit_executor', 'JitCompiledFunction'),
+            *_loaded_types('b12x._lib.compile_plan', 'CompiledCuTeProgram', 'DeferredCuTeKernel', 'DeferredTritonKernel'),
+            *_loaded_types('ignition.preparation.package_storage', 'PackageStorage'),
+            *_loaded_types('ignition.preparation.peer_storage', 'PeerStorage'))
 
     def reducer_override(self, value):
-        from triton.runtime import JITFunction
-        from triton.compiler import CompiledKernel
-        from cutlass.base_dsl.jit_executor import JitCompiledFunction
-        from b12x._lib.compile_plan import CompiledCuTeProgram, DeferredCuTeKernel, DeferredTritonKernel
-        from b12x.preparation import PreparationSession
-        from b12x.preparation.device import DetectedDevice
-        from b12x.preparation.types import _PreparedSlot, _Prepared
-        from torch._dynamo.aot_compile_types import _deserialize_triton_kernel, _serialize_triton_kernel
         from .device_binding import restore_device, restore_prepared_device
-        from .package_storage import PackageStorage
-        from .peer_storage import PeerStorage
 
-        if isinstance(value, PreparationSession):
+        if isinstance(value, self.sessions):
             return _Unavailable, ("b12x preparation session",)
         if isinstance(value, _Unavailable):
             return _Unavailable, (value.description,)
         # A worker may trace another local rank's forward on its own GPU; the artifact relocates when bound.
         if isinstance(value, torch.device):
             return restore_device, (value.type, value.index)
-        if isinstance(value, DetectedDevice):
+        if isinstance(value, self.devices):
             return restore_prepared_device, (type(value), dict(vars(value)))
         if isinstance(value, torch.Tensor):
             if type(value) not in (torch.Tensor, torch.nn.Parameter, FakeTensor):
@@ -105,29 +118,27 @@ class _ForwardPickler(pickle.Pickler):
             owner = self.storages.setdefault(storage._cdata, _Storage(storage.nbytes()))
             return _tensor, (owner, tuple(value.shape), value.stride(), value.storage_offset(),
                              value.dtype, value.device, value.requires_grad, type(value))
-        if isinstance(value, _PreparedSlot):
+        if isinstance(value, self.slots):
             # Tracing needs selected layouts; normal plan pickling clears prepared state.
             return _object, (type(value),), dict(vars(value)), None, None, _set_state
-        if isinstance(value, _Prepared):
+        if isinstance(value, self.prepared):
             state = dict(vars(value))
             for name in ('retained', 'owners', 'closers', 'users'):
                 state[name] = _Unavailable(f'b12x prepared {name}')
             return _object, (type(value),), state, None, None, _set_state
-        if isinstance(value, JITFunction):
+        if isinstance(value, self.triton_functions):
+            from torch._dynamo.aot_compile_types import _deserialize_triton_kernel, _serialize_triton_kernel
+
             return _deserialize_triton_kernel, (_serialize_triton_kernel(value),)
         if isinstance(value, types.MappingProxyType):
             return _mapping_proxy, (dict(value),)
-        from tvm_ffi.core import CObject
-
-        if isinstance(value, CObject) or (not isinstance(value, type) and '<locals>' in type(value).__qualname__):
+        if isinstance(value, self.ffi_objects) or (not isinstance(value, type) and '<locals>' in type(value).__qualname__):
             # FlashInfer's TVM-FFI kernel libraries and its locally defined kernel runners are process-local.
             return _Unavailable, (f'{type(value).__module__}.{type(value).__qualname__}',)
         if isinstance(value, (torch.cuda.Stream, torch.cuda.Event, torch.cuda.CUDAGraph, torch.cuda.MemPool,
                               torch.distributed.ProcessGroup, socket.socket, ctypes.CDLL, ctypes._Pointer,
                               ctypes._CFuncPtr, ctypes.Structure, ctypes.Array, ctypes._SimpleCData,
-                              CompiledKernel, JitCompiledFunction, CompiledCuTeProgram, local,
-                              DeferredCuTeKernel, DeferredTritonKernel, PreparationSession, PackageStorage,
-                              PeerStorage, *_LOCK_TYPES)):
+                              *self.compiler_resources, local, *self.sessions, *_LOCK_TYPES)):
             # Preparation sessions, allocators and peer storage retain process-local contexts, not forward
             # metadata; collective runtimes keep peer storage for teardown.
             return _Unavailable, (f'{type(value).__module__}.{type(value).__qualname__}',)

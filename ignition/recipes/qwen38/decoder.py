@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -21,8 +22,10 @@ from ignition.preparation.scratch import ScratchArena
 from .hyperconnection import packed_down_projection, hyperconnection_extents
 from .model import create_model_tree
 from .moe import QwenMoeWeights
-from .vision import VisionWeights
 from .weights import QwenWeightLoader
+
+if TYPE_CHECKING:
+    from .vision import VisionWeights
 
 
 @dataclass(frozen=True)
@@ -82,6 +85,8 @@ class ModelWeights:
             from .gguf_weights import load_model
 
             return load_model(manifest, device, progress=progress, shard=shard)
+        from .vision import VisionWeights
+
         tree = create_model_tree(manifest)
         before = torch.cuda.memory_allocated(device)
         layers = []

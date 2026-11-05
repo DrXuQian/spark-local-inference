@@ -101,8 +101,7 @@ class _GuardPickler(GuardsStatePickler):
         return value
 
     def reducer_override(self, obj):
-        from triton.runtime import JITFunction
-        from torch._dynamo.aot_compile_types import _deserialize_triton_kernel, _serialize_triton_kernel
+        from .forward_metadata import _loaded_types
 
         if isinstance(obj, torch.device):
             return restore_device, (obj.type, obj.index)
@@ -116,7 +115,9 @@ class _GuardPickler(GuardsStatePickler):
             deferred = kind is torch._subclasses.FakeTensor
             return type(self)._unpickle_tensor, (meta, obj.device, torch.Tensor if deferred else kind,
                 torch._C._dispatch_keys(obj).raw_repr(), obj.grad, deferred)
-        if isinstance(obj, JITFunction):
+        if isinstance(obj, _loaded_types('triton.runtime', 'JITFunction')):
+            from torch._dynamo.aot_compile_types import _deserialize_triton_kernel, _serialize_triton_kernel
+
             return _deserialize_triton_kernel, (_serialize_triton_kernel(obj),)
         if (hasattr(obj, '__dict__')
                 and type(obj).__module__.startswith(('ignition.', 'b12x.'))
@@ -124,9 +125,7 @@ class _GuardPickler(GuardsStatePickler):
             state = {key: value if id(value) in self.guard_tree_values
                      else _Missing('unguarded attribute')
                      for key, value in vars(obj).items()}
-            from b12x.preparation.device import DetectedDevice
-
-            if isinstance(obj, DetectedDevice):
+            if isinstance(obj, _loaded_types('b12x.preparation.device', 'DetectedDevice')):
                 return restore_prepared_device, (type(obj), state)
             return _guard_object, (type(obj),), state
         return super().reducer_override(obj)

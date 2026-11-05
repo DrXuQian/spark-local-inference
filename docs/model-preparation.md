@@ -938,6 +938,10 @@ present; a package-owned mapped mailbox avoids its legacy b12x allocator.
 The platform FlashInfer build must also supply
 Flare's caller-owned top-k/top-p workspace interfaces and request-local chain
 sampling RNG contract; a successful `import flashinfer` does not establish them.
+The metadata serializer and guard pickler now identify loaded resource types
+without importing unused b12x, CuTe or peer-storage modules. QSA/MTP scratch and
+GGUF weight-class imports also work without those packages. This does not yet
+replace the normal preparation session or its tuning lifecycle.
 
 Run the host checks without loading a device library:
 
@@ -991,6 +995,18 @@ The PLE test stages rows from a small IQ4_NL file before replay, then checks
 hash publication, lookup, projections, norm/gating, dilation3 convolution and
 history in one graph. It covers changing packed lengths, raw slot0, inactive
 rows and immutable committed token history. It does not time native host I/O.
+The separate `attention-api` suite checks the installed platform FA3 wheel's
+native `flash_attn_3.fwd` interface with page64, D256, 24/2 heads, widths
+1/7/128, packed inactive rows and changing device lengths. It checks both
+ordinary reads and KV append, exact cache mutation, caller-provided output
+and allocation stability during graph replay. The wheel must enable paged KV,
+append, varlen and D256; the earlier narrow FA3 build is insufficient. This is
+an operator capability test; FA3 is not yet wired into the Qwen recipe.
+The inspection also checks the platform Torch APIs used by Flare's AOT
+serialization, guard pickler and retained CUDA graphs, and round-trips tensor
+metadata with aliases. Platform API compatibility must be established before
+attempting complete compilation/export; this inspection does not compile or
+replay a model.
 
 Passing this command qualifies those components, not complete PPU model
 serving. Full b12x-free recipe composition, ordinary MTP paged attention,

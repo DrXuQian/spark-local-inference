@@ -61,6 +61,8 @@ def device_suites(args, root, output):
             'tests/components/test_actlize_mixing_cuda.py',
             'tests/components/test_actlize_ple_cuda.py',
             '--junitxml=' + str(output / 'framework.xml')], root, 'framework.xml'),
+        ('attention-api', [python, '-m', 'pytest', '-q', 'tests/components/test_flash_attn3_paged_cuda.py',
+            '--junitxml=' + str(output / 'attention-api.xml')], root, 'attention-api.xml'),
         ('quactlize', [python, '-m', 'pytest', '-q', 'tests/serving/test_serving_device.py',
             '--junitxml=' + str(output / 'quactlize.xml')], args.quactlize_source, 'quactlize.xml'),
         ('actlize', [python, str(args.actlize_source / 'tests/serving_device.py'),
@@ -101,6 +103,29 @@ def check_interfaces(args):
         return f'{props.name}; capability={props.major}.{props.minor}; VRAM={props.total_memory}'
 
     check('device', device)
+
+    def preparation_api():
+        import torch
+        from torch._inductor.standalone_compile import AOTCompiledArtifact
+        from torch._functorch._aot_autograd.aot_autograd_result import deserialize_bundled_cache_entry
+        from ignition.preparation.aot import _GuardPickler
+        from ignition.preparation.forward_metadata import dumps, loads
+
+        if not callable(deserialize_bundled_cache_entry) or not isinstance(AOTCompiledArtifact, type):
+            raise RuntimeError('platform Torch does not provide the required compiled-forward serialization API')
+        if 'keep_graph' not in inspect.signature(torch.cuda.CUDAGraph).parameters:
+            raise RuntimeError('platform Torch CUDAGraph lacks keep_graph for graph export')
+        value = torch.empty(3, 11)
+        original, view = loads(dumps((value, value[1:, 3:])))
+        if (original.untyped_storage()._cdata != view.untyped_storage()._cdata
+                or view.stride() != (11, 1) or view.storage_offset() != 14):
+            raise RuntimeError('platform Torch metadata serialization changed tensor aliases')
+        import io
+
+        _GuardPickler({}, {}, {}, {}, io.BytesIO())
+        return 'AOT serialization/guards and retained graphs present; metadata aliases preserved (compilation/replay untested)'
+
+    check('torch-preparation-api', preparation_api)
 
     def quactlize():
         import ctypes as C
@@ -151,6 +176,20 @@ def check_interfaces(args):
     check('quactlize-native', quactlize)
     check('actlize-native', actlize)
     check('dense-blas', blas)
+
+    def flash_attention():
+        import torch
+
+        module = importlib.import_module('flash_attn_3._C')
+        operation = torch.ops.flash_attn_3.fwd.default
+        fields = {argument.name for argument in operation._schema.arguments}
+        required = {'q', 'k', 'v', 'k_new', 'v_new', 'out', 'cu_seqlens_q', 'cu_seqlens_k_new',
+                    'seqused_k', 'max_seqlen_q', 'page_table', 'is_causal', 'num_splits'}
+        if not required <= fields:
+            raise RuntimeError('missing FA3 forward arguments: ' + ', '.join(sorted(required - fields)))
+        return f'{module.__file__}; ABI present, page64/D256/append still require attention-api suite'
+
+    check('flash-attention3-api', flash_attention)
 
     def flashinfer():
         from flashinfer import sampling

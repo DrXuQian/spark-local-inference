@@ -14,7 +14,6 @@ import json
 import torch
 
 from ignition.components.parallel import TensorParallelShard
-from ignition.components.vocabulary import nvfp4_draft_head
 from ignition.preparation.checkpoint import CheckpointError, CheckpointManifest
 from ignition.preparation.qwen38 import TRANSFORMERS_REVISION
 
@@ -200,6 +199,8 @@ class MTPWeights:
                      for name in ("o_proj", "indexer.index_qk_proj")}}
         # Drafts read the vocabulary through an NVFP4 copy of the BF16 head: a proposal
         # distribution only has to be the q that generated it; verification keeps BF16.
+        from ignition.components.vocabulary import nvfp4_draft_head
+
         draft_head = nvfp4_draft_head(lm_head_weight)
         torch.cuda.synchronize(device)
         return cls(module, attention, moe, embedding_weight, lm_head_weight,

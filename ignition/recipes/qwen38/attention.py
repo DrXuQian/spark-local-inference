@@ -9,20 +9,17 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import partial
+from typing import TYPE_CHECKING
 
 import torch
-from b12x.attention import paged_kv_write, qsa
-from b12x.preparation import PreparationSession, PreparedCall
-from transformers.models.qwen4_exp.modeling_qwen4_exp import apply_rotary_pos_emb
+
+if TYPE_CHECKING:
+    from b12x.preparation import PreparationSession
 
 from ignition.components import sm103
-from ignition.components.sm103_sparse_attention import PARTIAL_ROWS, SPLIT_ROWS, PreparedSparseAttention
 from ignition.components.linear import QuantizedProjection, UnquantizedProjection
-from ignition.preparation.fixtures import qsa as qsa_fixtures
 from ignition.preparation.scratch import ScratchArena, planned_scratch, prime_owners
-from ignition.preparation.tuning import declare, register_finalizer
 
-from .attention_overlap import ConcurrentAttention
 from .attention_state import QSAMetadata, QSAState, RotaryTables
 
 
@@ -59,7 +56,11 @@ class QSAScratch:
         q_heads, kv_heads = 24 // world_size, max(1, 2 // world_size)
         q_width, kv_width = q_heads * 512, kv_heads * 256
         qkv = zeros(tokens, q_width + 2 * kv_width)
-        partial_rows = PARTIAL_ROWS if sm103.is_sm103(device) else 0
+        partial_rows = 0
+        if sm103.is_sm103(device):
+            from ignition.components.sm103_sparse_attention import PARTIAL_ROWS
+
+            partial_rows = PARTIAL_ROWS
         return cls(qkv[:, :q_width], qkv[:, q_width:q_width + kv_width], qkv[:, q_width + kv_width:],
                    zeros(tokens, 640), zeros(tokens, q_heads, 256), zeros(tokens, kv_heads, 256),
                    zeros(tokens, q_heads, 256),
@@ -153,6 +154,13 @@ class PreparedAttention:
                 epsilon=module.config.rms_norm_eps, workspace=workspace)
             self.concurrent = self.sparse = None
             return
+        from b12x.attention import paged_kv_write, qsa
+        from b12x.preparation import PreparedCall
+        from ignition.components.sm103_sparse_attention import SPLIT_ROWS, PreparedSparseAttention
+        from ignition.preparation.fixtures import qsa as qsa_fixtures
+        from ignition.preparation.tuning import declare, register_finalizer
+        from .attention_overlap import ConcurrentAttention
+
         # On SM103 one score workspace covers every representative group of a
         # prefill chunk, so selection makes a single pass instead of one per 128 MiB.
         score_workspace = self.tokens * (context // 4) * 4 if sm103.is_sm103(source.device) else None
@@ -242,11 +250,15 @@ class PreparedAttention:
         if self.actlize is not None:
             self.actlize.rebind(state)
         else:
+            from b12x.attention import qsa
+
             self.binding = qsa.bind(self.plan, scratch=self.workspace, **self.binding_kwargs)
             self.write_kwargs.update(k_cache=state.main_k_cache, v_cache=state.main_v_cache)
         self.state = state
 
     def __call__(self, source: torch.Tensor) -> torch.Tensor | None:
+        from transformers.models.qwen4_exp.modeling_qwen4_exp import apply_rotary_pos_emb
+
         s = self.scratch
         if self.concurrent is None:
             self.projections["indexer.index_qk_proj"](source)
@@ -262,6 +274,8 @@ class PreparedAttention:
         s.query.copy_(query)
         s.key.copy_(key)
         if self.actlize is None:
+            from b12x.attention import paged_kv_write, qsa
+
             paged_kv_write.run(self.writer, **self.write_kwargs)
         if self.cache_only:
             qsa.run(self.binding, **self.dynamic(), cache_only=True)

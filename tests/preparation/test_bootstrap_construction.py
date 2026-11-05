@@ -154,7 +154,10 @@ def _install_boundaries(monkeypatch, checkpoint):
     from triton.runtime.jit import JITFunction
 
     from ignition.components import gated_delta, varlen_attention
-    from b12x.sequence import gdn_decode, gdn_prefill, short_conv
+    from b12x.sequence import gdn_decode, gdn_prefill, short_conv, ple_embedding, mtp_feedback
+    from b12x.attention import qsa, paged_kv_write
+    from b12x.gemm import blockscaled
+    from b12x.moe import fused_moe
     from b12x.norm import hyperconnection as hc
     from ignition.preparation import tuning
     from ignition.recipes.qwen38 import (
@@ -301,16 +304,16 @@ def _install_boundaries(monkeypatch, checkpoint):
         ),
     )
     for op in (
-        attention.qsa,
-        attention.paged_kv_write,
+        qsa,
+        paged_kv_write,
         hc,
         short_conv,
         gdn_prefill,
         gdn_decode,
-        moe.fused_moe,
-        ple.ple_embedding,
+        fused_moe,
+        ple_embedding,
         varlen_attention.varlen,
-        mtp.mtp_feedback,
+        mtp_feedback,
     ):
         if hasattr(op, "bind"):
             original = op.bind
@@ -403,7 +406,7 @@ def _install_boundaries(monkeypatch, checkpoint):
     monkeypatch.setattr(
         loader, "_copy", lambda self, destination, source: destination.copy_(source)
     )
-    monkeypatch.setattr(moe.blockscaled, "pack_weight", pack)
+    monkeypatch.setattr(blockscaled, "pack_weight", pack)
 
     def experts(loader, *args, **kwargs):
 
@@ -420,14 +423,14 @@ def _install_boundaries(monkeypatch, checkpoint):
         )
 
         mode = "a16" if isinstance(loader, mtp_weights.MTPWeightLoader) else "a4"
-        plan = moe.fused_moe.plan_weights(
-            source=moe.fused_moe.PackedSource(
+        plan = fused_moe.plan_weights(
+            source=fused_moe.PackedSource(
                 format="modelopt_nvfp4", w13_layout="w13"
             ),
-            activation=moe.fused_moe.ActivationSpec(
+            activation=fused_moe.ActivationSpec(
                 mode=mode, nonlinearity="silu", io_dtype=torch.bfloat16
             ),
-            geometry=moe.fused_moe.MoEGeometry(
+            geometry=fused_moe.MoEGeometry(
                 num_experts=512, hidden_size=2560, intermediate_size=640
             ),
         )
@@ -493,7 +496,7 @@ def _install_boundaries(monkeypatch, checkpoint):
                 value=packed,
             )
         value = B12XFP4ExpertWeights(plan=plan._impl, **data)
-        return moe.fused_moe.PreparedExperts(plan=plan, _impl=value)
+        return fused_moe.PreparedExperts(plan=plan, _impl=value)
 
     monkeypatch.setattr(loader, "load_experts", experts)
     monkeypatch.setattr(mtp_weights.MTPWeightLoader, "load_experts", experts)
@@ -503,7 +506,7 @@ def _install_boundaries(monkeypatch, checkpoint):
         mailbox = SimpleNamespace(device_view=torch.empty(tokens * heads + 1, dtype=torch.int64, device=device),
                                   close=lambda: None)
         return ple.PLETable(table_config, table_layout,
-            ple.ple_embedding.allocate_geometry(table_layout.geometry, device=device),
+            ple_embedding.allocate_geometry(table_layout.geometry, device=device),
             torch.empty(1, dtype=torch.float32, device=device),
             torch.empty((tokens * heads, 80), dtype=torch.uint8, device=device),
             torch.empty((tokens * heads, 10), dtype=torch.uint8, device=device),
