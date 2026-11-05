@@ -80,6 +80,7 @@ class PreparedPagedKVWriter:
         self.cache_abi = tuple((tuple(t.shape[1:]), t.stride(), t.dtype, t.device) for t in (key_cache, value_cache))
         self.rebind()
         self.compiled = None
+        self.prepared = False
         workspace.register_finalizer(self.prepare)
 
     def rebind(self):
@@ -103,19 +104,22 @@ class PreparedPagedKVWriter:
 
         from .paged_kv_copy import write_rows
 
+        self.prepared = False
         key = self.arguments['key']
         self.grid = (key.shape[0],)
         self.block = triton.next_power_of_2(key.shape[1] * key.shape[2])
         self.compiled = warmup_triton(write_rows, (*self._arguments(), self.block), self.grid, num_warps=4)
+        self.prepared = True
 
     def __call__(self):
         from ignition.preparation.triton import launch_triton
 
         from .paged_kv_copy import write_rows
 
-        if self.compiled is None:
+        if not self.prepared:
             raise RuntimeError('finalize paged KV bindings before warmup/capture')
-        launch_triton(write_rows, self.compiled, (*self._arguments(), self.block), self.grid, num_warps=4)
+        compiled = None if torch.compiler.is_compiling() else self.compiled
+        launch_triton(write_rows, compiled, (*self._arguments(), self.block), self.grid, num_warps=4)
 
 
 class PreparedFlashAttention3:

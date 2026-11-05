@@ -36,6 +36,9 @@ def test_real_constructor_declares_copy_then_rebinds_same_page_geometry():
         writer = PreparedPagedKVWriter(*fresh, key, value, slots, workspace=arena, max_cache_pages=9)
         attention = PreparedFlashAttention3(object(), query, key, value, pages, lengths, starts, output, width=7)
         assert writer.compiled is None and len(arena._finalizers) == 1
+        assert not writer.prepared
+        with pytest.raises(RuntimeError, match='finalize paged KV'):
+            writer()
         assert writer.device_errors == (writer.error,)
         bigger = [torch.empty(9, 64, 2, 256, dtype=key.dtype, device=key.device) for _ in range(2)]
         for operator in (writer, attention):
@@ -45,6 +48,50 @@ def test_real_constructor_declares_copy_then_rebinds_same_page_geometry():
         writer.arguments['k_cache'] = torch.empty(10, 64, 2, 256, dtype=key.dtype, device=key.device)
         with pytest.raises(ValueError, match='page ABI and capacity'):
             writer.rebind()
+
+
+def test_writer_dynamo_guards_do_not_bind_compiler_process_resources(monkeypatch):
+    from torch.utils import _triton
+    from ignition.preparation import triton as launches
+
+    # The only stand-ins are device admission and native compilation. Trace the
+    # real writer with Dynamo and check that resource replacement does not
+    # trigger a second compilation; this is not a device arithmetic test.
+    monkeypatch.setattr(_triton, 'has_triton', lambda *args, **kwargs: True)
+    native = ctypes.CDLL(None)
+    monkeypatch.setattr(launches, 'warmup_triton', lambda *args, **kwargs: native)
+    with FakeTensorMode():
+        _, key, value, *_ = operands()
+        fresh = torch.empty_strided((7, 2, 256), (13312, 256, 1), dtype=key.dtype, device=key.device)
+        slots = torch.empty(7, dtype=torch.int64, device=key.device)
+        arena = ScratchArena(key.device, overlap=False)
+        writer = PreparedPagedKVWriter(fresh, fresh, key, value, slots, workspace=arena)
+        arena.freeze(); arena.finalize()
+    assert writer.prepared and writer.compiled is native
+    writer.compiled = loads(dumps(native))
+    graphs = []
+
+    def record(module, examples):
+        graphs.append(module)
+        return lambda *args: ()
+
+    def forward(owner):
+        owner()
+
+    compiled = torch.compile(forward, backend=record, fullgraph=True, dynamic=False)
+    compiled(writer)
+    writer.compiled = native
+    compiled(writer)
+    assert len(graphs) == 1
+    def failed_compile(*args, **kwargs):
+        raise RuntimeError('native compilation failed')
+
+    monkeypatch.setattr(launches, 'warmup_triton', failed_compile)
+    with pytest.raises(RuntimeError, match='native compilation failed'):
+        writer.prepare()
+    assert not writer.prepared
+    with pytest.raises(RuntimeError, match='finalize paged KV'):
+        writer()
 
 
 def test_fa3_rejects_output_alias_and_incompatible_metadata():

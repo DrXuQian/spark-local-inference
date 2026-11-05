@@ -119,6 +119,30 @@ def test_prepared_launch_is_captured_by_real_dynamo_fullgraph_without_cuda(monke
     assert call.kwargs['grid'] == [(1, 1, 1)]
 
 
+def test_prepared_triton_dynamo_guard_ignores_process_local_compiled_kernel(monkeypatch):
+    from torch.utils import _triton
+    from ignition.preparation.forward_metadata import _Unavailable
+
+    monkeypatch.setattr(_triton, 'has_triton', lambda *args, **kwargs: True)
+    source, output = torch.ones(32), torch.empty(32)
+    prepared = PreparedTriton(_copy_launch, _Unavailable('worker kernel'), (source, output), (1,),
+                              {'N': 32, 'num_warps': 4})
+    graphs = []
+
+    def record(module, examples):
+        graphs.append(module)
+        return lambda *args: ()
+
+    def forward(owner):
+        owner()
+
+    compiled = torch.compile(forward, backend=record, fullgraph=True, dynamic=False)
+    compiled(prepared)
+    prepared.compiled = object()
+    compiled(prepared)
+    assert len(graphs) == 1
+
+
 @pytest.mark.parametrize('grid', [(7,), (7, 2), (7, 2, 3)])
 def test_direct_compiled_launcher_receives_three_dimensions(grid):
     from triton.compiler.compiler import CompiledKernel
