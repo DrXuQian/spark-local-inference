@@ -52,8 +52,15 @@ Flare prepared sampling interfaces from local-inference-lab/flashinfer 560fef1.
 It is a PPU source-containing wheel. The host-linked sampling.so is deliberately
 not shipped because the box must use its own SDK and TVM-FFI. Its distinct
 version creates a separate JIT cache; do not force reuse of older sampling AOT
-artifacts, whose FFI lacks row_independent_rng. Operator patch commits have not
-been pushed upstream by this framework change.
+artifacts, whose FFI lacks row_independent_rng.
+
+The operator sources are published on the Flare development branches:
+  DrXuQian/actlizeLA: feat/flare-gdn-qsa-mtp, 2e107e2
+  DrXuQian/QUactlize: feat/ppu-flash-next, 653b46e
+  DrXuQian/flashinfer-for-sail: fix/flare-ppu-sampling, 7a7989e
+The QUactlize change only fixes installed-wheel test reporting; it changes no
+kernel or runtime and does not require a replacement QUactlize wheel. The two
+LFS wheels above already match the published actlizeLA and FlashInfer commits.
 
 For a focused retry after installation:
 
