@@ -52,6 +52,32 @@ class Gpu:
         return self.capability in SUPPORTED_CAPABILITIES
 
 
+def configured_operator_target(recipe):
+    from ignition.preparation.qwen38_gguf import operator_target
+
+    try:
+        return operator_target(recipe)
+    except ValueError as error:
+        raise UsageError(str(error)) from error
+
+
+def discover_ppus() -> tuple[Gpu, ...]:
+    """Leave the parent CUDA context uninitialized until its device mask is final."""
+    import json
+    import subprocess
+    import sys
+
+    try:
+        result = subprocess.run([sys.executable, '-m', 'ignition.cli.cuda_devices'],
+                                capture_output=True, text=True, check=True, timeout=45)
+        return tuple(Gpu(**dict(record, capability=tuple(record['capability'])))
+                     for record in json.loads(result.stdout))
+    except subprocess.CalledProcessError as error:
+        raise CapacityError('PPU device discovery failed: ' + error.stderr.strip()[-2000:]) from error
+    except (OSError, subprocess.TimeoutExpired, ValueError, TypeError, KeyError) as error:
+        raise CapacityError(f'PPU device discovery failed: {error}') from error
+
+
 def discover_gpus() -> tuple[Gpu, ...]:
     """Enumerate NVML devices and include the shared CUDA budget on Windows iGPUs."""
     try:
@@ -203,9 +229,16 @@ class Plan:
     benchmark_selection: BenchmarkSelection | None = None
 
     def __post_init__(self):
-        if ((self.recipe.actlize is not None or self.recipe.quactlize is not None)
-                and (self.world_size != 1 or self.gpus[0].capability != (12, 0))):
-            raise UsageError('the configured external GGUF operators require one SM120 device')
+        target = self.operator_target
+        if target in ('ppu10', 'ppu15') or self.recipe.actlize is not None or self.recipe.quactlize is not None:
+            if self.world_size != 1:
+                raise UsageError('the configured external GGUF operators require one device')
+            if target == 'cuda_sm120' and self.gpus[0].capability != (12, 0):
+                raise UsageError('the configured external GGUF operators require one SM120 device')
+        if target in ('ppu10', 'ppu15') and (self.tuning_replica is not None or self.tuning_gpus
+                or self.collective_tuning not in (None, 'static') or self.collective_ladder is not None
+                or self.native_dense_activations):
+            raise UsageError('PPU GGUF operators require single-device preparation and BF16 dense activations')
         if self.benchmark_selection is not None:
             selection = self.benchmark_selection
             if not isinstance(selection, BenchmarkSelection):
@@ -247,6 +280,10 @@ class Plan:
                 raise UsageError("--joint-tuning requires DeepSeek V4.1")
             if self.autotune_effort == "off":
                 raise UsageError("--joint-tuning requires --autotune-effort default or audit")
+
+    @property
+    def operator_target(self):
+        return configured_operator_target(self.recipe)
 
     @property
     def world_size(self) -> int:
@@ -533,9 +570,11 @@ def plan(recipe: Recipe, checkpoint: Checkpoint, gpus: tuple[Gpu, ...], *, selec
             raise UsageError("--vocabulary-parallel-sampling requires DeepSeek V4.1")
         world_sizes = tuple(size for size in world_sizes if size != 3)
     sizes = " or ".join(map(str, world_sizes))
-    external_gguf = recipe.actlize is not None or recipe.quactlize is not None
-    supported = [gpu for gpu in gpus if gpu.supported and (not external_gguf or gpu.capability == (12, 0))]
-    architectures = 'SM120 (configured GGUF operators)' if external_gguf else SUPPORTED_ARCHITECTURES
+    target = configured_operator_target(recipe)
+    ppu = target in ('ppu10', 'ppu15')
+    nvidia_gguf = not ppu and (recipe.actlize is not None or recipe.quactlize is not None)
+    supported = [gpu for gpu in gpus if ppu or (gpu.supported and (not nvidia_gguf or gpu.capability == (12, 0)))]
+    architectures = target if ppu else 'SM120 (configured GGUF operators)' if nvidia_gguf else SUPPORTED_ARCHITECTURES
     chosen = None
     if selected is not None:
         if any(index >= len(gpus) for index in selected):
@@ -550,9 +589,9 @@ def plan(recipe: Recipe, checkpoint: Checkpoint, gpus: tuple[Gpu, ...], *, selec
             example = format_gpus(range(first, first + size))
             raise CapacityError(f"{checkpoint.alias} needs {sizes} GPUs; {len(chosen)} selected; use --gpus {example}")
         for gpu in chosen:
-            if external_gguf and gpu.capability != (12, 0):
+            if nvidia_gguf and gpu.capability != (12, 0):
                 raise CapacityError(f"GPU {gpu.index} ({gpu.name}) cannot use the configured SM120 GGUF operator libraries")
-            if not gpu.supported:
+            if not ppu and not gpu.supported:
                 raise CapacityError(f"GPU {gpu.index} ({gpu.name}) is not an {SUPPORTED_ARCHITECTURES} device")
     elif len(supported) < world_sizes[0]:
         raise CapacityError(f"{checkpoint.alias} needs {sizes} {architectures} GPUs; this host has {len(supported)}")

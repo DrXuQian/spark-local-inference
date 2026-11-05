@@ -178,7 +178,7 @@ def _export_hosts(args):
         raise UsageError(f"{model.checkpoint.alias} is not cached; a single-host export downloads it")
     concurrency = configuration.max_concurrency(model.checkpoint.alias, model.recipe.concurrency,
                                                 args.max_concurrency)
-    host = Host.discover()
+    host = Host.discover(recipe=model.recipe)
     selected = planning.parse_gpus(args.gpus or "0")
     if len(selected) != 1 or selected[0] >= len(host.gpus):
         raise UsageError("multi-host ranks each use one GPU; --gpus names this host's")
@@ -207,7 +207,7 @@ def _export_hosts(args):
                    collective_ladder=resolve_collective_ladder(collective_mode, args.collective_ladder),
                    lock_gpu_clocks=args.lock_gpu_clocks, native_dense_activations=args.native_dense_activations,
                    shard_hyperconnections=args.shard_hyperconnections, joint_tuning=args.joint_tuning)
-    environment.apply(configuration, local, plan.recipe.b12x_environment)
+    environment.apply(configuration, local, plan.recipe.b12x_environment, operator_target=plan.operator_target)
     options = _server_options(configuration, model, plan)
     options.pop("api_key")
     print(json.dumps({"plan": plan.to_dict()}), file=sys.stderr, flush=True)
@@ -267,7 +267,7 @@ def _prepare(args):
     with phase(progress, "Select GPUs") as stage:
         concurrency = configuration.max_concurrency(model.checkpoint.alias, model.recipe.concurrency,
                                                     args.max_concurrency)
-        host = Host.discover()
+        host = Host.discover(recipe=model.recipe)
         plan = derive(configuration, model, host, gpus=args.gpus, concurrency=concurrency,
                       compile_workers=args.compile_workers, tuning_gpus=args.tuning_gpus, autotune_effort=args.autotune_effort,
                       collective_tuning=args.collective_tuning, collective_ladder=args.collective_ladder,
@@ -316,7 +316,7 @@ def _prepare(args):
             fetch(model, hub_cache, progress_bars=False)
             model.verify(hub_cache)
 
-    environment.apply(configuration, plan.gpus, plan.recipe.b12x_environment)
+    environment.apply(configuration, plan.gpus, plan.recipe.b12x_environment, operator_target=plan.operator_target)
     import flare_heliopause
 
     # Preparation runs native CUDA work that cannot unwind; a signal ends the process at once.
@@ -426,7 +426,7 @@ def debug_serve(args) -> int:
         raise UsageError(f"{model.checkpoint.alias} is not cached; ignition export downloads it")
     concurrency = configuration.max_concurrency(model.checkpoint.alias, model.recipe.concurrency,
                                                 args.max_concurrency)
-    host = Host.discover()
+    host = Host.discover(recipe=model.recipe)
     bind = _address(configuration.get("server.host", args.host).value,
                     configuration.get("server.port", args.port).value)
     rendezvous = None
@@ -469,7 +469,7 @@ def debug_serve(args) -> int:
     if rendezvous is None:
         plan = tuning_devices(plan, host, args.tuning_gpus)
         local = plan.gpus
-    environment.apply(configuration, local, plan.recipe.b12x_environment)
+    environment.apply(configuration, local, plan.recipe.b12x_environment, operator_target=plan.operator_target)
     options = _server_options(configuration, model, plan)
     options["thinking_token_budget"] = configuration.get("server.thinking_token_budget").value
     print(json.dumps({"plan": plan.to_dict()}), file=sys.stderr, flush=True)

@@ -144,7 +144,7 @@ def run(args):
     args = argparse.Namespace(**vars(args))
     if not settings.prefill:
         args.mtp_draft_tokens = 7 if settings.speculation_study else settings.width - 1
-    plan = derive(configuration, model, Host.discover(), gpus=args.gpus, concurrency=concurrency,
+    plan = derive(configuration, model, Host.discover(recipe=model.recipe), gpus=args.gpus, concurrency=concurrency,
         speculation=speculation(args, model, configuration), prefill_chunk=args.prefill_chunk_size,
         context_parallel=context_parallel(args, model), stream_overlap=stream_overlap(args, model),
         compile_workers=args.compile_workers, tuning_gpus=args.tuning_gpus,
@@ -170,7 +170,7 @@ def run(args):
         with phase(progress, "Download checkpoint"):
             fetch(model, hub_cache, progress_bars=False)
             model.verify(hub_cache)
-    environment.apply(configuration, plan.gpus, plan.recipe.b12x_environment)
+    environment.apply(configuration, plan.gpus, plan.recipe.b12x_environment, operator_target=plan.operator_target)
     result = _measure(model, plan, configuration, settings, progress, compile_forwards=not args.no_compile, output=args.output)
     write_result(result, args.output)
     return 0

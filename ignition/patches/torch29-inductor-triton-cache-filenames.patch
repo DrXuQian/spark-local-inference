@@ -1,0 +1,13 @@
+diff --git a/torch/_inductor/runtime/triton_heuristics.py b/torch/_inductor/runtime/triton_heuristics.py
+--- a/torch/_inductor/runtime/triton_heuristics.py
++++ b/torch/_inductor/runtime/triton_heuristics.py
+@@ -1516,3 +1516,3 @@
+                 triton_hash_to_path_key(kernel.hash),
+-                f"{kernel.src.fn.__name__}.cubin",
++                f"{kernel.src.fn.__name__[:150]}.cubin",
+             )
+@@ -1551,3 +1551,3 @@
+             triton_hash_to_path_key(self.kernel.hash),
+-            f"{self.kernel.name}.cubin",
++            f"{self.kernel.name[:150]}.cubin",
+         )

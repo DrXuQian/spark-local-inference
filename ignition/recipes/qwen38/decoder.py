@@ -60,13 +60,14 @@ class ModelWeights:
              *, progress: Callable[[str], None] | None = None,
              shard: TensorParallelShard = TensorParallelShard(0, 1),
              shard_hyperconnections: bool = False) -> ModelWeights:
-        from ignition.preparation.qwen38_gguf import QwenGgufCheckpoint
+        from ignition.preparation.qwen38_gguf import QwenGgufCheckpoint, operator_target
 
         device = torch.device(device)
         if device.type != "cuda":
             raise ValueError("model weights require a CUDA device")
         device = torch.device("cuda", torch.cuda.current_device() if device.index is None else device.index)
-        if torch.cuda.get_device_capability(device) not in SUPPORTED_CAPABILITIES:
+        target = operator_target(manifest) if isinstance(manifest, QwenGgufCheckpoint) else None
+        if target not in ('ppu10', 'ppu15') and torch.cuda.get_device_capability(device) not in SUPPORTED_CAPABILITIES:
             raise ValueError(f"the Qwen recipe requires {SUPPORTED_ARCHITECTURES}")
         free_bytes, _ = device_memory_info(device)
         if isinstance(manifest, QwenGgufCheckpoint):

@@ -1059,14 +1059,17 @@ legacy session remains in use for the original b12x model path. Missing external
 libraries on an explicit PPU target are rejected before model preparation.
 This removes the session's b12x/cuTile requirement; full-model hardware planning,
 external operator numerics and native export still require qualification.
-The ordinary `ignition export`/`debug-serve` entry is not ready for this PPU
-environment: discovery still uses NVML, the GGUF plan and full weight loader
-enforce NVIDIA capabilities, and CLI patch setup still requires the pinned
-Torch2.14.1/Triton3.8 installation. Use the qualification commands below with
-the platform Torch2.9/Triton3.5 artifacts while these entry points are ported;
-do not replace platform wheels to satisfy that legacy patch error.
+The ordinary `ignition export`/`debug-serve` entry now selects platform CUDA
+discovery in a child process for a complete explicit PPU operator set. This
+preserves the caller's visibility mask without initializing the parent's context
+before final selection. Planning and weight admission retain single-device and
+memory checks. CLI patch setup applies exact-context fixes to the platform
+Torch2.9.0/Triton3.5.0 sources, accepting vendor version suffixes; keep those
+platform wheels. Host checks cover admission, visibility and patch application.
+Full PPU export remains unqualified: GGUF reading still depends on b12x, and
+operator numerics, device discovery and native export require box validation.
 
-The next device gate exercises this session through `capture_forwards`, with
+The user reports the following gate passing on PPU. It exercises this session through `capture_forwards`, with
 alternating one-row and seven-row graphs sharing scratch, strided state reads,
 active/inactive writes, exact persistent state and allocation-stable replay:
 

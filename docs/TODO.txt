@@ -309,15 +309,16 @@
     Metadata serialization/guards and QSA/MTP/GGUF class imports no longer load
     unused b12x/CuTe packages. The text bootstrap and partial-layer qualifier use
     the external session when every external library is explicitly selected.
-    Its alternating state-transfer catalog still needs device qualification.
+    The user reports its alternating one/seven-row state-transfer catalog passing
+    on PPU after correcting the hidden-state null-slot test expectation.
     qualify.ppu_box includes a separate FA3 page64/D256/append graph API gate
     (widths 1/7/128, changing lengths, inactive rows and exact cache writes).
     The user reports all six API cases and all seven attention-prepared cases
     passing on PPU with Torch2.9/Triton3.5, including the three compiled forwards.
     These cover strided KV copy, FA3 automatic splits, changing packed suffixes,
     inactive rows, sticky bounds errors and allocation stability during replay.
-    Explicit PPU operator target identities now select the libraries, but normal
-    planning/export orchestration still needs the remaining port work.
+    Explicit PPU operator target identities now select the libraries and admit
+    single-device CLI planning; GGUF loading and native export need further work.
     The box has Torch2.9/Triton3.5: normalize direct compiled launch grids to
     three dimensions and omit the unsupported optional make_fx annotation flag.
     Torch2.9 compiled-artifact/guard serialization now uses its bundled AOT
@@ -336,12 +337,13 @@
     Component compilation/capture does not qualify the complete model catalog,
     native export/Rust replay or whole-round bubble behavior.
 
-[ ] Admit the complete explicit PPU operator set through the normal CLI path.
-    Host.discover currently uses NVML; Plan/plan and ModelWeights.load retain
-    NVIDIA capability checks. environment.apply invokes version-pinned
-    Torch2.14.1/Triton3.8 patch setup, which rejects the box's Torch2.9/Triton3.5.
-    Preserve device visibility, library/target identity, memory and compilation
-    checks; the partial qualifier bypasses this CLI admission path.
+[x] Admit the complete explicit PPU operator set through CLI device selection
+    and memory planning. A child probes platform CUDA properties without starting
+    the parent's context or reapplying the visibility mask. Explicit matching
+    libraries admit PPU capability values while retaining memory/single-device
+    checks. PPU patch setup targets platform Torch2.9/Triton3.5 sources with exact
+    context checks. Host validation passes; actual box discovery, full GGUF loading
+    and export remain unqualified. The GGUF reader still imports b12x.
 
 [ ] Measure external GGUF shared/routed expert overlap. GgufMoeWorkspace bypasses
     the b12x ConcurrentSharedExpert branch even when stream_overlap is enabled.

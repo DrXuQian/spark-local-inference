@@ -23,12 +23,14 @@ class Host:
     restriction: str | None
 
     @classmethod
-    def discover(cls) -> "Host":
-        gpus = planning.discover_gpus()
+    def discover(cls, *, recipe=None) -> "Host":
+        ppu = planning.configured_operator_target(recipe) in ('ppu10', 'ppu15')
+        gpus = planning.discover_ppus() if ppu else planning.discover_gpus()
         # The one environment variable Flare inspects: a caller's restriction
         # changes which GPU each index names, and the plan reports that.
         restriction = os.environ.get("CUDA_VISIBLE_DEVICES")
-        if restriction is not None:
+        # The child CUDA runtime has already applied and renumbered the mask.
+        if restriction is not None and not ppu:
             gpus = planning.restrict_gpus(gpus, restriction)
         return cls(gpus, restriction)
 

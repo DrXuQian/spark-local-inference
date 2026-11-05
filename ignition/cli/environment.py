@@ -31,10 +31,13 @@ def flashinfer_workspace(kernel_cache: Path) -> Path:
     return root / hashlib.sha256(source).hexdigest()[:16]
 
 
-def apply(configuration, gpus, b12x=()) -> None:
+def apply(configuration, gpus, b12x=(), *, operator_target=None) -> None:
     """Select the plan's GPUs as process-local devices 0 through N-1, place every cache and set the recipe's
     b12x settings, which b12x reads only from its environment."""
-    patches.apply()
+    if operator_target in ('ppu10', 'ppu15'):
+        patches.apply(operator_target=operator_target)
+    else:
+        patches.apply()
     kernel_cache = configuration.directory("kernel_cache")
     os.environ.update({
         "CUDA_VISIBLE_DEVICES": ",".join(gpu.uuid for gpu in gpus),

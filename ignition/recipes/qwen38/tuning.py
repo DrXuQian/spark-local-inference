@@ -6,15 +6,15 @@
 
 from functools import wraps
 
+from ignition.preparation.qwen38_gguf import operator_target
+
 
 def external_operators(inputs):
     if inputs is None:
         return False
+    operator_target(inputs)
     required = ('actlize', 'quactlize', 'dense_blas', 'quactlize_helpers', 'flash_attention3')
     missing = [name for name in required if getattr(inputs, name) is None]
-    if missing and any(getattr(getattr(inputs, name), 'target', '').startswith('ppu')
-                       for name in ('actlize', 'quactlize', 'quactlize_helpers')):
-        raise ValueError('PPU GGUF preparation requires explicit external operators: missing ' + ', '.join(missing))
     return not missing
 
 

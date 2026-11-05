@@ -18,6 +18,26 @@ from .gguf import GgufCheckpoint, file_identity, inspect_gguf_checkpoint
 from .qwen38 import CONFIG_SHA256, FRONTEND_SHA256, GENERATION_SHA256
 
 
+def operator_target(selection):
+    """Validate the fixed native library set before device selection or loading."""
+    if selection is None:
+        return None
+    targets = {getattr(spec, 'target', 'cuda_sm120') for name in
+               ('actlize', 'quactlize', 'quactlize_helpers')
+               if (spec := getattr(selection, name, None)) is not None}
+    targets = {'cuda_sm120' if target == 'nvidia' else target for target in targets}
+    if len(targets) > 1 or not targets <= {'cuda_sm120', 'ppu10', 'ppu15'}:
+        raise CheckpointError('GGUF operator libraries must select one matching target')
+    target = next(iter(targets), None)
+    if target in ('ppu10', 'ppu15'):
+        missing = [name for name in ('actlize', 'quactlize', 'dense_blas', 'quactlize_helpers', 'flash_attention3')
+                   if getattr(selection, name, None) is None]
+        if missing:
+            raise CheckpointError('PPU GGUF preparation requires explicit external operators: missing '
+                                  + ', '.join(missing))
+    return target
+
+
 @dataclass(frozen=True)
 class GgufInputs:
     main: Path

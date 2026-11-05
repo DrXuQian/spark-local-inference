@@ -61,7 +61,8 @@ def host(monkeypatch, tmp_path):
     gpus = tuple(planning.Gpu(index, "NVIDIA RTX PRO 6000 Blackwell", f"GPU-{index:04d}", 96 * GIB, FREE, (12, 0))
                  for index in range(2))
     monkeypatch.setattr(planning, "discover_gpus", lambda: gpus)
-    monkeypatch.setattr(environment, "apply", lambda configuration, selected, b12x=(): calls.update(gpus=selected, b12x=b12x))
+    monkeypatch.setattr(environment, "apply", lambda configuration, selected, b12x=(), operator_target=None:
+                        calls.update(gpus=selected, b12x=b12x, operator_target=operator_target))
     monkeypatch.setattr(ResolvedModel, "cached", lambda self, hub_cache: True)
     calls = {"behavior": {}, "exports": 0, "signals": types.SimpleNamespace(entered=0, exited=0)}
 
@@ -225,7 +226,7 @@ def test_direct_serving_does_not_require_native_http(host, monkeypatch):
     monkeypatch.setitem(sys.modules, "flare_heliopause", types.SimpleNamespace())
     discovered = []
 
-    def discover():
+    def discover(*, recipe=None):
         discovered.append(True)
         raise RuntimeError("GPU discovery reached")
 
