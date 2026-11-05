@@ -94,6 +94,7 @@ fn main() -> Result<()> {
         "actlize-gdn-export-v1" => 15,
         "actlize-qsa-export-v1" => 17,
         "quactlize-ppu-abi-nvidia-v1" => 18,
+        "ppu-module-export-v1" => 4,
         _ => return Err("unknown external operator qualification fixture".into()),
     };
     assert_eq!(expected.cases.len(), count);
@@ -114,6 +115,10 @@ fn main() -> Result<()> {
     let worker = unsafe { ReplayWorker::new(owner.graph_bundle(), 1)? };
     let baseline = allocations.count();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
+        assert!(
+            baseline > 0,
+            "allocation observer saw no startup allocations"
+        );
         replay(root, &expected, &owner, &worker)?;
         // Repeat changed inputs and all prefix lengths on the same allocations.
         replay(root, &expected, &owner, &worker)?;

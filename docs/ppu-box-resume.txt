@@ -96,3 +96,38 @@ The existing small synthetic GGUF and partial-layer fixtures are sufficient
 for the next gates. A full model download or meaningful generated text is not
 required. Local host tests and SDK compilation do not establish these four
 device-level outcomes.
+
+Independent native-export qualification (no model or sampling dependency)
+-----------------------------------------------------------------------
+
+qualify.ppu_export builds the small PPU module on the deployment platform,
+checks its ELF globals using the production parser, and then uses ModuleImages,
+PackageStorage and export_model. Four graph cases check mutable module globals,
+constant memory, a module-global pointer to a separate driver allocation,
+scalar kernel parameters and state restoration. The Rust replay tool repeats
+the sequence twice after Python exits, checks exact bytes and virtual addresses,
+and requires an allocation observer that saw startup activity.
+
+This still needs deployment qualification. Native export's hardware naming table
+currently recognizes only GB10/GB202 PCI IDs; the actual PPU vendor/device IDs are
+needed to add the correct identity. Do not substitute a NVIDIA hardware label.
+The older SDK2.1.1 lacks the cuFuncLoad callback; local SDK2.2.1 resolves callback
+742 to hgFuncLoad, but real recorder startup must still succeed on the box.
+
+With the native flare_heliopause extension installed, the offline module stage is:
+
+  python -m qualify.ppu_export --target ppu10 \
+    --output /tmp/ppu-export-module-1 --compile-only
+
+After resolving the platform identity, run the complete gate in a fresh directory:
+
+  python -m qualify.ppu_export --target ppu10 --output /tmp/ppu-export-replay-1
+  cargo build --release --manifest-path helios/Cargo.toml \
+    --features runtime-package,test-tools --bin test_actlize_runtime_package
+  helios/target/release/test_actlize_runtime_package /tmp/ppu-export-replay-1
+
+Use --compiler /path/to/hgcc if the native SDK compiler is not at
+/usr/local/PPU_SDK/bin/hgcc. The compile-only stage does not load device kernels
+or establish recorder/export/replay correctness. Local SDK2.2.1 builds for ppu10
+and ppu15 and the eleven ELF checks pass; three host Driver API argument tests
+and two allocation-callback tests also pass. No native PPU replay is claimed.

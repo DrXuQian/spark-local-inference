@@ -1436,10 +1436,12 @@ four RTX tests pass for real driver allocations/context destruction and native
 graph export. This is not PPU graph replay qualification.
 
 Callback 742 (`cuFuncLoad`) returns `INVALID_PARAMETER` through the actual
-HGPTI facade, consistent with its absence from the header, even though
+SDK2.1.1 HGPTI facade, consistent with its absence from the header, even though
 `hgFuncLoad` is declared. Unsupported callback registration remains fatal;
 its error now identifies the callback domain and ID. Resolve this requirement
-with the deployment's profiling library before target export. Export naming
+with the deployment's profiling library before target export. The later local
+SDK2.2.1 facade resolves `cuptiGetCallbackName(1, 742)` to `hgFuncLoad`; recorder
+startup on the real device remains a separate check. Export naming
 also requires an NVML PCI-ID mapping whose current table admits only NVIDIA
 GB10/GB202; do not label a PPU artifact as one of those platforms.
 
@@ -1452,6 +1454,16 @@ lookup, download and relocation validation still apply and must pass on PPU.
 Eleven host tests pass, including the actual SDK-compiled fixture and preservation
 of code, `.hg_info`, symbol tables and `.rela.data` through debug stripping.
 No PPU kernel was launched; target module lookup and export/replay remain unrun.
+
+The independent `qualify.ppu_export` gate compiles this fixture with native HGCC
+on the deployment platform and prepares a four-case module-state sequence for
+standalone Rust replay. It uses the production module recorder, VMM allocator
+and package exporter, with no model or sampling dependency. Prepared graph
+admission receives the explicit validated PPU operator target; context, handles
+and buffer bounds still use the normal checks. The Rust allocation observer
+recognizes both CUDA and HGPTI callback names and requires observed startup
+allocations. See [the box resume commands](ppu-box-resume.txt) for the offline
+module stage and the remaining native PCI identity/export qualification.
 
 Reproduce the offline fixture check with the selected SDK on PATH:
 

@@ -440,7 +440,10 @@ def prepare(args):
                 from ignition.preparation.disposable import storage_ranges
 
                 zero = (*zero, *storage_ranges((session.dense_blas.workspace,)))
+            from ignition.preparation.qwen38_gguf import operator_target
+
             prepared = PreparedModel(device=0, graphs=graphs, buffers=buffers, signatures=signatures, max_active=1,
+                operator_target=operator_target(operator_inputs),
                 session=session, server_config=settings, memory_report={}, package_data=table, export_events=table.events(),
                 export_zero_ranges=(*zero, *completion.zero_ranges()),
                 close_resources=() if quactlize_helpers is None else (quactlize_helpers,),

@@ -112,7 +112,8 @@ def check_reference(buffers, initial, state, lengths, slots, counts, live, canon
         assert torch.equal(state[slot], initial[slot])
 
 
-def export_fixture(args, images, storage, graphs, signatures, buffers, resources, cases, kind):
+def export_fixture(args, images, storage, graphs, signatures, buffers, resources, cases, kind,
+                   *, operator_target=None):
     from helios.tests.fixture_frontend import server_config
     from helios.tests.signing import publisher
     from ignition.preparation.execution import PreparedExecution
@@ -123,7 +124,7 @@ def export_fixture(args, images, storage, graphs, signatures, buffers, resources
         submission_sequence=torch.zeros(1, dtype=torch.int64, device=device),
         completion_records=torch.zeros(2, 2, 32, dtype=torch.int64, device=device))
     prepared = PreparedExecution(device=0, graphs=graphs, buffers=buffers,
-        signatures=signatures, max_active=2, resources=(*resources, storage))
+        signatures=signatures, max_active=2, resources=(*resources, storage), operator_target=operator_target)
     prepared.server_config = server_config(args.output)
     prepared.package_data = None
     package = export_model(prepared, images, storage, args.output / 'package',
@@ -138,6 +139,7 @@ def export_fixture(args, images, storage, graphs, signatures, buffers, resources
         buffers=references, export_counts=package.export_counts)
     (args.output / 'expected.json').write_text(json.dumps(manifest, indent=2) + '\n')
     print(json.dumps(dict(cases=len(cases), export=package.export_counts)), flush=True)
+    return package
 
 
 def qualify(args, images, storage):

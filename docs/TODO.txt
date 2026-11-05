@@ -473,6 +473,24 @@
     limited and unlimited probability masks; 51 related tracing/serialization/
     FA3 checks pass on Torch2.9 and Torch2.15. Device sampling replay remains open.
 
+[x] Carry the validated external operator target into prepared graph admission
+    for both normal Qwen bootstrap and the partial-GGUF qualifier. PPU capability
+    values no longer hit the NVIDIA SM whitelist at manifest/export handoff.
+    Unknown targets, the default NVIDIA capability restriction, wrong contexts,
+    invalid graph handles and buffer checks remain enforced. 38 admission/graph
+    checks pass on Torch2.9 and Torch2.15; real PPU handoff remains unqualified.
+
+[ ] Run qualify.ppu_export and standalone Rust replay on PPU. The new tiny SDK
+    module checks constants, mutable globals, scalar parameters and an indirect
+    driver allocation retained only by a global pointer. Both SDK2.2.1 ppu10/15
+    module builds, 11 ELF tests, three host Driver API checks and two callback
+    checks pass locally. The allocation observer now accepts the actual HGPTI
+    hgMem names and rejects an inactive observer instead of reporting zero
+    allocations. Add the actual PPU PCI identity to native export naming before
+    the complete gate; do not infer a product from CUDA-compatible SM values.
+    SDK2.2.1 resolves callback 742, unlike the previously checked SDK2.1.1, but
+    recorder startup and device export/replay still require the deployment box.
+
 [x] Publish the QUactlize installed-wheel reporting fix as 653b46e on feat/ppu-flash-next:
     tools/verify_installed_wheel.py previously omitted FLARE_RUN_CUDA_TESTS for its
     Flare subprocess and accepted pytest exit zero without checking skipped

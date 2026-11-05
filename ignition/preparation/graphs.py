@@ -31,6 +31,8 @@ class PreparedGraphBundle:
     does not expose a graph's capture device, so capture on that device remains
     a preparation invariant. Registration checks its capability and context,
     every declared buffer's device and extent, and instantiated graph handles.
+    External PPU preparation supplies its validated ``operator_target``; the
+    default admission continues to require the supported NVIDIA capabilities.
 
     Graphs must not use PyTorch generator-backed random operations: raw native
     launch bypasses PyTorch RNG bookkeeping. After handoff, callers must not
@@ -51,10 +53,14 @@ class PreparedGraphBundle:
         graphs: Mapping[str, torch.cuda.CUDAGraph],
         buffers: Mapping[str, torch.Tensor],
         resources: Iterable[Any] = (),
+        operator_target: str | None = None,
     ) -> None:
         if isinstance(device, bool) or not isinstance(device, int) or device < 0:
             raise ValueError("device must be a nonnegative process-local CUDA ordinal")
+        if operator_target not in (None, 'cuda_sm120', 'ppu10', 'ppu15'):
+            raise ValueError('unknown prepared operator target')
         self._device = device
+        self._operator_target = operator_target
         self._graphs = _named_copy(graphs, "graph")
         if not self._graphs:
             raise ValueError("at least one captured graph is required")
@@ -125,7 +131,11 @@ class PreparedGraphBundle:
 
         with torch.cuda.device(self._device):
             capability = torch.cuda.get_device_capability(self._device)
-            if capability not in SUPPORTED_CAPABILITIES:
+            # PPU recipes pass the target of their validated external library
+            # set. Its CUDA-compatible capability is not a NVIDIA SM identity.
+            if self._operator_target == 'cuda_sm120' and capability != (12, 0):
+                raise ValueError('the prepared cuda_sm120 operators require an SM120 device')
+            if self._operator_target not in ('ppu10', 'ppu15') and capability not in SUPPORTED_CAPABILITIES:
                 raise ValueError(f"CUDA device {self._device} is SM{capability[0]}{capability[1]};"
                                  f" {SUPPORTED_ARCHITECTURES} is required")
             handles = []

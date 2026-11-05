@@ -32,6 +32,7 @@ def test_import_does_not_load_torch_or_native_extension():
     {"device": -1}, {"device": True}, {"device": "cuda:0"},
     {"graphs": {}}, {"graphs": {" ": object()}},
     {"buffers": {"": object()}}, {"buffers": {1: object()}},
+    {"operator_target": 'unknown'}, {"operator_target": True},
 ])
 def test_invalid_identity_rejected_before_cuda_import(arguments):
     with pytest.raises(ValueError):
@@ -52,6 +53,78 @@ def test_registration_metadata_is_copied_and_read_only():
     assert dict(prepared.graph_indices) == {"decode": 0, "prefill": 1}
     with pytest.raises(TypeError):
         prepared.graph_indices["decode"] = 3
+
+
+@pytest.fixture
+def resource_metadata(monkeypatch):
+    """Exercise validation with real CPU storage and reported device metadata."""
+    from contextlib import nullcontext
+    import torch
+
+    class DeviceTensor(torch.Tensor):
+        ordinal = 0
+
+        @property
+        def device(self):
+            return torch.device('cuda', self.ordinal)
+
+    class Graph:
+        def __init__(self, handle=11):
+            self.handle = handle
+
+        def raw_cuda_graph_exec(self):
+            return self.handle
+
+    native = SimpleNamespace(current_context=lambda: (123, 0))
+    monkeypatch.setitem(sys.modules, 'flare_heliopause', native)
+    monkeypatch.setattr(torch.cuda, 'device', lambda device: nullcontext())
+    monkeypatch.setattr(torch.cuda, 'get_device_capability', lambda device: (8, 0))
+    monkeypatch.setattr(torch.cuda, 'CUDAGraph', Graph)
+    tensor = torch.arange(8, dtype=torch.int32).as_subclass(DeviceTensor)
+    return Graph, tensor, native
+
+
+@pytest.mark.parametrize('target', ['ppu10', 'ppu15'])
+def test_explicit_ppu_graph_target_keeps_context_and_storage_validation(resource_metadata, target):
+    Graph, tensor, native = resource_metadata
+    prepared = bundle(graphs={'decode': Graph()}, buffers={'state': tensor}, operator_target=target)
+    assert prepared._validate_resources() == (123, [11], [(tensor.data_ptr(), 32)])
+    assert not prepared.consumed
+    native.current_context = lambda: (123, 1)
+    with pytest.raises(RuntimeError, match='context belongs to device 1'):
+        prepared._validate_resources()
+
+
+@pytest.mark.parametrize('target', [None, 'cuda_sm120'])
+def test_ppu_capability_is_not_admitted_without_the_explicit_target(resource_metadata, target):
+    Graph, tensor, _ = resource_metadata
+    with pytest.raises(ValueError, match='SM'):
+        bundle(graphs={'decode': Graph()}, buffers={'state': tensor}, operator_target=target)._validate_resources()
+
+
+@pytest.mark.parametrize('problem', ['wrong-device', 'strided', 'empty', 'zero-handle', 'duplicate-handles'])
+def test_ppu_target_does_not_weaken_graph_and_buffer_checks(resource_metadata, problem):
+    Graph, tensor, _ = resource_metadata
+    graphs = {'decode': Graph()}
+    if problem == 'wrong-device':
+        tensor.ordinal = 1
+        message = 'must reside on CUDA device 0'
+    elif problem == 'strided':
+        tensor = tensor[::2]
+        message = 'must be contiguous'
+    elif problem == 'empty':
+        tensor = tensor[:0]
+        message = 'nonempty allocated storage'
+    elif problem == 'zero-handle':
+        graphs['decode'].handle = 0
+        message = 'no instantiated executable handle'
+    else:
+        graphs['prefill'] = Graph()
+        message = 'unique executable handles'
+    prepared = bundle(graphs=graphs, buffers={'state': tensor}, operator_target='ppu10')
+    with pytest.raises(ValueError, match=message):
+        prepared._validate_resources()
+    assert not prepared.consumed
 
 
 def test_raw_replay_requires_qualification_binding_before_cuda(monkeypatch):

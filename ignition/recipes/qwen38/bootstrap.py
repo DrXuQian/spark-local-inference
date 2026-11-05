@@ -535,6 +535,8 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
         export_zero_ranges = (*export_zero_ranges, *storage_ranges(graph_buffers.chunks))
         if session.dense_blas is not None:
             export_zero_ranges = (*export_zero_ranges, *storage_ranges((session.dense_blas.workspace,)))
+        from ignition.preparation.qwen38_gguf import operator_target
+
         return PreparedModel(rebuild_weights=declare_weights({'weights': weights, 'mtp': mtp_weights}, components={
         'tree.model.language_model.embed_tokens': 'embedding',
         'embedding': 'embedding',
@@ -547,6 +549,7 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
                                 *((t.data_ptr(), t.nbytes) for t in table.buffers().values())),
             export_events=table.events(), package_data=table if rank == 0 else None,
             resources=resources, server_config=server_config, memory_report=memory, session=session,
+            operator_target=operator_target(config.gguf_inputs),
             close_resources=(table, *((quactlize_helpers,) if quactlize_helpers is not None else ()),
                              *((scoring,) if scoring is not None else ()),
                              *((vocabulary_collective, collective) if collective is not None else ())))
