@@ -24,9 +24,13 @@ from ignition.recipes.qwen38.ple import PLEMetadata, PLEScratch, PreparedPLE, al
 def session():
     names = ('FLARE_ACTLIZE_LIBRARY', 'FLARE_ACTLIZE_TARGET', 'FLARE_QUACTLIZE_HELPERS_LIBRARY', 'FLARE_TEST_BLAS_LIBRARY')
     path, target, helpers, blas = (os.environ.get(name) for name in names)
-    if not all((path, target, helpers, blas)) or not torch.cuda.is_available():
-        pytest.skip('assign actual actlizeLA, QUactlize and BLAS libraries with platform Torch/device')
-    owner = QuactlizeHelpersSpec.read(helpers).load('cuda:0')
+    if (os.environ.get('FLARE_RUN_CUDA_TESTS') != '1' or not all((target, blas))
+            or not torch.cuda.is_available()):
+        pytest.skip('assign FLARE_RUN_CUDA_TESTS=1, actlizeLA target and BLAS with platform Torch/device')
+    quant_target = 'nvidia' if target == 'cuda_sm120' else target
+    helper_spec = (QuactlizeHelpersSpec.read(helpers, target=quant_target) if helpers is not None
+                   else QuactlizeHelpersSpec.installed(target=quant_target))
+    owner = helper_spec.load('cuda:0')
     stream = torch.cuda.Stream()
     with torch.cuda.stream(stream):
         dense = PreparedBlas(BlasLibrary(blas, api=os.environ.get('FLARE_TEST_BLAS_API', 'acblas')),

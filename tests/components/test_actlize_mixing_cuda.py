@@ -20,8 +20,9 @@ from ignition.recipes.qwen38.hyperconnection import HyperconnectionScratch, Prep
 def session():
     path, blas, target = (os.environ.get(name) for name in
         ('FLARE_ACTLIZE_LIBRARY', 'FLARE_TEST_BLAS_LIBRARY', 'FLARE_ACTLIZE_TARGET'))
-    if not path or not blas or not target or not torch.cuda.is_available():
-        pytest.skip('assign actual actlizeLA and BLAS libraries with platform Torch/device')
+    if (os.environ.get('FLARE_RUN_CUDA_TESTS') != '1' or not blas or not target
+            or not torch.cuda.is_available()):
+        pytest.skip('assign FLARE_RUN_CUDA_TESTS=1, actlizeLA target and BLAS with platform Torch/device')
     library = serving.NativeLibrary(path, target=target)
     dense = PreparedBlas(BlasLibrary(blas, api=os.environ.get('FLARE_TEST_BLAS_API', 'acblas')),
                          torch.empty(4 << 20, dtype=torch.uint8, device='cuda:0'))

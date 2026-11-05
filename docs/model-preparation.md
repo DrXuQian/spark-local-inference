@@ -782,6 +782,28 @@ private-resource identity and override checks pass on Torch2.9/Torch2.15. These
 are host checks. The user now reports the ten-case packed GGUF device gate
 passing on PPU; complete target/MTP and native package qualification remain open.
 
+The complete actlizeLA serving wheel is available in
+[`0.2.0` at 4ea342e](https://github.com/DrXuQian/actlizeLA/tree/4ea342e95c2b7fda14223f8b0997d308b94ab3f7).
+Install the matching artifact with
+`python -m pip install --no-deps /path/to/actlize_la-0.2.0-1ppu10version221184ee6-py3-none-linux_x86_64.whl`.
+When that artifact is published in the configured PPU index, use
+`python -m pip install --only-binary=actlize-la actlize-la==0.2.0`.
+The checked release also targets **ppu10 / SDK 2.2.1-184ee6**; ppu15 requires
+its own artifact. Installation does not build kernels or replace platform Torch.
+
+For explicit PPU manifests, `actlize_library` is now optional:
+`actlize_la.get_library_info(target=...)` resolves and verifies the complete
+installed package. An explicit path still takes precedence and keeps the
+existing `NativeLibrary(path, target=...)` contract. The sealed package manifest,
+including Python bindings, enters preparation identity and is revalidated
+before loading. Changed bindings invalidate prepared inputs even if the DSO
+hash is unchanged. Missing resources and target mismatches fail without fallback.
+The NVIDIA default continues to require explicit library selection.
+Actual wheel discovery passes outside the checkout without importing Torch,
+loading a DSO or probing a device. Native ABI inspection checks its 21 exports
+and 11 structure sizes. The framework's 82 package/input/admission checks pass
+on Torch2.9 and Torch2.15; these are host checks, not device qualification.
+
 The canonical expert path requires QUactlize
 [`feat/ppu-flash-next` at d90cb0d](https://github.com/DrXuQian/QUactlize/tree/d90cb0d880b9114768b98c8a69a0a5a6b07c3253)
 or a compatible later revision, with matching Python declarations and a rebuilt
@@ -1014,15 +1036,12 @@ For the first PPU box qualification, use the platform's Python 3.12 environment
 with its Torch and FlashInfer artifacts. Install only the small missing test
 dependencies (`pytest`, `numpy`, `gguf==0.19.0`, `protobuf>=7.35.1,<8`) and this
 repository with `pip install --no-deps -e .`. Do not use the NVIDIA `prepare`
-extra for this check. Install the complete QUactlize wheel described above.
-Keep the actlizeLA source checkout matching its built PPU DSO. With matching
-ppu10 libraries, the installed-wheel check is:
+extra for this check. Install the complete QUactlize and actlizeLA wheels
+described above. With matching ppu10 libraries, the installed-wheel check is:
 
 ```sh
 cd /sim/eec/shared/junfu.qx/spark-local-inference
 python -m qualify.ppu_box \
-  --actlize-source /sim/eec/shared/junfu.qx/actlizeLA \
-  --actlize-library /path/to/libactlize_la_serving.so \
   --actlize-target ppu10 \
   --blas-library /usr/local/PPU_SDK/CUDA_SDK/targets/x86_64-linux/lib/libcublas.so --blas-api cublas \
   --run-device-tests --output /path/to/new-ppu-test-directory
@@ -1033,16 +1052,36 @@ Omit `--run-device-tests`
 and `--output` to inspect interfaces first. The command checks real exported
 symbols/descriptor sizes, valid Qwen matmul geometry, sampling workspace and
 `row_independent_rng` support. It then runs the framework's BLAS/GGUF/helper
-graph tests and actlizeLA's numerical, convolution/transaction and graph tests
-in separate processes. It also exercises the actual external GDN sequence,
+graph tests in separate processes. It also exercises the actual external GDN sequence,
 HC, full-width MTP feedback and PLE bindings. Skips are failures of device qualification.
 Results and logs stay in the new output directory; no model is downloaded.
 For development, explicitly supply both `--quactlize-source` and
 `--quactlize-library` to use a checkout and include its upstream serving suite.
+Likewise, `--actlize-source` together with `--actlize-library` adds actlizeLA's
+upstream numerical, convolution/transaction and captured graph suites.
 An optional DSO override alone uses installed Python declarations. The normal
-wheel check reports the unavailable upstream source suite as NOT RUN; all
-framework QUactlize numerical/graph gates remain enabled. It does not claim the
-upstream source suite passed.
+wheel check reports unavailable upstream source suites as NOT RUN; all
+framework numerical/graph gates remain enabled. It does not claim the
+upstream source suites passed.
+
+To run only the next fourteen actlizeLA framework cases with installed wheels,
+use the following on the matching ppu10 box. No operator source path or DSO
+variable is needed; an existing explicit DSO variable remains an override:
+
+```sh
+FLARE_RUN_CUDA_TESTS=1 FLARE_ACTLIZE_TARGET=ppu10 \
+FLARE_TEST_BLAS_LIBRARY=/usr/local/PPU_SDK/CUDA_SDK/targets/x86_64-linux/lib/libcublas.so \
+FLARE_TEST_BLAS_API=cublas python -m pytest -q \
+  tests/components/test_actlize_gdn_sequence_cuda.py \
+  tests/components/test_actlize_mixing_cuda.py \
+  tests/components/test_actlize_ple_cuda.py --tb=short
+```
+
+Expect fourteen executed cases. These check consumed-prefix GDN/convolution
+rollback including raw slot0, HC, full-width MTP feedback and staged IQ4_NL PLE
+graph replay. They remain unrun on PPU; they do not cover complete speculative
+rounds, native PLE I/O latency, export or Rust serving.
+
 The GGUF helper test creates tiny Q8_0/IQ4_NL files and replays changing token
 IDs, route counts, poisoned inactive rows and sticky repeated-call errors in
 one graph. Its compilation test checks actual Flare storage lowering.
@@ -1194,7 +1233,8 @@ inputs, invalid counts, sticky router failures and output bounds, then reloads
 the compiled catalog with fresh native handles and compilation disabled.
 This checks expert composition only; full-width projection geometry is covered
 by the preceding gate. Attention, shared experts, sampling and MTP acceptance/
-rollback are separate requirements. These two new device cases remain unrun.
+rollback are separate requirements. The user reports both cases passing on PPU,
+together with the fourteen BLAS cases below (16 passed in 51.17s).
 
 The user provided the platform `libcublas.so` below. Run the expert chain and
 the existing fourteen BLAS graph checks with its `cublas` API:
@@ -1222,8 +1262,8 @@ FLARE_RUN_CUDA_TESTS=1 python -m pytest -q \
 It needs no model download or external operator DSOs. It validates framework
 state transfer and catalog orchestration, not a complete target/MTP round.
 For partial-layer qualification, pass `--operator-target ppu10` or `ppu15`,
-`--actlize-qsa`, and the actlizeLA/BLAS/FA3 paths to `python -m qualify.qwen38_gguf`.
-QUactlize matmul and helpers use the installed wheel unless their paths are supplied.
+`--actlize-qsa`, and the BLAS/FA3 paths to `python -m qualify.qwen38_gguf`.
+QUactlize matmul/helpers and actlizeLA use installed wheels unless paths are supplied.
 The target must match the installed platform and library builds.
 
 The manifest also accepts `"operator_target": "ppu10"` or `"ppu15"` for explicit

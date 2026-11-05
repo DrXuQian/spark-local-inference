@@ -39,3 +39,26 @@ def test_installed_wheel_runner_needs_no_quactlize_checkout_or_manual_dso(tmp_pa
     args.quactlize_library = library
     assert len(resolve_sources(args)) == 2
     assert 'quactlize' in {suite[0] for suite in device_suites(args, Path.cwd(), tmp_path / 'results')}
+
+
+def test_both_installed_packages_keep_framework_gates_without_operator_sources(tmp_path):
+    from pathlib import Path
+
+    library = tmp_path / 'blas.so'
+    library.touch()
+    args = parser().parse_args(['--actlize-target', 'ppu10', '--blas-library', str(library),
+                               '--blas-api', 'cublas'])
+    assert resolve_sources(args) == ()
+    suites = device_suites(args, Path.cwd(), tmp_path / 'results')
+    assert {'framework', 'gguf-packed', 'gguf-expert-chain', 'compiled-catalog'} <= {s[0] for s in suites}
+    assert not {'quactlize', 'actlize', 'actlize-aux'} & {s[0] for s in suites}
+    assert 'tests/components/test_actlize_gdn_sequence_cuda.py' in suites[0][1]
+    assert 'tests/components/test_actlize_mixing_cuda.py' in suites[0][1]
+    assert 'tests/components/test_actlize_ple_cuda.py' in suites[0][1]
+    args.actlize_source = tmp_path
+    with pytest.raises(ValueError, match='--actlize-source requires --actlize-library'):
+        resolve_sources(args)
+    (tmp_path / 'actlize_la/serving').mkdir(parents=True)
+    args.actlize_library = library
+    assert resolve_sources(args) == (tmp_path,)
+    assert {'actlize', 'actlize-aux'} <= {s[0] for s in device_suites(args, Path.cwd(), tmp_path / 'results')}

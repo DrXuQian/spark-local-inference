@@ -10,7 +10,7 @@ from pathlib import Path
 from types import MappingProxyType
 
 from .checkpoint import CheckpointError
-from .actlize import ActlizeLibrarySpec
+from .actlize import ActlizeLibrarySpec, resolve_actlize
 from .quactlize import QuactlizeHelpersSpec, QuactlizeLibrarySpec, resolve_quactlize
 from .blas import BlasLibrarySpec
 from .flash_attn3 import FlashAttention3Spec
@@ -94,8 +94,7 @@ class GgufInputs:
             if key in value and (not isinstance(value[key], str) or not value[key]):
                 raise CheckpointError(f'{key} requires a native library path')
             library_paths[key] = directory / value[key] if key in value else None
-        actlize = (None if library_paths['actlize_library'] is None
-                   else ActlizeLibrarySpec.read(library_paths['actlize_library'], target=target))
+        actlize = resolve_actlize(library_paths['actlize_library'], target=target)
         quactlize, helpers = resolve_quactlize(library_paths['quactlize_abi_library'],
             library_paths['quactlize_helpers_library'], target='nvidia' if target == 'cuda_sm120' else target)
         try:

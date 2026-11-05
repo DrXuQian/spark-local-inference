@@ -291,9 +291,11 @@
     checks; add captured replay coverage for IDs outside the INT32 range.
 
 [ ] Qualify the explicit cuBLAS/acBLAS dense projection path on device:
-    compiled capture, workspace rebinding and partial GGUF+MTP native export.
-    Host ABI, strided-output and cache/snapshot layout checks pass. See
-    model-preparation.md#ppu-port-preparation and test_blas_projection_cuda.py.
+    partial GGUF+MTP native export remains. The user reports all fourteen
+    test_blas_projection_cuda.py cases passing on PPU with the SDK libcublas.so
+    and cublas API, including BF16/FP32, compiled capture, padded outputs,
+    changing inputs, shared scratch and workspace rebinding. See
+    model-preparation.md#ppu-port-preparation.
 
 [ ] Finish b12x-free Qwen GGUF preparation using external QUactlize/actlizeLA
     operators. Routing, rounded SwiGLU, rows, GDN sequence, HC, PLE and MTP feedback
@@ -386,16 +388,30 @@
     wheel's ten-case packing gate is now user-reported passing on PPU. It
     accepts the installed wheel directly, without a source path or DSO variable.
 
-[ ] Qualify the composed packed expert chain using the installed QUactlize wheel.
+[x] Qualify the composed packed expert chain using the installed QUactlize wheel.
     test_gguf_expert_chain_cuda.py captures target Q4_K/Q5_1 followed by shared-MTP
     Q8_0 experts inside each graph, with E512/top10, eight-row chunks, shared
     scratch, widths 1/7/17 and fresh-handle catalog reload. Synthetic H256/I128
     files total about 81 MiB. Device counts, tied routes, poisoned inactive rows,
     router failures, output bounds and replay allocations are checked against
-    independent selected-expert GGUF decoding. These two device cases are unrun;
-    they cover expert composition, not attention, shared experts, sampling or MTP
-    acceptance/rollback. Also run the existing fourteen BLAS graph cases with
-    the user's PPU SDK libcublas.so through the cublas API.
+    independent selected-expert GGUF decoding. The user reports these two cases
+    and the fourteen BLAS graph cases passing on PPU (16 passed in 51.17s).
+    They cover expert composition, not attention, shared experts, sampling or
+    MTP acceptance/rollback.
+
+[x] Resolve installed actlize-la 0.2.0 (4ea342e) for explicit PPU GGUF inputs,
+    partial-layer preparation and box qualification. A manual DSO remains an
+    override; wheel discovery validates all Python/native resources before
+    device initialization. Bind the package manifest into preparation identity
+    and reject changed bindings even when the public DSO is unchanged.
+    Source checkouts are optional for both operator packages; without them the
+    box runner keeps framework gates and reports upstream source suites NOT RUN.
+    82 framework host checks pass on Torch2.9/Torch2.15. Real wheel file-only
+    discovery and native ABI inspection (21 exports, 11 structures) pass;
+    the checked artifact is ppu10/SDK2.2.1-184ee6. Its fourteen existing GDN
+    sequence/HC/MTP-feedback/PLE device cases now accept installed wheels without
+    manual operator paths. Those device cases, full target/MTP and native PPU
+    export/replay remain unrun.
 
 [ ] Correct upstream QUactlize a4207d6 installed-wheel device-test reporting:
     tools/verify_installed_wheel.py does not set FLARE_RUN_CUDA_TESTS for its

@@ -19,8 +19,8 @@ from ignition.preparation.scratch import ScratchArena
 def library():
     path = os.environ.get('FLARE_ACTLIZE_LIBRARY')
     target = os.environ.get('FLARE_ACTLIZE_TARGET')
-    if not path or not target or not torch.cuda.is_available():
-        pytest.skip('assign actual FLARE_ACTLIZE_LIBRARY, FLARE_ACTLIZE_TARGET and a device')
+    if os.environ.get('FLARE_RUN_CUDA_TESTS') != '1' or not target or not torch.cuda.is_available():
+        pytest.skip('assign FLARE_RUN_CUDA_TESTS=1, FLARE_ACTLIZE_TARGET and a device')
     return serving.NativeLibrary(path, target=target)
 
 
