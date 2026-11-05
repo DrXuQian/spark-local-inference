@@ -1018,7 +1018,14 @@ The new `attention-prepared` suite checks actual copy/attention replay at widths
 1/7/128, both directly captured and through Flare's complete-forward compiler,
 with changed lengths, inactive rows, exact cache writes and allocation stability.
 A cache-only case checks full-width int64 bounds and error retention across two
-calls. These seven new device cases are unrun locally and need box qualification.
+calls. The user reports four direct-capture cases passing on PPU. The three
+compiled cases remain pending. That box uses Torch2.9/Triton3.5: short raw launch
+grids are padded to three dimensions, and the optional make_fx diagnostic metadata
+flag is passed only where supported. The standalone qualification compiler now
+uses Torch2.9's real `CompiledArtifact.save/load` protocol with device-bound cache
+identity. CPU artifact round trips preserve aliases, mutable outputs and fresh
+storage-call bindings. This does not finish the complete model catalog's newer
+Dynamo guard/AOT serialization or qualify PPU native package export.
 
 The manifest also accepts `"operator_target": "ppu10"` or `"ppu15"` for explicit
 QUactlize/actlizeLA library selection. The default remains the NVIDIA debug target;

@@ -259,8 +259,11 @@ def _compile_module(module, calls, owner, output_tree):
     from torch._inductor import standalone_compile
     from torch._inductor.codecache import torch_key
 
-    from .aot import _load_inductor
     from .device_binding import bind_device
+
+    legacy = 'aot' not in inspect.signature(standalone_compile).parameters
+    if legacy:
+        from .inductor29 import StandaloneArtifact
 
     graph = module.graph
     inputs = []
@@ -294,19 +297,33 @@ def _compile_module(module, calls, owner, output_tree):
         node.args = torch.fx.node.map_aggregate(node.args, portable_device)
         node.kwargs = torch.fx.node.map_aggregate(node.kwargs, portable_device)
     cache_code = torch.fx.GraphModule({}, cache_graph).code
-    key = hashlib.sha256(pickle.dumps(('compiled-forward-portable-device-v1', cache_code, metadata, _OPTIONS, torch_key(),
+    # Torch 2.9's standalone cache retains device ordinals. Keep it separate
+    # from the newer relocatable format and require the original ordinal.
+    cache_kind = ('compiled-forward-torch29-v1', torch.cuda.current_device()) if legacy else 'compiled-forward-portable-device-v1'
+    key = hashlib.sha256(pickle.dumps((cache_kind, cache_code, metadata, _OPTIONS, torch_key(),
         torch.cuda.get_device_capability(), torch.cuda.get_device_name()))).hexdigest()
     path = DEFAULT_CACHE_ROOT / 'compiled' / (key + '.bin')
     cache_hit = path.is_file()
     if cache_hit:
         with path.open('rb') as file:
             original, serialized = pickle.load(file)
-        with bind_device(torch.device('cuda', torch.cuda.current_device())), _artifact_kernel_table():
-            artifact, _ = _load_inductor(serialized, original)
+        if legacy:
+            if original != torch.device('cuda', torch.cuda.current_device()):
+                raise ValueError('Torch 2.9 standalone artifacts must load on their compiled device ordinal')
+            with _artifact_kernel_table():
+                artifact = StandaloneArtifact.load(serialized)
+        else:
+            from .aot import _load_inductor
+
+            with bind_device(torch.device('cuda', torch.cuda.current_device())), _artifact_kernel_table():
+                artifact, _ = _load_inductor(serialized, original)
     else:
         with _compiler_recursion(module):
-            artifact = standalone_compile(module, inputs, dynamic_shapes='from_example_inputs',
-                options={'config_patches': _OPTIONS}, aot=True, donate_graph_module=True)
+            if legacy:
+                artifact = StandaloneArtifact.compile(module, inputs, _OPTIONS)
+            else:
+                artifact = standalone_compile(module, inputs, dynamic_shapes='from_example_inputs',
+                    options={'config_patches': _OPTIONS}, aot=True, donate_graph_module=True)
     token = _INVOCATIONS.set(calls)
     try:
         # Warm caller-owned state on both paths so TP ranks issue equal collectives.

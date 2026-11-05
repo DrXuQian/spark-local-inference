@@ -308,15 +308,19 @@
     unused b12x/CuTe packages; normal session/tuning orchestration is pending.
     qualify.ppu_box includes a separate FA3 page64/D256/append graph API gate
     (widths 1/7/128, changing lengths, inactive rows and exact cache writes).
-    The user reports all six API cases passing on PPU. New attention-prepared
-    cases exercise strided KV copy, FA3 automatic splits, full-forward lowering,
-    changing packed suffixes and sticky bounds errors; these await box execution.
+    The user reports all six API cases and four direct-capture attention-prepared
+    cases passing on PPU. These cover strided KV copy, FA3 automatic splits,
+    changing packed suffixes and sticky bounds errors. The three compiled
+    attention-prepared cases still need box execution after Torch2.9 adaptation.
     Explicit PPU operator target identities now select the libraries, but normal
     session/planning/export orchestration still needs the remaining port work.
     The box has Torch2.9/Triton3.5: normalize direct compiled launch grids to
     three dimensions and omit the unsupported optional make_fx annotation flag.
     Port the compiled-artifact/guard serialization to the platform's actual
     APIs; Torch2.9 lacks the AOTCompiledArtifact used by the current Flare path.
+    The standalone qualification compiler now uses its real CompiledArtifact
+    save/load protocol, with cache identity bound to the compiled device ordinal.
+    Host round trips preserve mutable outputs, aliases and fresh opaque bindings.
     Direct capture success does not qualify the compiled/exported path.
 
 [ ] Exercise per-message checkpoint restore and prefill graph selection through
