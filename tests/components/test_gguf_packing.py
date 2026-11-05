@@ -28,7 +28,8 @@ def packed_weight(contract, raw):
     return replace(raw, raw=None, packed=GgufPlanes(*planes, values)), sizes
 
 
-@pytest.mark.parametrize('qtype,n,k', [(7, 2560, 640), (8, 2560, 640), (8, 1280, 2560), (12, 1280, 2560)])
+@pytest.mark.parametrize('qtype,n,k', [(7, 2560, 640), (8, 2560, 640), (8, 1280, 2560), (12, 1280, 2560),
+                                    (7, 256, 128), (8, 256, 128), (8, 256, 256), (12, 256, 256)])
 @pytest.mark.parametrize('m', [1, 8, 9, 128])
 def test_model_expert_layouts_use_exact_producer_descriptors_and_byte_budgets(contract, qtype, n, k, m):
     with FakeTensorMode():

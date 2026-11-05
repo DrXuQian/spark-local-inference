@@ -29,7 +29,7 @@ def test_installed_wheel_runner_needs_no_quactlize_checkout_or_manual_dso(tmp_pa
     assert resolve_sources(args) == (tmp_path,)
     suites = device_suites(args, Path.cwd(), tmp_path / 'results')
     names = {suite[0] for suite in suites}
-    assert {'framework', 'gguf-packed', 'gguf-read', 'compiled-catalog'} <= names
+    assert {'framework', 'gguf-packed', 'gguf-expert-chain', 'gguf-read', 'compiled-catalog'} <= names
     assert 'quactlize' not in names
     args.quactlize_source = tmp_path
     with pytest.raises(ValueError, match='requires --quactlize-library'):

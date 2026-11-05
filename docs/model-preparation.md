@@ -779,7 +779,8 @@ or changed resource is an error, with no source/system-library fallback.
 The actual 0.2.0 wheel passes isolated installed imports/discovery and 40 native
 host ABI queries with its matching SDK runtime. Framework selection, changed
 private-resource identity and override checks pass on Torch2.9/Torch2.15. These
-are host checks; packed PPU arithmetic and graph replay remain unrun locally.
+are host checks. The user now reports the ten-case packed GGUF device gate
+passing on PPU; complete target/MTP and native package qualification remain open.
 
 The canonical expert path requires QUactlize
 [`feat/ppu-flash-next` at d90cb0d](https://github.com/DrXuQian/QUactlize/tree/d90cb0d880b9114768b98c8a69a0a5a6b07c3253)
@@ -1023,7 +1024,7 @@ python -m qualify.ppu_box \
   --actlize-source /sim/eec/shared/junfu.qx/actlizeLA \
   --actlize-library /path/to/libactlize_la_serving.so \
   --actlize-target ppu10 \
-  --blas-library /path/to/libacblas.so --blas-api acblas \
+  --blas-library /usr/local/PPU_SDK/CUDA_SDK/targets/x86_64-linux/lib/libcublas.so --blas-api cublas \
   --run-device-tests --output /path/to/new-ppu-test-directory
 ```
 
@@ -1180,8 +1181,34 @@ AOT worker compilation, disk-cache reload with a fresh native handle and no
 recompilation. Routes change across duplicate, inactive and invalid IDs, with
 poisoned inactive input, sticky error checks and allocation-stable replay.
 Independent GGUF decoding supplies the native16 numerical reference. Host ABI,
-metadata and fake-export checks pass on Torch2.9/Torch2.15; these ten device
-cases remain unrun. They are not complete target/MTP or native package gates.
+metadata and fake-export checks pass on Torch2.9/Torch2.15. The user reports all
+ten device cases passing on PPU. They are not complete target/MTP or native
+package gates.
+
+The next `gguf-expert-chain` suite composes router, gate/up, rounded SwiGLU,
+down and weighted reduction for target Q4_K/Q5_1 and MTP Q8_0 experts inside
+one captured graph per capacity. It keeps 512 experts, top10 and eight-row
+chunks, with synthetic H256/I128 files totaling about 81 MiB. It alternates
+widths 1/7/17 on shared scratch, checks tied/changing routes, poisoned inactive
+inputs, invalid counts, sticky router failures and output bounds, then reloads
+the compiled catalog with fresh native handles and compilation disabled.
+This checks expert composition only; full-width projection geometry is covered
+by the preceding gate. Attention, shared experts, sampling and MTP acceptance/
+rollback are separate requirements. These two new device cases remain unrun.
+
+The user provided the platform `libcublas.so` below. Run the expert chain and
+the existing fourteen BLAS graph checks with its `cublas` API:
+
+```sh
+FLARE_RUN_CUDA_TESTS=1 \
+FLARE_TEST_BLAS_LIBRARY=/usr/local/PPU_SDK/CUDA_SDK/targets/x86_64-linux/lib/libcublas.so \
+FLARE_TEST_BLAS_API=cublas python -m pytest -q \
+  tests/preparation/test_gguf_expert_chain_cuda.py \
+  tests/components/test_blas_projection_cuda.py --tb=short
+```
+
+Expect sixteen executed cases. The direct and catalog variants are diagnostic
+checks, not throughput measurements; neither requires a model download.
 
 The user reports the following gate passing on PPU. It exercises this session through `capture_forwards`, with
 alternating one-row and seven-row graphs sharing scratch, strided state reads,

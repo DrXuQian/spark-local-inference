@@ -74,6 +74,8 @@ def device_suites(args, root, output):
             '--junitxml=' + str(output / 'gguf-read.xml')], root, 'gguf-read.xml'),
         ('gguf-packed', [python, '-m', 'pytest', '-q', 'tests/preparation/test_gguf_packing_cuda.py',
             '--junitxml=' + str(output / 'gguf-packed.xml')], root, 'gguf-packed.xml'),
+        ('gguf-expert-chain', [python, '-m', 'pytest', '-q', 'tests/preparation/test_gguf_expert_chain_cuda.py',
+            '--junitxml=' + str(output / 'gguf-expert-chain.xml')], root, 'gguf-expert-chain.xml'),
         ('quactlize', [python, '-m', 'pytest', '-q', 'tests/serving/test_serving_device.py',
             '--junitxml=' + str(output / 'quactlize.xml')], args.quactlize_source, 'quactlize.xml'),
         ('actlize', [python, str(args.actlize_source / 'tests/serving_device.py'),
