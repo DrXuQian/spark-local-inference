@@ -86,6 +86,39 @@ def test_prepared_launch_traces_through_torch_fixed_config_without_cuda(monkeypa
     assert warmups == [dict(grid=(1, 1, 1), **_launch_options(options))]
 
 
+@pytest.mark.parametrize('warps', [1, 8])
+def test_prepared_launch_is_captured_by_real_dynamo_fullgraph_without_cuda(monkeypatch, warps):
+    from torch.utils import _triton
+
+    # Admit the installed JIT class on a CPU-only test host. Dynamo tracing and
+    # its higher-order launch representation are real; no device is emulated.
+    monkeypatch.setattr(_triton, 'has_triton', lambda *args, **kwargs: True)
+    graphs = []
+
+    def record_graph(module, examples):
+        graphs.append(module)
+        # Only trace the launch on this host; device suites check its arithmetic.
+        return lambda *args: ()
+
+    def forward(source, output):
+        launch_triton(_copy_launch, None, (source, output, 32), (1,),
+                      num_warps=warps, num_stages=2, enable_fp_fusion=False)
+
+    torch.compile(forward, backend=record_graph, fullgraph=True, dynamic=False)(torch.ones(32), torch.empty(32))
+    assert len(graphs) == 1
+    calls = [node for node in graphs[0].graph.nodes
+             if node.target is torch.ops.higher_order.triton_kernel_wrapper_mutation]
+    assert len(calls) == 1
+    call = calls[0]
+    kernel = kernel_side_table.get_kernel(call.kwargs['kernel_idx'])
+    constants = kernel_side_table.get_constant_args(call.kwargs['constant_args_idx'])
+    kernel, constants = aot._serialized_triton_launch(kernel, constants, call.kwargs['kwargs'])
+    assert kernel is _copy_launch
+    assert constants['N'] == 32 and constants['num_warps'] == warps
+    assert constants['num_stages'] == 2 and constants['enable_fp_fusion'] is False
+    assert call.kwargs['grid'] == [(1, 1, 1)]
+
+
 @pytest.mark.parametrize('grid', [(7,), (7, 2), (7, 2, 3)])
 def test_direct_compiled_launcher_receives_three_dimensions(grid):
     from triton.compiler.compiler import CompiledKernel

@@ -1030,7 +1030,9 @@ The complete catalog now has a Torch2.9 adapter using bundled AOT entries and
 serialized Dynamo guards. Host validation covers worker metadata, deferred and
 real storage, runtime handle rebinding, exact dispatch keys, and rejection of
 changed shapes, scalar conditions and storage aliases. The saved catalog retains
-the selected static Triton config and rejects unfinished tuning. These host
+the selected static Triton config and rejects unfinished tuning. Prepared Triton
+launches use raw JIT calls during Dynamo tracing; Torch2.9 skips `wrap_triton`
+there. Dispatcher-based `make_fx` tracing keeps the wrapped call. Host
 checks do not establish device execution: run the four new catalog cases on the
 box before attempting a model. They need no weights or QUactlize/actlizeLA DSO:
 

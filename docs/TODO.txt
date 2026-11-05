@@ -323,7 +323,9 @@
     rejects incomplete searches. The box still needs the new compiled-catalog
     gate and the three FA3 attention-prepared `catalog` cases: worker compilation,
     disk reload without compilation/search, retained capture and changed-input
-    allocation-stable replay. These device cases have not yet been run.
+    allocation-stable replay. Device qualification remains pending. Prepared
+    Triton launches use direct JIT capture under Dynamo, since Torch2.9 skips
+    wrap_triton there; dispatcher-based make_fx tracing keeps the wrapped call.
     The standalone qualification compiler now uses its real CompiledArtifact
     save/load protocol, with cache identity bound to the compiled device ordinal.
     Host round trips preserve mutable outputs, aliases and fresh opaque bindings.

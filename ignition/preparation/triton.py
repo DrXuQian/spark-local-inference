@@ -57,7 +57,11 @@ def prepare_triton(kernel, args, grid, **options):
 
 def launch_triton(kernel, compiled, args, grid, **options):
     grid = _launch_grid(grid)
-    if torch.compiler.is_compiling() or get_proxy_mode() is not None:
+    if torch.compiler.is_dynamo_compiling():
+        # Dynamo captures JIT launches directly. Torch 2.9 explicitly skips
+        # wrap_triton; calling it here would break fullgraph AOT capture.
+        kernel[grid](*args, **options)
+    elif torch.compiler.is_compiling() or get_proxy_mode() is not None:
         torch.library.wrap_triton(kernel)[grid](*args, **options)
     else:
         compiled[grid](*args)
