@@ -107,7 +107,9 @@ class CompletionOutputs:
             output.index_copy_(0, index, torch.where(mask,
                 -1. if output is self.speculative_survival else a.index_select(0, index), b.index_select(0, index)))
         from .logprobs import _merge
-        torch.library.wrap_triton(_merge)[(self.records.shape[1], tokens)](
+        from ignition.preparation.triton import wrap_triton
+
+        wrap_triton(_merge)[(self.records.shape[1], tokens)](
             self.logprobs, prompt.logprobs, decode.logprobs, self.token_id_counts,
             prompt_slot, frame, self.records.shape[1], LOGPROB_FIELDS,
             tokens, MAX_TOP_LOGPROBS, 512,

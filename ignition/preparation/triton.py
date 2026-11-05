@@ -55,6 +55,11 @@ def prepare_triton(kernel, args, grid, **options):
     return PreparedTriton(kernel, compiled, args, _launch_grid(grid), options)
 
 
+def wrap_triton(kernel):
+    """Trace direct launches through Dynamo or dispatcher-based make_fx."""
+    return kernel if torch.compiler.is_dynamo_compiling() else torch.library.wrap_triton(kernel)
+
+
 def launch_triton(kernel, compiled, args, grid, **options):
     grid = _launch_grid(grid)
     if torch.compiler.is_dynamo_compiling():

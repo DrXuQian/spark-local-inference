@@ -222,13 +222,11 @@ def _install_boundaries(monkeypatch, checkpoint):
         raise AssertionError("constructor smoke must not initialize CUDA")
 
     monkeypatch.setattr(torch.cuda, "_lazy_init", forbidden)
-    from flashinfer import sampling
-
-    from ignition.components import flashinfer_sampling
+    from flashinfer import sampling, utils
 
     monkeypatch.setattr(sampling, "get_sampling_module", lambda: SimpleNamespace(
         softmax=lambda workspace, tensor, *a: torch.empty_like(tensor)))
-    monkeypatch.setattr(flashinfer_sampling, "device_support_pdl", lambda device: False)
+    monkeypatch.setattr(utils, "device_support_pdl", lambda device: False)
     for name in ("top_k_mask_logits_out", "top_p_renorm_probs_out"):
         monkeypatch.setattr(torch.ops.flashinfer, name,
             lambda source, output, *args: output.copy_(source), raising=False)

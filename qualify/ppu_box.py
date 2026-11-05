@@ -66,6 +66,7 @@ def device_suites(args, root, output):
         ('attention-prepared', [python, '-m', 'pytest', '-q', 'tests/components/test_flash_attn3_prepared_cuda.py',
             '--junitxml=' + str(output / 'attention-prepared.xml')], root, 'attention-prepared.xml'),
         ('compiled-catalog', [python, '-m', 'pytest', '-q', 'tests/preparation/test_external_aot_cuda.py',
+            'tests/preparation/test_external_session_cuda.py',
             '--junitxml=' + str(output / 'compiled-catalog.xml')], root, 'compiled-catalog.xml'),
         ('quactlize', [python, '-m', 'pytest', '-q', 'tests/serving/test_serving_device.py',
             '--junitxml=' + str(output / 'quactlize.xml')], args.quactlize_source, 'quactlize.xml'),

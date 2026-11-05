@@ -18,8 +18,6 @@ from ignition.components.prompt_logprobs import (
     PreparedScoredPrefill, PromptScoring, prefill_graph_count, prefill_modes,
 )
 
-from ignition.preparation.tuning import with_autotune_effort
-
 from ignition.components.parallel import TensorParallelShard
 from ignition.preparation.collectives import (
     CollectivePreparation,
@@ -39,7 +37,6 @@ from ignition.preparation import runtime_package_pb2 as contract_proto
 from ignition.preparation.execution import GraphSignature
 from ignition.preparation.host_memory import device_memory_info
 from ignition.preparation.deferred import deferred_mode
-from ignition.preparation.fixtures.recurrent import register_benchmark_state
 from ignition.preparation.frontend import annotated_template_asset, prepare_frontend
 from ignition.preparation.model import PreparedModel
 from ignition.preparation.rank_group import minimum_across_ranks
@@ -63,8 +60,7 @@ from .state import (
     HybridStatePool,
     StateTransferMetadata,
 )
-from .tuning import preparation_session
-from .vision import PreparedVision, VisionScratch
+from .tuning import external_operators, preparation_session, with_autotune_effort
 
 
 def _identity(manifest, world_size=1, *, operators=None):
@@ -108,21 +104,12 @@ def prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, pr
 def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, transient,
                    progress=None, compile_decoder: bool = True, rank: int = 0,
                    group=None, package_storage=None) -> PreparedModel:
-    from transformers.models.qwen4_exp.modeling_qwen4_exp import Qwen4ExpVisionModel
-
-    from .vision_state import (
-        PreparedEmbeddingInjection,
-        PreparedVisionGeneration,
-        PreparedVisionHandoff,
-        VisionFeatureState,
-        VisionInputs,
-    )
-
     def report(message):
         if progress is not None:
             progress(message)
 
     config = PreparationConfig() if config is None else config
+    external = external_operators(config.gguf_inputs)
     shard = TensorParallelShard(rank, 1 if config.devices is None else len(config.devices))
     if (shard.world_size > 1) != (group is not None):
         raise ValueError("tensor parallel preparation requires an established control group")
@@ -155,6 +142,11 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
         transient.enter_context(package_storage.transient())
     weights = ModelWeights.load(manifest, device, progress=progress, shard=shard,
         shard_hyperconnections=config.shard_hyperconnections)
+    if weights.vision is not None:
+        from transformers.models.qwen4_exp.modeling_qwen4_exp import Qwen4ExpVisionModel
+        from .vision import PreparedVision, VisionScratch
+        from .vision_state import (PreparedEmbeddingInjection, PreparedVisionGeneration, PreparedVisionHandoff,
+                                   VisionFeatureState, VisionInputs)
     if torch.cuda.get_device_properties(device).is_integrated:
         from ignition.preparation.host_memory import release_page_cache
 
@@ -199,6 +191,7 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
     session = preparation_session(
         compile_workers=config.compile_workers, collective_tuning=config.collective_tuning, collective_ladder=config.collective_ladder, autotune_effort=config.autotune_effort, tuning_replica=config.tuning_replica,
         native_dense_activations=config.native_dense_activations, lock_gpu_clocks=config.lock_gpu_clocks,
+        gguf_inputs=config.gguf_inputs,
         dense_blas_api=None if dense_blas_library is None else dense_blas_library.api,
         device=device, checkpoint=REVISION if config.gguf_inputs is None else manifest.headers_sha256,
         coordinator=coordinator,
@@ -231,10 +224,13 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
                 speculative_tokens=speculative_tokens, world_size=shard.world_size, storage=package_storage,
                 kv_dtype=config.kv_dtype,
                 backed_slots=(min(state_rows + 1, config.preparation_state_rows) if package_storage is not None else None))
-            register_benchmark_state(
-                session, next(iter(state.gdn.values())).recurrent,
-                storage=state.backing, restore=state.reset_for_preparation,
-            )
+            if not external:
+                from ignition.preparation.fixtures.recurrent import register_benchmark_state
+
+                register_benchmark_state(
+                    session, next(iter(state.gdn.values())).recurrent,
+                    storage=state.backing, restore=state.reset_for_preparation,
+                )
             requests = DeviceRequestState.allocate(device, capacity=slots)
             from ignition.components.sampling import PreparedSampling
 
@@ -440,7 +436,9 @@ def _prepare_model(snapshot: Path, config: PreparationConfig | None = None, *, t
                 speculation.rebind_pages_for_preparation(pages)
 
         if compile_decoder:
-            from b12x._lib.compile_plan import compile_only_launches
+            compile_only_launches = contextlib.nullcontext
+            if not external:
+                from b12x._lib.compile_plan import compile_only_launches
 
             mode = deferred_mode()
             with compile_only_launches():

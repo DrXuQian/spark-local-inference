@@ -12,6 +12,7 @@ import triton.language as tl
 
 
 from .state_layout import StateLayout, StateRegion
+from ignition.preparation.triton import wrap_triton
 
 
 @dataclass(frozen=True)
@@ -47,7 +48,7 @@ def gather_rows(source, rows, destination):
     source = source.view(source.shape[0], -1)
     output = destination.view(destination.shape[0], -1)
     if source.is_cuda:
-        torch.library.wrap_triton(_gather_rows)[(output.shape[0], triton.cdiv(output.shape[1], 1024))](
+        wrap_triton(_gather_rows)[(output.shape[0], triton.cdiv(output.shape[1], 1024))](
             source, rows, output, source.stride(0), output.stride(0), rows.stride(0), output.shape[1], 1024)
     else:
         output.copy_(source[rows, :output.shape[1]])
@@ -70,7 +71,7 @@ def gather_rows_three(sources, rows, destinations):
     out_first, out_second, out_third = (value.view(value.shape[0], -1) for value in destinations)
     if first.is_cuda:
         width = max(out_first.shape[1], out_second.shape[1], out_third.shape[1])
-        torch.library.wrap_triton(_gather_rows_three)[(out_first.shape[0], triton.cdiv(width, 1024))](
+        wrap_triton(_gather_rows_three)[(out_first.shape[0], triton.cdiv(width, 1024))](
             first, second, third, rows, out_first, out_second, out_third,
             first.stride(0), second.stride(0), third.stride(0),
             out_first.stride(0), out_second.stride(0), out_third.stride(0), rows.stride(0),
@@ -103,7 +104,7 @@ def save_hidden(source, destination, slots, active):
     Inactive destinations retain their bytes.
     """
     if destination.is_cuda:
-        torch.library.wrap_triton(_save_hidden)[(source.shape[0],)](source, destination, slots, active, source.stride(0),
+        wrap_triton(_save_hidden)[(source.shape[0],)](source, destination, slots, active, source.stride(0),
             destination.stride(0), source.shape[1], triton.next_power_of_2(source.shape[1]))
     else:
         selected = active.bool()
@@ -115,7 +116,7 @@ def scatter_rows(source, rows, destination, active):
     source = source.view(source.shape[0], -1)
     output = destination.view(destination.shape[0], -1)
     if source.is_cuda:
-        torch.library.wrap_triton(_scatter_rows)[(source.shape[0], triton.cdiv(source.shape[1], 1024))](
+        wrap_triton(_scatter_rows)[(source.shape[0], triton.cdiv(source.shape[1], 1024))](
             source, rows, output, active, source.stride(0), source.stride(1), output.stride(0),
             source.shape[1], output.shape[0], 1024)
     else:

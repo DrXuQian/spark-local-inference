@@ -11,7 +11,7 @@ import triton
 import triton.language as tl
 
 from ignition.components.capacity import BATCH_CAPACITIES
-from ignition.components.recurrent import DeltaMetadata
+from ignition.components.recurrent_state import DeltaMetadata
 from ignition.components.token_state import PreparedTokenState
 
 from .attention import QSAMetadata

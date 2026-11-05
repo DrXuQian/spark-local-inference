@@ -21,7 +21,6 @@ import torch
 
 from ignition.components.embedding import PreparedEmbedding
 from ignition.components.gated_delta import PreparedGDN
-from ignition.components.gguf_moe import GgufMoeWorkspace
 from ignition.components.gguf_weights import GgufWeightLoader
 from ignition.components.linear import UnquantizedProjection
 from ignition.components.ngram_delivery import PreparedPLELookup
@@ -221,8 +220,8 @@ def prepare(args):
     from ignition.preparation.module_images import ModuleImages
     from ignition.preparation.package_storage import PackageStorage
     from ignition.preparation.runtime_package import export_model
-    from ignition.preparation.scratch import GraphBufferPool, ScratchArena
-    from ignition.preparation.tuning import RecordedPreparationSession
+    from ignition.preparation.scratch import ScratchArena
+    from ignition.recipes.qwen38.tuning import external_operators, preparation_session
     from ignition.preparation import runtime_package_pb2 as p
     from ignition.recipes.qwen38.attention import QSAState, RotaryTables
     from ignition.recipes.qwen38.contract import prepare as contract
@@ -244,6 +243,12 @@ def prepare(args):
         raise FileExistsError(output / 'package')
     if args.actlize_qsa and args.actlize_library is None:
         raise ValueError('--actlize-qsa requires an explicit --actlize-library')
+    if args.operator_target.startswith('ppu'):
+        missing = [name for name in ('actlize_library', 'quactlize_abi_library', 'quactlize_helpers_library',
+                                     'dense_blas_library', 'flash_attention3_library') if getattr(args, name) is None]
+        if missing or not args.actlize_qsa:
+            raise ValueError('PPU qualification requires --actlize-qsa and all external libraries; missing '
+                             + ', '.join('--' + name.replace('_', '-') for name in missing))
     if (args.dense_blas_library is None) != (args.dense_blas_api is None):
         raise ValueError('--dense-blas-library and --dense-blas-api must be supplied together')
     dense_blas = None if args.dense_blas_library is None else BlasLibrarySpec.read(Path.cwd(),
@@ -283,14 +288,19 @@ def prepare(args):
         from ignition.preparation.flash_attn3 import FlashAttention3Spec
         from ignition.preparation.qwen38_gguf import GgufInputs
 
+        target = args.operator_target
+        quant_target = 'nvidia' if target == 'cuda_sm120' else target
         operator_inputs = GgufInputs(args.target_shard, args.mtp, args.frontend, 'pread',
-            None if args.actlize_library is None else ActlizeLibrarySpec.read(args.actlize_library),
-            None if args.quactlize_abi_library is None else QuactlizeLibrarySpec.read(args.quactlize_abi_library),
+            None if args.actlize_library is None else ActlizeLibrarySpec.read(args.actlize_library, target=target),
+            None if args.quactlize_abi_library is None else QuactlizeLibrarySpec.read(args.quactlize_abi_library, target=quant_target),
             dense_blas=dense_blas,
             flash_attention3=None if args.flash_attention3_library is None else
                 FlashAttention3Spec.read(args.flash_attention3_library),
             quactlize_helpers=None if args.quactlize_helpers_library is None else
-                QuactlizeHelpersSpec.read(args.quactlize_helpers_library))
+                QuactlizeHelpersSpec.read(args.quactlize_helpers_library, target=quant_target))
+        external = external_operators(operator_inputs)
+        if external and not args.actlize_qsa:
+            raise ValueError('complete external operator qualification requires --actlize-qsa')
         attention_libraries = operator_inputs.load_operators('cuda:0')
         dense_blas_library = attention_libraries.pop('dense_blas')
         quactlize_helpers = attention_libraries.pop('quactlize_helpers')
@@ -327,8 +337,8 @@ def prepare(args):
             'memory_capacity': state.memory_capacity, 'sampling_grammar_mask': requests.grammar_mask,
             'request_pending_token': requests.pending_token}
         functions, signatures, owners = {}, {}, []
-        with RecordedPreparationSession(device='cuda:0', checkpoint='qwen38-gguf-partial',
-                workload_schema='qwen38-gguf-partial-v1', numerical_policy='default',
+        with preparation_session(device='cuda:0', checkpoint='qwen38-gguf-partial',
+                gguf_inputs=operator_inputs,
                 namespace={'fixture': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                            'layers': args.layers, 'target_header': manifest.shards[0].header_sha256,
                            'operators': operators},
@@ -440,6 +450,8 @@ if __name__ == '__main__':
     from qualify.qwen38_gguf import prepare
 
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--operator-target', choices=('cuda_sm120', 'ppu10', 'ppu15'), default='cuda_sm120',
+                        help='actual target of the external QUactlize and actlizeLA libraries')
     parser.add_argument('--quactlize-helpers-library', type=Path,
                         help='explicit QUactlize serving v2/v1 DSO, independent of the matmul DSO')
     parser.add_argument('--flash-attention3-library', type=Path,
@@ -448,11 +460,11 @@ if __name__ == '__main__':
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--layers', type=int, nargs='+', default=[44, 47])
     parser.add_argument('--actlize-library', type=Path,
-                        help='qualify the actlizeLA SM120 GDN library inside complete serving graphs')
+                        help='qualify the explicitly selected actlizeLA GDN library inside complete serving graphs')
     parser.add_argument('--actlize-qsa', action='store_true',
                         help='also bind external QSA, with BF16 KV pages and matching snapshots')
     parser.add_argument('--quactlize-abi-library', type=Path,
-                        help='qualify the explicit NVIDIA implementation of PPU matmul records')
+                        help='qualify the explicit native matmul-record ABI implementation')
     parser.add_argument('--dense-blas-library', type=Path,
                         help='use this cuBLAS-compatible library for unquantized projections')
     parser.add_argument('--dense-blas-api', choices=('cublas', 'acblas'),

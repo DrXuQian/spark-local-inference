@@ -1032,9 +1032,9 @@ real storage, runtime handle rebinding, exact dispatch keys, and rejection of
 changed shapes, scalar conditions and storage aliases. The saved catalog retains
 the selected static Triton config and rejects unfinished tuning. Prepared Triton
 launches use raw JIT calls during Dynamo tracing; Torch2.9 skips `wrap_triton`
-there. Dispatcher-based `make_fx` tracing keeps the wrapped call. Host
-checks do not establish device execution: run the four new catalog cases on the
-box before attempting a model. They need no weights or QUactlize/actlizeLA DSO:
+there. Dispatcher-based `make_fx` tracing keeps the wrapped call. The user reports
+all four catalog cases passing on the PPU box (4 passed, 7 deselected). The
+following command reruns that gate without weights or QUactlize/actlizeLA DSOs:
 
 ```sh
 FLARE_RUN_CUDA_TESTS=1 python -m pytest -q \
@@ -1046,16 +1046,40 @@ This exercises a metadata compiler worker, disk reload without compilation,
 frozen reduction kernels, fresh opaque bindings, and retained graph capture.
 The three additional FA3 `catalog` cases cover widths 1/7/128 through that same
 worker/cache path. Replay changes device inputs and checks outputs, cache writes
-and allocation stability. The seven previously reported FA3 passes do not cover
-these new cases. Full-model preparation, PPU package export and Rust replay still
+and allocation stability. These four passes extend the seven previously reported
+FA3 component cases. Full-model preparation, PPU package export and Rust replay still
 need separate qualification.
+
+Selecting all five external libraries (QUactlize matmul, QUactlize helpers,
+actlizeLA, dense BLAS and FA3) now uses `ExternalPreparationSession` for the text
+bootstrap and partial-layer qualifier. It finalizes the complete scratch inventory
+before compilation, retains native owners through capture, and drains the device
+before release. ForwardCache still compiles and freezes complete forwards. The
+legacy session remains in use for the original b12x model path. Missing external
+libraries on an explicit PPU target are rejected before model preparation.
+This removes the session's b12x/cuTile requirement; full-model hardware planning,
+external operator numerics and native export still require qualification.
+
+The next device gate exercises this session through `capture_forwards`, with
+alternating one-row and seven-row graphs sharing scratch, strided state reads,
+active/inactive writes, exact persistent state and allocation-stable replay:
+
+```sh
+FLARE_RUN_CUDA_TESTS=1 python -m pytest -q \
+  tests/preparation/test_external_session_cuda.py --tb=short
+```
+
+It needs no model download or external operator DSOs. It validates framework
+state transfer and catalog orchestration, not a complete target/MTP round.
+For partial-layer qualification, pass `--operator-target ppu10` or `ppu15`,
+`--actlize-qsa`, and all five library paths to `python -m qualify.qwen38_gguf`.
+The target must match the installed platform and library builds.
 
 The manifest also accepts `"operator_target": "ppu10"` or `"ppu15"` for explicit
 QUactlize/actlizeLA library selection. The default remains the NVIDIA debug target;
 its QUactlize loader binds the current `quactlize_cuda_matmul_*_v1` C ABI directly.
-Target and library content enter preparation identity. This input binding alone
-does not remove the remaining normal preparation/session and hardware-planning
-dependencies or qualify PPU export.
+Target and library content enter preparation identity. Selecting the external
+session does not qualify full-model hardware planning or PPU export.
 The inspection also checks the platform Torch APIs used by Flare's AOT
 serialization, guard pickler and retained CUDA graphs, and round-trips tensor
 metadata with aliases. Platform API compatibility must be established before

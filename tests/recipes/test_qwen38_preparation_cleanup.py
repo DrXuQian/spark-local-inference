@@ -105,7 +105,7 @@ def test_construction_failure_closes_routing_after_owner_cleanup(monkeypatch, ro
     owners = []
     session = SimpleNamespace(__enter__=lambda: None, close=lambda: owners.append("session"))
     table = SimpleNamespace(close=lambda: owners.append("table"))
-    monkeypatch.setattr(bootstrap.ModelWeights, "load", lambda *args, **kwargs: object())
+    monkeypatch.setattr(bootstrap.ModelWeights, "load", lambda *args, **kwargs: SimpleNamespace(vision=None))
     monkeypatch.setattr(bootstrap.PLETable, "load", lambda *args, **kwargs: table)
     monkeypatch.setattr(bootstrap, "preparation_session", lambda *args, **kwargs: session)
 

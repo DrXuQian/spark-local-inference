@@ -4,12 +4,48 @@
 
 """Preparation policy for the Qwen 3.8 operator catalog."""
 
-from ignition.preparation.tuning import RecordedPreparationSession
+from functools import wraps
+
+
+def external_operators(inputs):
+    if inputs is None:
+        return False
+    required = ('actlize', 'quactlize', 'dense_blas', 'quactlize_helpers', 'flash_attention3')
+    missing = [name for name in required if getattr(inputs, name) is None]
+    if missing and any(getattr(getattr(inputs, name), 'target', '').startswith('ppu')
+                       for name in ('actlize', 'quactlize', 'quactlize_helpers')):
+        raise ValueError('PPU GGUF preparation requires explicit external operators: missing ' + ', '.join(missing))
+    return not missing
+
+
+def with_autotune_effort(prepare):
+    @wraps(prepare)
+    def scoped(snapshot, config, *args, **kwargs):
+        if external_operators(getattr(config, 'gguf_inputs', None)):
+            return prepare(snapshot, config, *args, **kwargs)
+        from ignition.preparation.tuning import with_autotune_effort as legacy_scope
+
+        return legacy_scope(prepare)(snapshot, config, *args, **kwargs)
+    return scoped
 
 
 def preparation_session(*, device, checkpoint, namespace=None, coordinator=None, headroom_bytes=0,
                         benchmark_storage=None, compile_workers=None, tuning_replica=None, autotune_effort="default", collective_tuning="static", collective_ladder=None,
-                        native_dense_activations=False, lock_gpu_clocks=False, dense_blas_api=None):
+                        native_dense_activations=False, lock_gpu_clocks=False, dense_blas_api=None, gguf_inputs=None):
+    if external_operators(gguf_inputs):
+        from ignition.preparation.external_session import ExternalPreparationSession
+
+        if coordinator is not None or tuning_replica is not None or collective_tuning != 'static' or collective_ladder is not None:
+            raise ValueError('external GGUF operators currently require one device without collective tuning')
+        if native_dense_activations:
+            raise ValueError('external GGUF dense projections require BF16 activations')
+        identity = dict(namespace or {}, workload_schema='qwen38-external-operators-v1',
+                        numerical_policy='gguf-bf16-fp32-accum')
+        return ExternalPreparationSession(device=device, checkpoint=checkpoint, namespace=identity,
+            compile_workers=compile_workers, headroom_bytes=headroom_bytes,
+            autotune_effort=autotune_effort, lock_gpu_clocks=lock_gpu_clocks)
+    from ignition.preparation.tuning import RecordedPreparationSession
+
     return RecordedPreparationSession(
         device=device, checkpoint=checkpoint, compile_workers=compile_workers, tuning_replica=tuning_replica,
         collective_tuning=collective_tuning, collective_ladder=collective_ladder, autotune_effort=autotune_effort, lock_gpu_clocks=lock_gpu_clocks, native_dense_activations=native_dense_activations,

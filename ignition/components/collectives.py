@@ -19,10 +19,6 @@ from dataclasses import dataclass
 import torch
 import triton
 import triton.language as tl
-from b12x.preparation import CollectiveRequirement, PreparedCall
-
-from ignition.preparation.tuning import declare, register_finalizer
-
 _OWNERS = weakref.WeakValueDictionary()
 _HANDLES = itertools.count()
 
@@ -79,7 +75,6 @@ class PreparedAllReduce:
 
     def __init__(self, source, output, *, runtime, session, coordinator, name):
         import torch.distributed as dist
-        from b12x.comm import pcie
 
         self.runtime, self.output = runtime, output
         startup_joint = False
@@ -90,6 +85,10 @@ class PreparedAllReduce:
             if source.shape != output.shape or source.dtype != output.dtype:
                 raise ValueError("a single-rank reduction copies its source into a matching output")
             return
+        from b12x.comm import pcie
+        from b12x.preparation import CollectiveRequirement, PreparedCall
+        from ignition.preparation.tuning import declare
+
         if _roce(runtime):
             if (source.shape != output.shape or source.dtype != torch.bfloat16 or output.dtype != source.dtype
                     or not source.is_contiguous() or not output.is_contiguous()
@@ -291,6 +290,8 @@ class PreparedAllReduceRMSNorm:
 
     @staticmethod
     def fits(runtime, source):
+        if runtime is None:
+            return False
         from b12x.comm import pcie
 
         if isinstance(source, WeightedGroupSource):
@@ -312,6 +313,8 @@ class PreparedAllReduceRMSNorm:
                  zero_centered=False, reduction_dtype=None, input_addend=None):
         import torch.distributed as dist
         from b12x.comm.pcie._oneshot_preparation import _prepare_fused_call
+        from b12x.preparation import CollectiveRequirement
+        from ignition.preparation.tuning import declare
 
         if not self.fits(runtime, source):
             raise ValueError("fused all-reduce RMSNorm requires a single-channel one-shot runtime within its capacity")
@@ -367,6 +370,8 @@ class PreparedAllReduceAdd:
                  reduction_dtype=None, input_addend=None):
         import torch.distributed as dist
         from b12x.comm.pcie._oneshot_preparation import _prepare_fused_call
+        from b12x.preparation import CollectiveRequirement
+        from ignition.preparation.tuning import declare
 
         if not self.fits(runtime, source):
             raise ValueError("residual reduction requires a single-channel one-shot runtime within capacity")
@@ -488,6 +493,8 @@ class PreparedBroadcast:
         self.single = runtime is None
         if self.single:
             return
+        from ignition.preparation.tuning import register_finalizer
+
         tensors = tuple(tensors)
         if not tensors or any(not tensor.is_contiguous() or tensor.device != tensors[0].device
                               for tensor in tensors):
@@ -564,7 +571,6 @@ class PreparedAllGather:
 
     def __init__(self, source, output, *, runtime, session, coordinator, name):
         import torch.distributed as dist
-        from b12x.comm import pcie
 
         self.runtime, self.output = runtime, output
         # Traced forwards test this flag, never the runtime: compile workers see a runtime that
@@ -574,6 +580,10 @@ class PreparedAllGather:
             if source.shape != output.shape or source.dtype != output.dtype:
                 raise ValueError("a single-rank gather copies its source into a matching output")
             return
+        from b12x.comm import pcie
+        from b12x.preparation import CollectiveRequirement, PreparedCall
+        from ignition.preparation.tuning import declare
+
         if (source.ndim != 2 or source.dtype not in (torch.bfloat16, torch.float32, torch.float8_e4m3fn)
                 or output.dtype != source.dtype or not source.is_contiguous() or not output.is_contiguous()):
             raise ValueError("column gathers require contiguous matching BF16, FP32 or E4M3 matrices")
@@ -679,6 +689,8 @@ class PreparedVarlenGather:
 
     def __init__(self, output, counts, *, runtime, session, coordinator, name):
         import torch.distributed as dist
+        from b12x.preparation import CollectiveRequirement, PreparedCall
+        from ignition.preparation.tuning import declare
 
         if not _roce(runtime):
             raise ValueError("variable-length gathers run over RoCEnante")
@@ -728,6 +740,8 @@ class PreparedLseReduceScatter:
     def __init__(self, partial, lse, output, *, runtime, session, coordinator, name, staging=None, rank=None):
         import torch.distributed as dist
         from b12x.comm import pcie
+        from b12x.preparation import CollectiveRequirement, PreparedCall
+        from ignition.preparation.tuning import declare
 
         rows = partial.shape[0]
         self.roce = _roce(runtime)

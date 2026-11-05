@@ -89,7 +89,8 @@ class _ForwardPickler(pickle.Pickler):
     def __init__(self, file):
         super().__init__(file, protocol=pickle.HIGHEST_PROTOCOL)
         self.storages = {}
-        self.sessions = _loaded_types('b12x.preparation', 'PreparationSession')
+        self.sessions = (*_loaded_types('b12x.preparation', 'PreparationSession'),
+                         *_loaded_types('ignition.preparation.external_session', 'ExternalPreparationSession'))
         self.devices = _loaded_types('b12x.preparation.device', 'DetectedDevice')
         self.slots = _loaded_types('b12x.preparation.types', '_PreparedSlot')
         self.prepared = _loaded_types('b12x.preparation.types', '_Prepared')
@@ -106,7 +107,7 @@ class _ForwardPickler(pickle.Pickler):
         from .device_binding import restore_device, restore_prepared_device
 
         if isinstance(value, self.sessions):
-            return _Unavailable, ("b12x preparation session",)
+            return _Unavailable, (f'{type(value).__module__}.{type(value).__qualname__}',)
         if isinstance(value, _Unavailable):
             return _Unavailable, (value.description,)
         # A worker may trace another local rank's forward on its own GPU; the artifact relocates when bound.

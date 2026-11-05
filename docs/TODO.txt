@@ -298,14 +298,18 @@
 [ ] Finish b12x-free Qwen GGUF preparation using external QUactlize/actlizeLA
     operators. Routing, rounded SwiGLU, rows, GDN sequence, HC, PLE and MTP feedback
     bindings are implemented. Explicit FA3 ordinary MTP attention and independent
-    cache-only writes are connected; preparation dependency cleanup remains.
+    cache-only writes are connected. A fixed external preparation session now
+    freezes scratch, finalizes bindings and drains before releasing owners,
+    without importing b12x tuning or unused single-rank communication kernels.
     PLE retains raw IQ4_NL delivery, hash publication/readiness,
     BF16 gate boundaries and dilation3 history; its four graph tests await a
     device. Qualify FlashInfer's
     caller-owned sampling workspace and row-independent RNG interfaces.
     Preserve consumed-prefix state, compile/capture lifetimes and native replay.
     Metadata serialization/guards and QSA/MTP/GGUF class imports no longer load
-    unused b12x/CuTe packages; normal session/tuning orchestration is pending.
+    unused b12x/CuTe packages. The text bootstrap and partial-layer qualifier use
+    the external session when every external library is explicitly selected.
+    Its alternating state-transfer catalog still needs device qualification.
     qualify.ppu_box includes a separate FA3 page64/D256/append graph API gate
     (widths 1/7/128, changing lengths, inactive rows and exact cache writes).
     The user reports all six API cases and all seven attention-prepared cases
@@ -313,17 +317,17 @@
     These cover strided KV copy, FA3 automatic splits, changing packed suffixes,
     inactive rows, sticky bounds errors and allocation stability during replay.
     Explicit PPU operator target identities now select the libraries, but normal
-    session/planning/export orchestration still needs the remaining port work.
+    planning/export orchestration still needs the remaining port work.
     The box has Torch2.9/Triton3.5: normalize direct compiled launch grids to
     three dimensions and omit the unsupported optional make_fx annotation flag.
     Torch2.9 compiled-artifact/guard serialization now uses its bundled AOT
     entry and Dynamo protocol. Host checks cover metadata worker rebinding,
     deferred/real tensor guards, native handles, dispatch keys, shapes and aliases.
     Static Triton winner freezing retains the selected compiled config and
-    rejects incomplete searches. The box still needs the new compiled-catalog
-    gate and the three FA3 attention-prepared `catalog` cases: worker compilation,
+    rejects incomplete searches. The user reports the compiled-catalog gate
+    and three FA3 attention-prepared `catalog` cases passing (4 passed): worker compilation,
     disk reload without compilation/search, retained capture and changed-input
-    allocation-stable replay. Device qualification remains pending. Prepared
+    allocation-stable replay. Prepared
     Triton launches use direct JIT capture under Dynamo, since Torch2.9 skips
     wrap_triton there; dispatcher-based make_fx tracing keeps the wrapped call.
     The standalone qualification compiler now uses its real CompiledArtifact

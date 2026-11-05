@@ -12,6 +12,7 @@ from threading import Event, Thread
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 from ignition.preparation.execution import GraphSignature
 from ignition.preparation.model import PreparedModel
@@ -36,7 +37,7 @@ def model_fixture(monkeypatch, *, synchronize=None, server=None):
         device=0,
         graphs={"decode": Resource("graph", events)},
         buffers={"frame_index": object(), "submission_sequence": object(),
-                 "completion_records": SimpleNamespace(shape=(2, 4, 32))},
+                 "completion_records": torch.zeros((2, 4, 32), dtype=torch.int64)},
         signatures={"decode": GraphSignature("decode", 1, 1)},
         resources=(weights,),
         server_config={},

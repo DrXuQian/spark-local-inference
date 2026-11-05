@@ -8,7 +8,7 @@ from dataclasses import dataclass, fields, replace
 import torch
 
 from ignition.components.gated_delta import GDNScratch
-from ignition.components.recurrent import DeltaMetadata
+from ignition.components.recurrent_state import DeltaMetadata
 
 from .attention import QSAMetadata
 from .ple import PLEMetadata, PLEScratch
