@@ -464,6 +464,15 @@
     docs/ppu-box-resume.txt. Actual box headers and the two sampling device
     cases still require verification; this is not a device-pass claim.
 
+[x] Bind keyword/default kernel operands before direct prepared Triton launches.
+    Probability-mask warmup supplied five pointers plus six constexpr keywords,
+    but its CompiledKernel call forwarded only the pointers (Triton3.5 expected
+    24 launcher arguments and received 18). The shared helper now binds the
+    compiled source signature, while Dynamo/make_fx retain their existing path.
+    Host regressions execute the real Triton Python launch wrappers for empty,
+    limited and unlimited probability masks; 51 related tracing/serialization/
+    FA3 checks pass on Torch2.9 and Torch2.15. Device sampling replay remains open.
+
 [x] Publish the QUactlize installed-wheel reporting fix as 653b46e on feat/ppu-flash-next:
     tools/verify_installed_wheel.py previously omitted FLARE_RUN_CUDA_TESTS for its
     Flare subprocess and accepted pytest exit zero without checking skipped

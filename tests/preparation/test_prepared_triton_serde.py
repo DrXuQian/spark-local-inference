@@ -144,7 +144,7 @@ def test_prepared_triton_dynamo_guard_ignores_process_local_compiled_kernel(monk
 
 
 @pytest.mark.parametrize('grid', [(7,), (7, 2), (7, 2, 3)])
-def test_direct_compiled_launcher_receives_three_dimensions(grid):
+def test_direct_compiled_launcher_receives_three_dimensions(monkeypatch, grid):
     from triton.compiler.compiler import CompiledKernel
 
     # Execute Triton's actual Python runner, recording the native launch ABI.
@@ -158,12 +158,13 @@ def test_direct_compiled_launcher_receives_three_dimensions(grid):
             return lambda *args: runner(*args, stream=7)
 
     native = object.__new__(HostLaunch)
-    native.name, native.src, native.module = 'host_launch_abi', None, None
+    native.name, native.src, native.module = 'host_launch_abi', SimpleNamespace(fn=_copy_launch), None
     native.function, native.packed_metadata = 101, ()
     launches = []
     native._run = lambda *args: launches.append(args)
-    kernel = SimpleNamespace(warmup=lambda *args, **kwargs: native)
-    operands = ('source', 'output')
+    monkeypatch.setattr(_copy_launch, 'warmup', lambda *args, **kwargs: native)
+    kernel = _copy_launch
+    operands = ('source', 'output', 32)
     prepare_triton(kernel, operands, grid)()
     launch_triton(kernel, native, operands, grid)
     # Previously serialized owners may retain a short grid as well.
@@ -171,7 +172,71 @@ def test_direct_compiled_launcher_receives_three_dimensions(grid):
     assert len(launches) == 3
     for call in launches:
         assert call[:3] == grid + (1,) * (3 - len(grid))
-        assert call[3:6] == (7, 101, ()) and call[-2:] == operands
+        assert call[3:6] == (7, 101, ()) and call[-3:] == operands
+
+
+@pytest.mark.parametrize('limited', [False, True])
+@pytest.mark.parametrize('columns', [0, 1, 6])
+def test_probability_mask_direct_launch_binds_all_six_keyword_constants(monkeypatch, columns, limited):
+    import inspect
+    from triton.backends.nvidia.driver import CudaLauncher
+    from triton.compiler.compiler import CompiledKernel
+    from ignition.components.probability_mask import PreparedProbabilityMask, _mask_probabilities
+
+    # Exercise the actual CompiledKernel runner and CUDA Python launcher using
+    # inert native handles; record arguments at the C entry without a driver.
+    class HostLaunch(CompiledKernel):
+        def _init_handles(self):
+            pass
+
+        def __getitem__(self, grid):
+            runner = super().__getitem__(grid)
+            return lambda *args: runner(*args, stream=7)
+
+    launches = []
+    launcher = object.__new__(CudaLauncher)
+    launcher.global_scratch_size = launcher.profile_scratch_size = 0
+    launcher.global_scratch_align = launcher.profile_scratch_align = 1
+    launcher.launch_cooperative_grid = launcher.launch_pdl = False
+    launcher.num_ctas = 1
+    launcher.gsan_enabled = False
+    packed_arguments = 'kernel_metadata' in inspect.signature(CudaLauncher.__call__).parameters
+    if packed_arguments:
+        # New launchers forward C-entry metadata with one argument tuple. It
+        # stays opaque here, since constructing it would initialize the driver.
+        monkeypatch.setattr(triton.runtime.driver, '_active', object())
+        launcher.arg_annotations, launcher.kernel_signature = object(), object()
+    launcher.launch = lambda *args: launches.append(args)
+    native = object.__new__(HostLaunch)
+    native.name, native.src, native.module = 'probability_mask_abi', SimpleNamespace(fn=_mask_probabilities), None
+    native.function, native.packed_metadata, native._run = 101, (), launcher
+    warmups = []
+    monkeypatch.setattr(_mask_probabilities, 'warmup', lambda *args, **kwargs:
+        warmups.append((args, kwargs)) or native)
+    source = torch.empty(2, columns, 128)
+    destination = torch.empty_like(source)
+    valid = torch.ones(2, dtype=torch.bool)
+    limits = torch.ones(2, dtype=torch.int32) if limited else None
+    dummy = torch.zeros(128)
+    mask = PreparedProbabilityMask(source, destination, valid, limits, dummy,
+                                    limit_offset=1, outputs=(destination,))
+    mask.prepare()
+    mask()
+    if not columns:
+        assert not warmups and not launches
+        return
+    assert len(launches) == 1
+    call, = launches
+    # Triton 3.5's C entry takes 13 launch fields, five pointers and six
+    # constexpr placeholders. The old helper passed only 18 of these 24 args.
+    expected = (source, destination, valid, valid if limits is None else limits, dummy,
+                source.numel(), columns, 128, limited, 1, 512)
+    assert len(call) == (16 if packed_arguments else 24)
+    arguments = call[-1] if packed_arguments else call[-11:]
+    assert call[:5] == (triton.cdiv(source.numel(), 512), 1, 1, 7, 101)
+    assert len(arguments) == len(expected)
+    assert all(actual is value for actual, value in zip(arguments[:5], expected[:5]))
+    assert arguments[-6:] == expected[-6:]
 
 
 def test_plain_backend_options_are_not_promoted_to_an_autotuner_config():

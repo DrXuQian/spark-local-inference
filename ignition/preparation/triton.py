@@ -69,4 +69,10 @@ def launch_triton(kernel, compiled, args, grid, **options):
     elif torch.compiler.is_compiling() or get_proxy_mode() is not None:
         torch.library.wrap_triton(kernel)[grid](*args, **options)
     else:
-        compiled[grid](*args)
+        # CompiledKernel bypasses JIT argument binding but its launcher still
+        # expects every source parameter, including constexprs and defaults.
+        signature = compiled.src.fn.signature
+        bound = signature.bind(*args, **{name: value for name, value in options.items()
+                                        if name in signature.parameters})
+        bound.apply_defaults()
+        compiled[grid](*bound.arguments.values())
