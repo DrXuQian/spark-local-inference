@@ -592,6 +592,17 @@
     ppu-graph-attributes-prompt.txt; nondefault and more complex graph histories
     need working SDK getters/setters before they can qualify.
 
+[x] Release package and scratch memory pools before their borrowed allocators.
+    Torch 2.9 MemPool keeps a raw allocator pointer and calls it during cached
+    segment destruction. The old Python field order freed that allocator first.
+    Four host lifecycle regressions fail on the old code and pass after the fix,
+    including cyclic GC and scratch retaining the final storage reference.
+    Storage checks pass on Torch 2.9 and 2.15 (15 passed, one platform case skipped
+    on each). Two new isolated device cleanup cases remain unrun locally.
+    The box reached tiny package publication but crashed returning from prepare;
+    its native crash stack and clean exit/replay still need confirmation. Report
+    export success only after preparation returns. This is a Python-only update.
+
 [x] Check required callback names before native recorder subscription and before
     compiling the standalone PPU export module. Report all missing/mismatched
     APIs, retaining fatal activation errors. Also enable the omitted FatBinary

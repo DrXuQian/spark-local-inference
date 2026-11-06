@@ -6,15 +6,73 @@
 allocations above the addresses a serving context occupies."""
 
 import ctypes
+import gc
 import inspect
 import os
 import struct
 from types import SimpleNamespace
+import weakref
 
 import pytest
 import torch
 
 from ignition.preparation.package_storage import PackageStorage, ScratchPool, pool_snapshot
+
+
+@pytest.mark.parametrize('scratch_last', [False, True])
+@pytest.mark.parametrize('cycle', [False, True])
+def test_pool_destructors_keep_borrowed_allocator_alive(scratch_last, cycle):
+    released = []
+    allocator_live = [True]
+    callbacks = []
+    destructor = ctypes.CFUNCTYPE(None, ctypes.c_void_p)
+    capsule = ctypes.PYFUNCTYPE(ctypes.py_object, ctypes.c_void_p, ctypes.c_char_p, destructor)(
+        ('PyCapsule_New', ctypes.pythonapi))
+
+    def native_owner(name):
+        @destructor
+        def release(_):
+            released.append((name, allocator_live[0]))
+            if name == 'allocator':
+                allocator_live[0] = False
+
+        callbacks.append(release)
+        return capsule(1, None, release)
+
+    class Allocator:
+        def __init__(self):
+            self.native = native_owner('allocator')
+
+    class BorrowingPool:
+        def __init__(self, name):
+            # Torch 2.9's native pool calls its borrowed allocator while freeing
+            # cached segments. Capsules observe native destruction, after Python
+            # finalizers; cyclic GC clears weakrefs before those finalizers run.
+            self.native = native_owner(name)
+
+    owner = PackageStorage.__new__(PackageStorage)
+    owner._allocator = Allocator()
+    allocator = weakref.ref(owner._allocator)
+    owner.pool = BorrowingPool('pool')
+    owner.graph_pool = BorrowingPool('graph_pool')
+    owner._scope = SimpleNamespace(pool=owner.pool)
+    if scratch_last:
+        scratch = ScratchPool.__new__(ScratchPool)
+        scratch.storage = owner
+        scratch.pool = BorrowingPool('scratch_pool')
+        scratch.scope = SimpleNamespace(pool=scratch.pool)
+        owner = scratch
+        del scratch
+    if cycle:
+        owner.cycle = owner
+    alive = weakref.ref(owner)
+    del owner
+    gc.collect()
+    assert alive() is None and allocator() is None
+    names = {'pool', 'graph_pool', 'allocator'} | ({'scratch_pool'} if scratch_last else set())
+    assert len(released) == len(names) and {name for name, _ in released} == names
+    assert all(live for _, live in released), released
+    assert released[-1][0] == 'allocator', released
 
 
 @pytest.mark.parametrize('pool_id', [(0, 7), (3, 0)])

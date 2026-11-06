@@ -311,6 +311,13 @@ class PackageStorage:
         if kind is None and self.error is not None:
             raise RuntimeError("native package allocator failed") from self.error
 
+    def __del__(self):
+        # Torch 2.9 pools borrow a raw allocator pointer. Their destructors may
+        # call free(), so release the pools before clearing the allocator owners.
+        self._scope = None
+        self.graph_pool = None
+        self.pool = None
+
 class HostRegion:
     """Registered storage with identical CPU and device addresses."""
 
@@ -449,6 +456,11 @@ class ScratchPool:
 
     def __exit__(self, *exc):
         self.scope.__exit__(*exc)
+
+    def __del__(self):
+        # Keep storage (and its allocator) alive through the pool destructor.
+        self.scope = None
+        self.pool = None
 
     def retire(self):
         """Close allocations and return cached segments after all allocation contexts have exited."""

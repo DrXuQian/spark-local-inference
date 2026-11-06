@@ -14,6 +14,54 @@ import pytest
 
 @pytest.mark.skipif(os.environ.get("FLARE_RUN_CUDA_TESTS") != "1",
                     reason="requires an explicitly assigned CUDA device")
+@pytest.mark.parametrize('scratch_last', [False, True])
+def test_package_pool_destruction_keeps_allocator_alive(scratch_last):
+    assert os.environ.get('CUDA_VISIBLE_DEVICES')
+    result = subprocess.run([sys.executable, '-X', 'faulthandler', '-c', '''
+import gc
+import sys
+import weakref
+import torch
+from ignition.preparation.package_storage import PackageStorage, pool_snapshot
+
+torch.cuda.set_device(0)
+
+def prepare():
+    with PackageStorage(device=0) as storage:
+        identifiers = [storage.pool.id, storage.graph_pool.id]
+        for pool in (storage.pool, storage.graph_pool):
+            with torch.cuda.use_mem_pool(pool, device=0):
+                value = torch.full((4096,), 37, dtype=torch.int32, device='cuda:0')
+                assert value.cpu().tolist() == [37] * 4096
+                del value
+        del pool
+        scratch = None
+        if sys.argv[1] == 'True':
+            scratch = storage.scratch_pool()
+            identifiers.append(scratch.pool.id)
+            with scratch:
+                value = torch.ones(4096, device='cuda:0')
+                assert value.sum().item() == 4096
+                del value
+        torch.cuda.synchronize()
+        # Retain only the native library for the error check, not the allocator.
+        return scratch, identifiers, weakref.ref(storage), weakref.ref(storage._allocator), storage.library
+
+scratch, identifiers, storage, allocator, library = prepare()
+del scratch
+gc.collect()
+assert storage() is None and allocator() is None
+assert library.flare_package_error() is None
+assert all(not pool_snapshot(pool) for pool in identifiers)
+print('All package pools destroyed and allocator released', flush=True)
+''', str(scratch_last)], cwd=Path(__file__).resolve().parents[2],
+        timeout=90, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'All package pools destroyed and allocator released' in result.stdout
+
+
+@pytest.mark.skipif(os.environ.get("FLARE_RUN_CUDA_TESTS") != "1",
+                    reason="requires an explicitly assigned CUDA device")
 def test_export_keeps_host_mailbox_and_omits_unused_library_storage(tmp_path):
     from ignition.preparation.package_storage import PackageStorage
     from ignition.preparation import runtime_package_pb2 as proto

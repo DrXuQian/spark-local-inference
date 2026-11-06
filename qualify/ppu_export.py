@@ -146,7 +146,7 @@ def prepare(args, module_path):
                     assert GLOBALS <= exported, exported
                     assert any(a.name.startswith('external-') and
                         a.address <= indirect.value < a.address + a.nbytes for a in package.allocations)
-                print('PPU package exported; run test_actlize_runtime_package after this process exits', flush=True)
+                print('PPU package files written; releasing preparation resources', flush=True)
             finally:
                 # Failed synchronization must not unload modules or free storage
                 # that a pending graph may still use.
@@ -170,6 +170,8 @@ def main(argv=None):
         print('Compile-only: device recording, export and Rust replay remain untested', flush=True)
     else:
         prepare(args, module)
+        print(f'PPU package exported and preparation cleanup completed: {args.output}; '
+              'run test_actlize_runtime_package after this process exits', flush=True)
 
 
 if __name__ == '__main__':
