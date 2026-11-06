@@ -1128,10 +1128,11 @@ now goes through the existing Dynamo-aware launch helper; four host tracing
 cases pass on Torch2.9 and Torch2.15. After the FP32 classification correction
 and bundled Inductor cache filename patch, the user reports both sampling
 cases passing on PPU (204.13s including preparation) and all six QSA cases
-passing (98.58s). The later short-symbol workaround is checked with offline
-compilation, static construction and cold reload on unpatched Torch; rerun the
-four catalog cases to qualify it on PPU, as described in
-[the box resume instructions](ppu-box-resume.txt).
+passing (98.58s). The later short-symbol workaround passes offline compilation,
+static construction and cold reload on unpatched Torch. The user also reports
+seven passes, one deselected in 292.58s with that policy: all six QSA cases plus
+sampling's catalog case. `-k catalog` matches the QSA function name as well as
+its parameter values, so the earlier four-selected-case expectation was incorrect.
 These are component graph gates, not complete target/MTP state commit,
 native export/Rust replay or whole-round bubble measurements.
 
@@ -1470,9 +1471,13 @@ SDK2.1.1 HGPTI facade, consistent with its absence from the header, even though
 its error now identifies the callback domain and ID. Resolve this requirement
 with the deployment's profiling library before target export. The later local
 SDK2.2.1 facade resolves `cuptiGetCallbackName(1, 742)` to `hgFuncLoad`; recorder
-startup on the real device remains a separate check. Export naming
-also requires an NVML PCI-ID mapping whose current table admits only NVIDIA
-GB10/GB202; do not label a PPU artifact as one of those platforms.
+startup on the real device remains a separate check. Export naming now preserves
+GB10/GB202 aliases and gives other valid NVML PCI identities a canonical
+`pci-<vendor>-<device>` label. The box's eight `1ded:6001` devices use
+`pci-1ded-6001` independent of their bus locations. New device IDs need no
+naming-table update; conversion, acquisition and cache naming retain the signed
+identity. This is not an executable compatibility check: operator targets,
+runtime architecture checks and driver module loading still apply.
 
 Native PPU ELF global discovery is now prepared for the observed machine 270
 format. The old CUDA section-name filter returned no globals for a real PPU
@@ -1492,7 +1497,7 @@ admission receives the explicit validated PPU operator target; context, handles
 and buffer bounds still use the normal checks. The Rust allocation observer
 recognizes both CUDA and HGPTI callback names and requires observed startup
 allocations. See [the box resume commands](ppu-box-resume.txt) for the offline
-module stage and the remaining native PCI identity/export qualification.
+module stage, native extension rebuild and remaining device export qualification.
 
 Reproduce the offline fixture check with the selected SDK on PATH:
 

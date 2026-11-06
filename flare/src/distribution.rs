@@ -157,7 +157,7 @@ pub fn root(
     let streams = args.transfer_streams.unwrap_or(8) as usize;
     let signed = package.identity().map_err(|e| e.to_string())?;
     let expected_envelope = package.envelope_digest();
-    let platform = if flare_helios::package::naming::PLATFORMS.contains(&signed.hardware.as_str()) {
+    let platform = if flare_helios::package::naming::is_platform(&signed.hardware) {
         signed.hardware.clone()
     } else {
         String::new()
@@ -719,7 +719,7 @@ fn verified_marker_matches(root: &Path, plan: &Plan, rank: usize) -> bool {
 fn receiver_candidate(platform: &str, tensor_parallel: u32) -> Result<String, Failure> {
     use flare_helios::package::naming;
     let now = std::time::SystemTime::now();
-    if naming::PLATFORMS.contains(&platform) {
+    if naming::is_platform(platform) {
         return naming::candidate(platform, tensor_parallel, now).ok_or(
             "receiver naming requires a supported platform and tensor-parallel size".into(),
         );

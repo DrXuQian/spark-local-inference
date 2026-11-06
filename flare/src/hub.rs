@@ -1948,7 +1948,7 @@ fn signed_hardware(
         sizes.insert(deployment.tensor_parallel);
 
         let signed_platform = verified.package().hardware_identity.as_str();
-        if naming::PLATFORMS.contains(&signed_platform) {
+        if naming::is_platform(signed_platform) {
             if let Some(previous) = package_platform {
                 if previous != signed_platform {
                     return Err(format!(
@@ -1965,7 +1965,7 @@ fn signed_hardware(
             .deployment_id
             .rsplit_once("-tp")
             .and_then(|(device, suffix)| {
-                if !naming::PLATFORMS.contains(&device) {
+                if !naming::is_platform(device) {
                     return None;
                 }
                 let tensor_parallel = suffix.parse::<u32>().ok()?;
@@ -2256,7 +2256,7 @@ fn install_ready(
         }
         let signed = verified.identity().map_err(|error| error.to_string())?;
         let platform =
-            if flare_helios::package::naming::PLATFORMS.contains(&signed.hardware.as_str()) {
+            if flare_helios::package::naming::is_platform(&signed.hardware) {
                 Some(signed.hardware.as_str())
             } else {
                 None

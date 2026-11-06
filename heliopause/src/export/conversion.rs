@@ -365,7 +365,7 @@ fn converted_package_candidate(
         }
         sizes.insert(deployment.tensor_parallel);
         let hardware = package.package().hardware_identity.as_str();
-        if naming::PLATFORMS.contains(&hardware) {
+        if naming::is_platform(hardware) {
             if let Some(previous) = platform {
                 if previous != hardware {
                     return Err(invalid(format!(

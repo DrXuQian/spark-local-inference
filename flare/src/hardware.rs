@@ -11,8 +11,8 @@ use libloading::Library;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-fn platform(pci_id: u32) -> Option<&'static str> {
-    // Single mapping table shared with package export naming.
+fn platform(pci_id: u32) -> Option<String> {
+    // Shared device identity with package export naming.
     flare_helios::package::naming::platform_from_pci(pci_id)
 }
 
@@ -32,7 +32,7 @@ pub fn detect_isolated(count: usize) -> Result<String> {
     Ok(String::from_utf8(output.stdout)?.trim().to_owned())
 }
 
-pub fn detect(count: usize) -> Result<&'static str> {
+pub fn detect(count: usize) -> Result<String> {
     let inherited = std::env::var("CUDA_VISIBLE_DEVICES").ok();
     let indices: Vec<_> = (0..count as i32).collect();
     let visible = crate::environment::visibility(&indices, inherited.as_deref())?;
@@ -48,7 +48,7 @@ pub fn detect(count: usize) -> Result<&'static str> {
         .map(Library::from)
     };
     let library = library.map_err(|error| {
-        format!("cannot detect hardware without NVIDIA NVML: {error}; specify --revision")
+        format!("cannot detect hardware without an NVML-compatible library: {error}; specify --revision")
     })?;
     // SAFETY: These signatures and PciInfo match nvml.h; output pointers are valid.
     unsafe {
@@ -106,13 +106,13 @@ pub fn detect(count: usize) -> Result<&'static str> {
                 check("nvmlDeviceGetPciInfo_v3", get_pci(device, &mut pci))?;
                 let detected = platform(pci.device_id).ok_or_else(|| {
                     format!(
-                        "GPU {entry} has unsupported PCI ID {:#010x}; specify --revision",
+                        "GPU {entry} reports invalid PCI ID {:#010x}; specify --revision",
                         pci.device_id
                     )
                 })?;
-                if selected.is_some_and(|value| value != detected) {
+                if selected.as_ref().is_some_and(|value| value != &detected) {
                     return Err(
-                        "selected GPUs span gb10 and gb202; select one platform or specify --revision"
+                        "selected GPUs span different device identities; select one platform or specify --revision"
                             .into(),
                     );
                 }
@@ -181,12 +181,14 @@ mod tests {
 
     #[test]
     fn pci_ids_select_the_chip_without_matching_marketing_names() {
-        assert_eq!(platform(0x2e1210de), Some("gb10"));
-        assert_eq!(platform(0x2bb410de), Some("gb202"));
-        assert_eq!(platform(0x2bb110de), Some("gb202"));
-        assert_eq!(platform(0x2bb510de), Some("gb202"));
-        assert_eq!(platform(0x2b8510de), Some("gb202"));
-        assert_eq!(platform(0x26b110de), None);
-        assert_eq!(platform(0x2bb41234), None);
+        assert_eq!(platform(0x2e1210de).as_deref(), Some("gb10"));
+        assert_eq!(platform(0x2bb410de).as_deref(), Some("gb202"));
+        assert_eq!(platform(0x2bb110de).as_deref(), Some("gb202"));
+        assert_eq!(platform(0x2bb510de).as_deref(), Some("gb202"));
+        assert_eq!(platform(0x2b8510de).as_deref(), Some("gb202"));
+        assert_eq!(platform(0x26b110de).as_deref(), Some("pci-10de-26b1"));
+        assert_eq!(platform(0x60011ded).as_deref(), Some("pci-1ded-6001"));
+        assert_eq!(platform(0x2bb41234).as_deref(), Some("pci-1234-2bb4"));
+        assert_eq!(platform(0), None);
     }
 }

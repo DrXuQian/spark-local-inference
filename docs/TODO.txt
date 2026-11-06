@@ -189,8 +189,8 @@
     structure sizes/alignments/offsets match CUDA. Fix missing globals in actual machine-270 ELF .data,
     .bss and .rodata sections; 11 host parser checks preserve code, metadata and
     pointer relocations. Retain all discovered state, including local objects.
-    Actual module global lookup and NVIDIA-only PCI platform naming still need
-    target binding.
+    Actual module global lookup still needs target binding. PCI naming is now
+    shared across conventional aliases and canonical vendor/device identities.
 
 [x] Locate SDK 2.1.1's CUDA_SDK libcuda/libcupti facades and accept their hg*
     callback names in the existing native recorder. Both driver symbol sets
@@ -501,9 +501,19 @@
     cache paths and cold reload without the Torch patch. Keep the independent
     Triton helper-cache fix; previously patched Torch installations remain usable.
 
-[ ] Confirm QSA/sampling catalog replay with the short-symbol compiler policy:
-    four catalog cases in docs/ppu-box-resume.txt. The earlier eight device
-    passes used the Torch filename patch and do not validate this new policy.
+[x] Confirm QSA/sampling catalog replay with the short-symbol compiler policy.
+    The user reports seven passed, one deselected in 292.58s: all six QSA cases
+    plus sampling's catalog variant. Collection confirms that "catalog" in the
+    QSA function name selects its direct cases too; all four catalog variants
+    are covered. The prior expected count of four selected cases was incorrect.
+
+[x] Remove the PCI allowlist from package identity naming. Keep known NVIDIA
+    aliases; other valid device IDs use pci-<vendor>-<device>, including the
+    observed 1ded:6001 cards. Conversion, acquisition, distribution naming and
+    device detection use the same canonical validation. Bus location and SM
+    values do not supply the device identity; executable checks stay separate.
+    Seven naming and fourteen native publication/conversion tests pass, with
+    rebuilt Heliopause; CLI/exporter compile checks pass. PPU replay is unrun.
 
 [x] Carry the validated external operator target into prepared graph admission
     for both normal Qwen bootstrap and the partial-GGUF qualifier. PPU capability
@@ -518,8 +528,8 @@
     module builds, 11 ELF tests, three host Driver API checks and two callback
     checks pass locally. The allocation observer now accepts the actual HGPTI
     hgMem names and rejects an inactive observer instead of reporting zero
-    allocations. Add the actual PPU PCI identity to native export naming before
-    the complete gate; do not infer a product from CUDA-compatible SM values.
+    allocations. Rebuild Heliopause with generic PCI identity naming before the
+    complete gate; do not infer a product from CUDA-compatible SM values.
     SDK2.2.1 resolves callback 742, unlike the previously checked SDK2.1.1, but
     recorder startup and device export/replay still require the deployment box.
 

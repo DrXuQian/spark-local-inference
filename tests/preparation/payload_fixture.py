@@ -17,7 +17,7 @@ from ignition.preparation import runtime_package_pb2 as proto
 from ignition.preparation.package_file import combine, write_sources
 
 
-def rank_source(root, *, data=b'weight-bytes', index=None):
+def rank_source(root, *, data=b'weight-bytes', index=None, hardware='gb202'):
     root.mkdir(parents=True, exist_ok=True)
     index = proto.ModelIndex(version=4) if index is None else index
     if not index.ranks:
@@ -40,7 +40,7 @@ def rank_source(root, *, data=b'weight-bytes', index=None):
         rank.resources[name].CopyFrom(proto.Span(offset=offset * 4096, nbytes=len(content)))
         payload.append((offset * 4096, source, 0, len(content)))
     path = root / 'rank.json'
-    write_sources(path, index, payload, hardware='gb202')
+    write_sources(path, index, payload, hardware=hardware)
     return path
 
 

@@ -122,14 +122,16 @@ reload with unmodified Torch2.9. The new option changes preparation cache
 identity automatically. Existing Torch patches can stay installed; no operator
 wheel reinstall or cache deletion is needed.
 
-To qualify the short-symbol policy on the box, only repeat the catalog cases:
+The short-symbol policy was qualified with:
 
   FLARE_RUN_CUDA_TESTS=1 FLARE_ACTLIZE_TARGET=ppu10 python -m pytest -q \
     tests/components/test_actlize_qsa_cuda.py \
     tests/components/test_external_sampling_cuda.py -k catalog --tb=short
 
-Expected: four passed, four deselected. This repeat validates the changed
-compiler policy; the prior eight passes remain evidence for the patched setup.
+The user reports seven passed, one deselected in 292.58s. The QSA test's function
+name includes "catalog", so this selects all six QSA cases plus sampling's
+catalog case. The earlier four-case expectation was incorrect. This covers all
+four catalog variants and needs no repeat.
 The explicit patch command above now changes only Triton's helper cache key.
 
 If a compiler failure remains, select the generated Python file and
@@ -148,14 +150,13 @@ The file/line must match the current traceback if the generated code changes.
 Compilation success alone does not qualify catalog replay.
 
 Still requiring the PPU box:
-  1. Confirm the four catalog cases with the new short-symbol compiler policy.
-  2. Complete target + shared-MTP graph, including acceptance and state rollback.
-  3. Export on PPU, then Rust-only replay of the prepared package.
-  4. Complete-round timeline and allocation checks before a no-bubble claim.
+  1. Complete target + shared-MTP graph, including acceptance and state rollback.
+  2. Export on PPU, then Rust-only replay of the prepared package.
+  3. Complete-round timeline and allocation checks before a no-bubble claim.
 
 The existing small synthetic GGUF and partial-layer fixtures are sufficient
 for the next gates. A full model download or meaningful generated text is not
-required. Local host tests and SDK compilation do not establish these four
+required. Local host tests and SDK compilation do not establish these three
 device-level outcomes.
 
 Independent native-export qualification (no model or sampling dependency)
@@ -169,9 +170,16 @@ scalar kernel parameters and state restoration. The Rust replay tool repeats
 the sequence twice after Python exits, checks exact bytes and virtual addresses,
 and requires an allocation observer that saw startup activity.
 
-This still needs deployment qualification. Native export's hardware naming table
-currently recognizes only GB10/GB202 PCI IDs; the actual PPU vendor/device IDs are
-needed to add the correct identity. Do not substitute a NVIDIA hardware label.
+This still needs deployment qualification. Device identity no longer requires a
+fixed PCI allowlist: known GB10/GB202 labels stay stable, and other
+devices use pci-<vendor>-<device>. The box reports 1ded:6001 on all eight cards,
+so its package identity is pci-1ded-6001 regardless of bus or slot. Conversion,
+cache naming and device detection preserve this identity. A new device ID does
+not require a naming-code change. Architecture, operator target and native module
+compatibility are still separate checks; prepare on the intended platform.
+Seven naming tests and fourteen native publication/conversion tests pass;
+both the CLI and exporter compile checks pass. The rebuilt local Heliopause
+extension preserves signed PCI identities through real cache conversion.
 The older SDK2.1.1 lacks the cuFuncLoad callback; local SDK2.2.1 resolves callback
 742 to hgFuncLoad, but real recorder startup must still succeed on the box.
 
@@ -180,12 +188,16 @@ With the native flare_heliopause extension installed, the offline module stage i
   python -m qualify.ppu_export --target ppu10 \
     --output /tmp/ppu-export-module-1 --compile-only
 
-After resolving the platform identity, run the complete gate in a fresh directory:
+Rebuild the changed native extension on the box, then run the complete gate on
+one card in a fresh directory. Cargo and the normal native build prerequisites
+are required:
 
-  python -m qualify.ppu_export --target ppu10 --output /tmp/ppu-export-replay-1
+  git pull --ff-only
+  python -m pip install --no-deps --force-reinstall ./heliopause
+  CUDA_VISIBLE_DEVICES=0 python -m qualify.ppu_export --target ppu10 --output /tmp/ppu-export-replay-1
   cargo build --release --manifest-path helios/Cargo.toml \
     --features runtime-package,test-tools --bin test_actlize_runtime_package
-  helios/target/release/test_actlize_runtime_package /tmp/ppu-export-replay-1
+  CUDA_VISIBLE_DEVICES=0 helios/target/release/test_actlize_runtime_package /tmp/ppu-export-replay-1
 
 Use --compiler /path/to/hgcc if the native SDK compiler is not at
 /usr/local/PPU_SDK/bin/hgcc. The compile-only stage does not load device kernels

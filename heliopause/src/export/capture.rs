@@ -1784,11 +1784,11 @@ fn write_record(output: &mut impl Write, message: &impl Message) -> ExportResult
 /// initializers without re-reading tensor metadata.
 
 
-/// Platform identifier (gb10/gb202) for the current CUDA device.
+/// Conventional platform label or PCI identity for the current CUDA device.
 ///
-/// CUDA exposes the device's PCI bus location, not its NVIDIA product id, so the
+/// CUDA exposes the device's PCI bus location, not its PCI product id, so the
 /// NVML PCI information for the same bus address supplies the product id. The
-/// mapping table itself lives in Helios and is shared with Flare.
+/// identity formatting lives in Helios and is shared with Flare.
 fn current_platform(cuda: &Cuda) -> ExportResult<Option<String>> {
     let mut device: c_int = -1;
     unsafe {
@@ -1849,9 +1849,9 @@ fn current_platform(cuda: &Cuda) -> ExportResult<Option<String>> {
                 )?;
             cuda.check("nvmlDeviceGetPciInfo_v3", get_pci(handle, &mut pci))?;
             match helios_core::package::naming::platform_from_pci(pci.device_id) {
-                Some(platform) => Ok(Some(platform.to_string())),
+                Some(platform) => Ok(Some(platform)),
                 None => Err(invalid(format!(
-                    "NVML reports unsupported GPU PCI id {:#010x}",
+                    "NVML reports invalid GPU PCI id {:#010x}",
                     pci.device_id
                 ))),
             }

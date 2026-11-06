@@ -26,6 +26,26 @@ def test_payload_publication_signs_every_body_and_conversion_preserves_signature
     assert verify_signatures(restored, Ed25519PublicKey.from_public_bytes(signer.public_key)) == envelope
 
 
+@pytest.mark.parametrize('hardware, label', [
+    ('gb202', 'gb202'), ('pci-1ded-6001', 'pci-1ded-6001'),
+    ('pci-1ded-6002', 'pci-1ded-6002'), ('sm80', 'unknown-device')])
+def test_cache_conversion_preserves_authenticated_device_identity(tmp_path, hardware, label):
+    from ignition.preparation.package_snapshot import payload_convert_cache
+
+    signer = publisher()
+    source = rank_source(tmp_path / 'rank', hardware=hardware)
+    package = tmp_path / 'package'
+    combine(package, [source], [], publisher=signer)
+    public = Ed25519PublicKey.from_public_bytes(signer.public_key)
+    envelope = verify_signatures(package, public)
+    profiles = [{'namespace': signer.namespace, 'development': False, 'public_key': list(signer.public_key)}]
+    entry = payload_convert_cache(package, tmp_path / 'cache', profiles=profiles)
+    assert entry.entry.startswith(label + '-tp1-')
+    from pathlib import Path
+
+    assert verify_signatures(Path(entry.entry_path), public) == envelope
+
+
 def test_metadata_only_sources_cannot_select_a_legacy_publisher(tmp_path):
     source = tmp_path / 'rank.json'
     write_sources(source, proto.ModelIndex(version=4, ranks=[proto.BundleIndex()]), [])

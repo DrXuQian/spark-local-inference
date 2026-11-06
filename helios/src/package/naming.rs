@@ -10,14 +10,11 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Platforms a package may be named for. These are the NVIDIA device
-/// identifiers Flare already uses for revisions, not SM architecture names.
+/// Conventional platform labels retained for existing package names.
+/// Other devices use their PCI identity; use [`is_platform`] for validation.
 pub const PLATFORMS: [&str; 2] = ["gb10", "gb202"];
 
-/// Platform for one NVIDIA PCI id in NVML's `device<<16 | vendor` layout.
-///
-/// This table is the single source consumed by Flare's device detection and by
-/// package export naming; do not duplicate the identifiers elsewhere.
+/// GB202 device identifiers used by the existing conventional label.
 pub const GB202_DEVICES: [u32; 9] = [
     0x2b85, 0x2b87, 0x2b8c, 0x2bb1, 0x2bb2, 0x2bb3, 0x2bb4, 0x2bb5, 0x2bb9,
 ];
@@ -26,15 +23,47 @@ pub const GB202_DEVICES: [u32; 9] = [
 /// RTX Spark N1X part, which NVML reports for the same SM121 platform.
 pub const GB10_DEVICES: [u32; 2] = [0x2e12, 0x2e03];
 
-pub fn platform_from_pci(pci_id: u32) -> Option<&'static str> {
-    if pci_id & 0xffff != 0x10de {
+/// Stable label for NVML's `device<<16 | vendor` identity, independent of bus
+/// location and marketing names. A label does not establish executable compatibility.
+pub fn platform_from_pci(pci_id: u32) -> Option<String> {
+    let vendor = pci_id & 0xffff;
+    let device = pci_id >> 16;
+    if vendor == 0 || vendor == 0xffff || device == 0xffff {
         return None;
     }
-    let device = pci_id >> 16;
-    if GB10_DEVICES.contains(&device) {
-        return Some("gb10");
+    if vendor == 0x10de {
+        if GB10_DEVICES.contains(&device) {
+            return Some("gb10".into());
+        }
+        if GB202_DEVICES.contains(&device) {
+            return Some("gb202".into());
+        }
     }
-    GB202_DEVICES.contains(&device).then_some("gb202")
+    Some(format!("pci-{vendor:04x}-{device:04x}"))
+}
+
+/// Recognize conventional labels and canonical PCI identities without admitting
+/// arbitrary path components or treating an SM architecture as a device identity.
+pub fn is_platform(platform: &str) -> bool {
+    if PLATFORMS.contains(&platform) {
+        return true;
+    }
+    let Some((vendor, device)) = platform
+        .strip_prefix("pci-")
+        .and_then(|id| id.split_once('-'))
+    else {
+        return false;
+    };
+    if vendor.len() != 4 || device.len() != 4 {
+        return false;
+    }
+    let (Ok(vendor), Ok(device)) = (
+        u16::from_str_radix(vendor, 16),
+        u16::from_str_radix(device, 16),
+    ) else {
+        return false;
+    };
+    platform_from_pci(u32::from(device) << 16 | u32::from(vendor)).as_deref() == Some(platform)
 }
 
 /// UTC `YYYYMMDDHHMM` for one instant, without external crates.
@@ -55,7 +84,7 @@ pub fn utc_timestamp(at: SystemTime) -> String {
 
 /// Base entry name for one exported deployment.
 pub fn candidate(platform: &str, tensor_parallel: u32, at: SystemTime) -> Option<String> {
-    if !PLATFORMS.contains(&platform) || tensor_parallel == 0 {
+    if !is_platform(platform) || tensor_parallel == 0 {
         return None;
     }
     Some(format!(
@@ -66,7 +95,7 @@ pub fn candidate(platform: &str, tensor_parallel: u32, at: SystemTime) -> Option
 
 /// Compatibility label for packages that lack an authenticated device identity.
 ///
-/// This does not widen [`candidate`]'s supported-device mapping. It keeps older
+/// This does not infer a PCI identity. It keeps older
 /// packages with only SM or custom deployment identifiers loadable without
 /// guessing a device from architecture or the local host.
 pub fn unknown_device_candidate(sizes: &[u32], at: SystemTime) -> Option<String> {
@@ -97,7 +126,7 @@ pub fn deployment_candidate(
     if sizes.is_empty() || sizes.iter().any(|size| *size == 0) {
         return None;
     }
-    let Some(platform) = platform.filter(|platform| PLATFORMS.contains(platform)) else {
+    let Some(platform) = platform.filter(|platform| is_platform(platform)) else {
         return unknown_device_candidate(&sizes, at);
     };
     if let [size] = sizes.as_slice() {
@@ -168,20 +197,59 @@ mod tests {
     fn pci_ids_select_the_platform_identifier() {
         for device in GB10_DEVICES {
             assert_eq!(
-                platform_from_pci(device << 16 | 0x10de),
+                platform_from_pci(device << 16 | 0x10de).as_deref(),
                 Some("gb10"),
                 "{device:#06x}"
             );
         }
         for device in GB202_DEVICES {
             assert_eq!(
-                platform_from_pci(device << 16 | 0x10de),
+                platform_from_pci(device << 16 | 0x10de).as_deref(),
                 Some("gb202"),
                 "{device:#06x}"
             );
         }
-        assert_eq!(platform_from_pci(0x2bbc_1af4), None);
-        assert_eq!(platform_from_pci(0x1e02_10de), None);
+        for (id, expected) in [
+            (0x6001_1ded, "pci-1ded-6001"),
+            (0x6002_1ded, "pci-1ded-6002"),
+            (0x2bbc_1af4, "pci-1af4-2bbc"),
+            (0x1e02_10de, "pci-10de-1e02"),
+        ] {
+            assert_eq!(platform_from_pci(id).as_deref(), Some(expected));
+            assert!(is_platform(expected));
+            assert_eq!(
+                candidate(expected, 1, at(0)).unwrap(),
+                format!("{expected}-tp1-197001010000")
+            );
+            assert_eq!(
+                deployment_candidate(Some(expected), &[2, 1], at(0)).unwrap(),
+                format!("{expected}-tp1+tp2-197001010000")
+            );
+        }
+        for id in [0, 0x6001_0000, 0x6001_ffff, 0xffff_1ded] {
+            assert_eq!(platform_from_pci(id), None);
+        }
+    }
+
+    #[test]
+    fn pci_labels_require_canonical_device_ids_and_safe_names() {
+        for invalid in [
+            "pci-1ded-6001/../x",
+            "pci-1ded-6001-extra",
+            "pci-1DED-6001",
+            "pci-1ded-601",
+            "pci-0000-6001",
+            "pci-ffff-6001",
+            "pci-1ded-ffff",
+            "pci-10de-2e12",
+            "sm80",
+            "ppu10",
+            "",
+            "pci-+ded-6001",
+        ] {
+            assert!(!is_platform(invalid), "{invalid}");
+            assert!(candidate(invalid, 1, at(0)).is_none(), "{invalid}");
+        }
     }
 
     #[test]
