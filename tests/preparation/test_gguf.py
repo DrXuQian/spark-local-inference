@@ -101,6 +101,26 @@ def test_bf16_storage_keeps_original_bits(tmp_path):
         assert source.read(tensor.nbytes) == raw.tobytes()
 
 
+def test_ppu_q2_0_reader_preserves_type_geometry_and_raw_bytes(tmp_path):
+    qtype = getattr(gguf.GGMLQuantizationType, 'Q2_0', None)
+    if qtype is None:
+        pytest.skip('requires the PPU GGUF reader wheel')
+    assert int(qtype) == 42 and gguf.GGML_QUANT_SIZES[qtype] == (64, 18)
+    path = tmp_path / 'q2_0.gguf'
+    raw = np.arange(2 * 3 * 10 * 18, dtype=np.uint8).reshape(2, 3, 180)
+    name = 'blk.48.ffn_down_exps.weight'
+    write_checkpoint(path, [(name, raw, qtype)])
+    checkpoint = inspect_gguf_checkpoint(path)
+    tensor = checkpoint.tensors[name]
+    assert tensor.encoding == 'Q2_0' and tensor.dtype == 'U8'
+    assert tensor.shape == (2, 3, 640) and tensor.storage_shape == (2, 3, 10, 18)
+    assert tensor.nbytes == 1080
+    with path.open('rb') as source:
+        source.seek(tensor.offset)
+        assert source.read(tensor.nbytes) == raw.tobytes()
+    checkpoint.validate_files()
+
+
 def test_duplicate_across_shards_rejected(tmp_path):
     write_checkpoint(tmp_path / "model.gguf", [
         ("a", np.arange(8, dtype=np.float32), None),

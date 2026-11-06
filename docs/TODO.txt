@@ -204,10 +204,19 @@
     without changing the installed reader, enabling a decoder or aliasing Q2_K.
     Preserve offset/truncation checks. The 17 box tests and 15 GGUF tests pass.
 
-[ ] Enable the supplied Q2_0 MTP in the actual reader and operator packages.
-    DrXuQian/llama.cpp 356a231c1 defines ID42 with 64 values/18 bytes; the pinned
-    PyPI gguf reader lacks it. QUactlize feat/ppu-flash-next remote HEAD e7743104
-    also lacks Q2_0 in formats, producer/consumer and matmul admission. Extend
+[x] Package the Q2_0 GGUF reader from DrXuQian/llama.cpp 356a231c1 as the pure
+    Python gguf-0.19.0+ppu.q2.1 wheel. Only its distribution version changes;
+    package code and MIT license come from that source snapshot. Thirty-nine
+    host tests pass with the installed wheel, including exact Q2_0 raw bytes,
+    K=640 rows, full expert geometry and existing formats/frontend checks. The
+    stock reader passes 37 with two Q2_0 reader cases skipped. No decoder or
+    device execution is added to the framework. Box installation remains pending.
+
+[ ] Enable the supplied Q2_0 MTP in the operator package and complete model.
+    The user reports header inspection passing, but has supplied only its final
+    two lines; actual layer names, expert geometry and shared flags are pending.
+    QUactlize feat/ppu-flash-next remote HEAD e7743104 lacks Q2_0 in formats,
+    producer/consumer and matmul admission. Extend
     exact packing, raw/canonical indexed projections and preparation-time dense
     expansion, then publish installed packages and qualify the complete graph.
     See quactlize-q2-0-prompt.txt. Passing header inspection is not execution support.

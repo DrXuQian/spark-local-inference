@@ -48,9 +48,10 @@ Required installed interfaces
    preparation; routed experts remain compressed and resident.
 5. Publish a complete PPU wheel with matching Python declarations, native
    libraries and resource manifest. NVIDIA compatibility remains a debugging
-   path and must not become a dependency of PPU execution. The GGUF Python
-   reader also needs the matching ID42 definition; that is a separate packaging
-   requirement, not something a successful matmul query automatically provides.
+   path and must not become a dependency of PPU execution. The framework now
+   supplies the matching ID42 reader as gguf-0.19.0+ppu.q2.1-py3-none-any.whl,
+   built from the source above. Installing that reader enables file parsing;
+   operator query, packing, execution and graph replay still need this work.
 
 Geometry and verification
 -------------------------

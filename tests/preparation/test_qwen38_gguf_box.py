@@ -98,7 +98,8 @@ def test_attention_location_does_not_import_its_host_library(tmp_path, monkeypat
     assert 'flash_attn_3' not in sys.modules and 'flash_attn_3._C' not in sys.modules
 
 
-def sparse_mtp(path, *, layer=48, shared=True, gate_type='Q2_K', up_type='Q2_K', mtp_compression=0):
+def sparse_mtp(path, *, layer=48, shared=True, gate_type='Q2_K', up_type='Q2_K',
+               down_type='Q8_0', mtp_compression=0):
     """Real full-shape GGUF headers with sparse zero payloads, never weight arrays."""
     import gguf
     import numpy as np
@@ -112,7 +113,7 @@ def sparse_mtp(path, *, layer=48, shared=True, gate_type='Q2_K', up_type='Q2_K',
     payload = 0
     for part, shape, encoding in (('gate', (512, 640, 2560), gate_type),
                                   ('up', (512, 640, 2560), up_type),
-                                  ('down', (512, 2560, 640), 'Q8_0')):
+                                  ('down', (512, 2560, 640), down_type)):
         qtype = gguf.GGMLQuantizationType[encoding]
         block, size = gguf.GGML_QUANT_SIZES[qtype]
         raw_shape = (*shape[:-1], shape[-1] // block * size)
@@ -193,15 +194,37 @@ def test_q2_0_headers_report_the_extension_without_modifying_the_reader(tmp_path
 
     path = tmp_path / 'mtp-q2_0.gguf'
     raw_type_mtp(path)
-    with pytest.raises(ValueError, match='42.*GGMLQuantizationType'):
-        gguf.GGUFReader(path)
-    assert box.inspect_mtp(path) == frozenset({42})
+    before = dict(gguf.GGMLQuantizationType.__members__)
+    supported = any(int(kind) == 42 for kind in before.values())
+    if not supported:
+        with pytest.raises(ValueError, match='42.*GGMLQuantizationType'):
+            gguf.GGUFReader(path)
+    assert box.inspect_mtp(path) == (frozenset() if supported else frozenset({42}))
     output = capsys.readouterr().out
     assert 'Q2_0: 1 tensors, 1080 stored bytes' in output
     assert 'Q2_0 (2, 3, 640), type_id=42' in output
-    assert 'Q2_K is a different format (type_id=10' in output
-    with pytest.raises(ValueError, match='42.*GGMLQuantizationType'):
-        gguf.GGUFReader(path)
+    assert gguf.GGMLQuantizationType.__members__ == before
+    if supported:
+        assert gguf.GGUFReader(path).tensors[0].tensor_type.name == 'Q2_0'
+    else:
+        assert 'Q2_K is a different format (type_id=10' in output
+        with pytest.raises(ValueError, match='42.*GGMLQuantizationType'):
+            gguf.GGUFReader(path)
+
+
+def test_extended_reader_accepts_full_q2_0_mtp_expert_geometry(tmp_path):
+    import gguf
+
+    if not hasattr(gguf.GGMLQuantizationType, 'Q2_0'):
+        pytest.skip('requires the PPU GGUF reader wheel')
+    path = tmp_path / 'mtp.gguf'
+    sparse_mtp(path, gate_type='Q2_0', up_type='Q2_0', down_type='Q2_0')
+    box.validate_mtp(path)
+    from ignition.preparation.gguf import inspect_gguf_checkpoint
+
+    checkpoint = inspect_gguf_checkpoint(path)
+    assert {tensor.encoding for tensor in checkpoint.tensors.values()} == {'Q2_0'}
+    assert sum(tensor.nbytes for tensor in checkpoint.tensors.values()) == 707788800
 
 
 def test_unknown_raw_ids_keep_their_number_without_inventing_a_block_size(tmp_path, capsys):
@@ -222,7 +245,7 @@ def test_known_extension_rejects_truncated_payload_extent(tmp_path):
 
 def test_raw_type_inspection_succeeds_but_export_stops_before_preparation(tmp_path, monkeypatch, capsys):
     directory, mtp = files(tmp_path)
-    raw_type_mtp(mtp)
+    raw_type_mtp(mtp, 4242)
 
     def forbidden(*args, **kwargs):
         pytest.fail('unknown GGUF types must not enter export preparation')
@@ -237,4 +260,4 @@ def test_raw_type_inspection_succeeds_but_export_stops_before_preparation(tmp_pa
         box.main([*arguments, '--operator-target', 'ppu10', '--fetch-frontend',
                   '--blas-library', str(tmp_path / 'unloaded.so'), '--output', str(tmp_path / 'output')])
     assert error.value.code == 2
-    assert 'type IDs [42]; header inspection does not enable execution' in capsys.readouterr().err
+    assert 'type IDs [4242]; header inspection does not enable execution' in capsys.readouterr().err
