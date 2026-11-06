@@ -86,6 +86,23 @@ SymInt probe exercises the actual fake dispatcher without initializing a
 device; its sampling probe loads kernels during preparation and checks all
 five out operators. It never disables catalog compilation to mask incompatibility.
 
+The latest box retry passes sampling without catalog compilation. Catalog
+compilation stops in Triton make_cubin while opening a missing .ptx.o file.
+To preserve the underlying assembler diagnostics, select the generated Python
+file and async_compile.triton line from that traceback:
+
+  python -m qualify.triton_compile \
+    /tmp/torchinductor_root/bk/cbktmsipyr2j6hayqvdtdac327azqtdxge2ft6xdkbhltgnntlxu.py \
+    --line 1186
+
+This recompiles only that kernel through Inductor's compile-worker path and
+prints a short diagnostic. It preserves the kernel source, assembler inputs,
+command, return code and stdout/stderr in the printed temporary directory.
+It retains the selected kernel's compiler flags, does not delete shared caches
+or launch device kernels, and does not change the production compilation path.
+The file/line must match the current traceback if the generated code changes.
+Compilation success alone does not qualify catalog replay.
+
 Still requiring the PPU box:
   1. QSA / sampling numerics and catalog replay after these package fixes.
   2. Complete target + shared-MTP graph, including acceptance and state rollback.

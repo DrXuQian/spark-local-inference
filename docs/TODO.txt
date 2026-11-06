@@ -471,7 +471,15 @@
     compiled source signature, while Dynamo/make_fx retain their existing path.
     Host regressions execute the real Triton Python launch wrappers for empty,
     limited and unlimited probability masks; 51 related tracing/serialization/
-    FA3 checks pass on Torch2.9 and Torch2.15. Device sampling replay remains open.
+    FA3 checks pass on Torch2.9 and Torch2.15. Catalog sampling replay remains open.
+
+[ ] Resolve the subsequent sampling catalog compiler failure. The box passes
+    the complete non-catalog sampling graph; the catalog fails compiling its
+    generated reduction with a missing .ptx.o artifact. qualify.triton_compile
+    extracts that one kernel and preserves assembler input, command, exit code
+    and diagnostics before Triton deletes them. Five host tests exercise real
+    Triton subprocess/cleanup behavior on 3.5 and 3.8, including exit-zero with
+    no output; the box compiler's underlying error still needs this probe.
 
 [x] Carry the validated external operator target into prepared graph admission
     for both normal Qwen bootstrap and the partial-GGUF qualifier. PPU capability
