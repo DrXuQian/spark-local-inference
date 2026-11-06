@@ -1546,8 +1546,8 @@ SDK2.1.1 HGPTI facade, consistent with its absence from the header, even though
 `hgFuncLoad` is declared. Unsupported callback registration remains fatal;
 its error now identifies the callback domain and ID. Resolve this requirement
 with the deployment's profiling library before target export. The later local
-SDK2.2.1 facade resolves `cuptiGetCallbackName(1, 742)` to `hgFuncLoad`; recorder
-startup on the real device remains a separate check. Export naming now preserves
+SDK2.2.1 facade resolves `cuptiGetCallbackName(1, 742)` to `hgFuncLoad`; the tiny
+device export/replay gate below now also passes recorder startup. Export naming preserves
 GB10/GB202 aliases and gives other valid NVML PCI identities a canonical
 `pci-<vendor>-<device>` label. The box's eight `1ded:6001` devices use
 `pci-1ded-6001` independent of their bus locations. New device IDs need no
@@ -1563,7 +1563,8 @@ machine, retaining local objects as well as public ones. Existing native module
 lookup, download and relocation validation still apply and must pass on PPU.
 Eleven host tests pass, including the actual SDK-compiled fixture and preservation
 of code, `.hg_info`, symbol tables and `.rela.data` through debug stripping.
-No PPU kernel was launched; target module lookup and export/replay remain unrun.
+Those checks are host-only; the subsequent tiny device gate below now passes
+module lookup, export and native PPU replay.
 
 The independent `qualify.ppu_export` gate compiles this fixture with native HGCC
 on the deployment platform and prepares a four-case module-state sequence for
@@ -1572,8 +1573,12 @@ and package exporter, with no model or sampling dependency. Prepared graph
 admission receives the explicit validated PPU operator target; context, handles
 and buffer bounds still use the normal checks. The Rust allocation observer
 recognizes both CUDA and HGPTI callback names and requires observed startup
-allocations. See [the box resume commands](ppu-box-resume.txt) for the offline
-module stage, native extension rebuild and remaining device export qualification.
+allocations. The ppu10 / SDK2.2.1-184ee6 box reports eight native replays passed
+with `hgpti-bare`: four scenarios repeated twice, exact state and fixed-address
+checks, no additional CUDA allocations, and no Python/Torch/operator host library
+in the replay process. Complete GGUF/MTP and performance remain separate gates.
+See [the box resume commands](ppu-box-resume.txt) for the SDK selection and
+reproduction commands.
 
 Reproduce the offline fixture check with the selected SDK on PATH:
 

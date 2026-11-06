@@ -178,10 +178,11 @@
     prepared plans/workspace. RMSNorm/HC, ShortConv, RoPE/gating, sampling,
     state/PLE hash helpers still need PPU equivalents or target compilation.
 
-[ ] PPU export: confirm target chip and matching SDK. Native graph APIs are
-    declared in SDK 2.1.1, but qualify the CUDA facade, CUPTI-equivalent image
-    recording, native ELF globals/parameters, VMM, event/wait and relocation
-    behavior. Export on PPU; NVIDIA cubins are not PPU artifacts. See
+[ ] Extend the passing PPU native export/replay boundary to complete operator
+    and GGUF+MTP graphs. The tiny ppu10 module now passes eight native replays
+    on SDK2.2.1 with HGPTI recording, ELF globals/parameters, fixed VMM addresses
+    and indirect-pointer state. Larger graph histories, external operator
+    modules and full-round timelines remain separate gates. See
     model-preparation.md#ppu-port-preparation for the concrete operator table.
 
 [x] Check the SDK 2.1.1 export ABI and native ELF data discovery. All 66
@@ -522,25 +523,16 @@
     invalid graph handles and buffer checks remain enforced. 38 admission/graph
     checks pass on Torch2.9 and Torch2.15; real PPU handoff remains unqualified.
 
-[ ] Run qualify.ppu_export and standalone Rust replay on PPU. The new tiny SDK
-    module checks constants, mutable globals, scalar parameters and an indirect
-    driver allocation retained only by a global pointer. Both SDK2.2.1 ppu10/15
-    module builds, 11 ELF tests, three host Driver API checks and two callback
-    checks pass locally. The allocation observer now accepts the actual HGPTI
-    hgMem names and rejects an inactive observer instead of reporting zero
-    allocations. Rebuild Heliopause with generic PCI identity naming before the
-    complete gate; do not infer a product from CUDA-compatible SM values.
-    SDK2.2.1 on the box passes all three module_images tests, moving past the
-    SDK2.1.1 callback-742 startup failure. Export then crashed while copying a
-    module resource image inside cuModuleGetFunction. Actual SDK2.2.1 dispatcher
-    calls with synthetic host events reproduce bare ModuleResourceData for both
-    load/unload callbacks, instead of ResourceData containing context/descriptor.
-    Qualify real delivery/export/replay with the explicit hgpti-bare recorder
-    workaround, or a fixed HGPTI resource wrapper using the default cupti ABI.
-    qualify.ppu_hgpti_resource_abi reproduces that ABI failure without a device;
-    it does not qualify activation or real module loading. LAZY mode remains
-    required; no callbacks or context/image validation may be skipped. The SDK
-    task and reproduction details are in ppu-hgpti-callback-prompt.txt.
+[x] Run qualify.ppu_export and standalone Rust replay on PPU. The box reports
+    eight ppu-module-export-v1 replays passed on ppu10 / SDK2.2.1-184ee6 using
+    hgpti-bare and framework a1915a2. Four cases repeated twice preserve exact
+    constants, mutable globals, scalar parameters, an indirect driver allocation
+    reached only through a global pointer, and recorded virtual addresses. The
+    observer sees startup allocations and no additional CUDA allocations during
+    replay; no Python, Torch or operator host library is mapped. This qualifies
+    the tiny module boundary, not complete GGUF/MTP or no-bubble serving. SDK
+    wrapper/default-attribute limitations remain in ppu-hgpti-callback-prompt.txt
+    and ppu-graph-attributes-prompt.txt. LAZY loading and all validation remain.
 
 [x] Add an explicit hgpti-bare preparation recorder mode for SDK2.2.1. Retain
     owned images, per-thread nested driver contexts, unload/context teardown,
@@ -571,9 +563,8 @@
     (one device case skipped), including real HGCC ppu10/15 builds, spills,
     structures, malformed metadata, publication and debug stripping. The actual
     Triton reduction image also preserves all seven parameter widths after
-    stripping. The standalone Rust replay tool passes cargo check; its PPU
-    execution and the complete tiny export/replay gate remain pending. Reinstall
-    the refreshed Heliopause wheel and rebuild the Rust replay executable.
+    stripping. The box now passes the tiny module's eight native PPU replays;
+    broader operator parameter layouts still need their own device checks.
 
 [x] Handle SDK2.2.1 unreadable graph-node attributes without assuming zero.
     Graph getter/setter accepts 1/2/4; launch can nevertheless set policy 5.
@@ -587,8 +578,8 @@
     native audit and rejects a bad attribute inventory. These are host checks,
     not device activation or graph replay. A broader export run hit the existing
     verified_inode_mutation_is_rejected_before_link failure; the pre-change
-    native test binary fails the same test. Reinstall the Heliopause wheel and
-    rerun the tiny PPU export/replay gate. The complete SDK attribute task is in
+    native test binary fails the same test. The tiny PPU export/replay gate now
+    passes on the box. The complete SDK attribute task is in
     ppu-graph-attributes-prompt.txt; nondefault and more complex graph histories
     need working SDK getters/setters before they can qualify.
 
@@ -601,10 +592,9 @@
     on each). Both corrected device cleanup cases now pass on the box: 2 passed,
     13 deselected in 5.39s. They exercise primary/graph pool destruction and
     scratch retaining the final storage owner, balanced pool counts, released
-    owners and empty pool snapshots. Full PPU export cleanup and independent
-    Rust replay remain pending; the earlier publication message preceded a
-    return-time crash. Report export success only after preparation returns.
-    This is a Python-only update.
+    owners and empty pool snapshots. The subsequent tiny export reaches eight
+    passing independent Rust replays. Export success is reported only after
+    preparation returns. Complete model cleanup remains a separate gate.
 
 [x] Keep PPU external allocation reservations at their actual page granularity.
     The first Rust replay reached loading but its GiB-rounded external range
@@ -616,8 +606,9 @@
     checks remain unchanged. Twenty-three Rust capture tests pass (three device
     cases ignored), including external ownership, unused pages, dynamic maximum
     extents, host/peer exclusion and overflow. Sixteen Python/native package
-    checks pass (12 device cases skipped). Reinstall the Heliopause wheel and
-    re-export; complete PPU native loading and replay remain pending.
+    checks pass (12 device cases skipped). After reinstalling the wheel and
+    re-exporting, the box passes all eight tiny native PPU replays. External
+    allocations in complete operator/model graphs remain to be qualified.
 
 [x] Check required callback names before native recorder subscription and before
     compiling the standalone PPU export module. Report all missing/mismatched

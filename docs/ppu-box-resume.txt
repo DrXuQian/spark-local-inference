@@ -1,5 +1,5 @@
-PPU box resume after the QSA / sampling failures (2026-11-06)
-==========================================================
+PPU box resume after native export/replay qualification (2026-11-06)
+==================================================================
 
 The current wheels are available directly in Git LFS under
 artifacts/ppu/20261106/wheels/ on feat/qwen38-gguf:
@@ -153,7 +153,7 @@ Compilation success alone does not qualify catalog replay.
 
 Still requiring the PPU box:
   1. Complete target + shared-MTP graph, including acceptance and state rollback.
-  2. Export on PPU, then Rust-only replay of the prepared package.
+  2. Export that GGUF+MTP package on PPU, then replay it in Rust.
   3. Complete-round timeline and allocation checks before a no-bubble claim.
 
 The existing small synthetic GGUF and partial-layer fixtures are sufficient
@@ -172,7 +172,12 @@ scalar kernel parameters and state restoration. The Rust replay tool repeats
 the sequence twice after Python exits, checks exact bytes and virtual addresses,
 and requires an allocation observer that saw startup activity.
 
-This still needs deployment qualification. Device identity no longer requires a
+The box now reports eight ppu-module-export-v1 native replays passed on ppu10 /
+SDK2.2.1-184ee6 using hgpti-bare and framework a1915a2. This covers the tiny
+module, exact fixed-address/global/indirect state and allocation stability;
+complete operator/GGUF/MTP graphs and no-bubble measurements remain pending.
+
+Device identity no longer requires a
 fixed PCI allowlist: known GB10/GB202 labels stay stable, and other
 devices use pci-<vendor>-<device>. The box reports 1ded:6001 on all eight cards,
 so its package identity is pci-1ded-6001 regardless of bus or slot. Conversion,
@@ -193,7 +198,8 @@ still must enable successfully. LAZY loading stays unchanged. The SDK library is
 not patched; its raw ABI diagnostic will still report the defect. SDK repair and
 the raw reproducer are documented in ppu-hgpti-callback-prompt.txt.
 
-The updated wheel checks all 47 required driver callback names before subscribing
+The updated wheel checks 47 standard driver callback names plus 19 additional
+HGPTI graph-history callbacks before subscribing
 and reports missing or mismatched entries together. cu*/hg* aliases are accepted;
 activation errors remain fatal. qualify.ppu_export performs this check before
 compiling its module. --compile-only still performs only the offline ELF stage.
@@ -215,20 +221,33 @@ root with pip does not install this separate package. The supplied wheel is
 CPython3.12/Linux x86_64; it needs glibc >=2.34, OpenSSL3 and libstdc++. It includes
 the PCI identity/export changes and imports successfully in a fresh environment
 without Torch or GPU libraries loaded. Fourteen native publication/conversion
-cases pass. Driver/CUPTI loading and PPU graph export still require the box.
+cases pass. The tiny native device gate now passes; install and select the same
+SDK for both preparation and replay when reproducing it. Rust >=1.88 is required
+for the workspace; the box used rustc/cargo 1.99.1. Use rustup's stable toolchain.
 
-  git pull --ff-only
+  ppu_sdk=/sim/eec/shared/junfu.qx/ppu-sdk-2.2.1-184ee6/PPU_SDK
+  export CUDA_HOME="$ppu_sdk/CUDA_SDK" CUDA_PATH="$ppu_sdk/CUDA_SDK"
+  export PATH="$HOME/.cargo/bin:$ppu_sdk/bin:$CUDA_HOME/bin:$PATH"
+  export LD_LIBRARY_PATH="$CUDA_HOME/lib64:$ppu_sdk/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  export CUDA_VISIBLE_DEVICES=0
+
+  (
+  set -e
+  GIT_LFS_SKIP_SMUDGE=1 git pull --ff-only
   git lfs pull --include="artifacts/ppu/20261106/wheels/flare_heliopause*.whl" --exclude=""
   python -m pip install 'cryptography>=46,<52' 'safetensors==0.8.0'
   python -m pip install --no-deps --force-reinstall \
     artifacts/ppu/20261106/wheels/flare_heliopause-0.1.0-cp312-cp312-linux_x86_64.whl
   python -c "import sys, flare_heliopause; print(sys.executable); print(flare_heliopause.__file__)"
-  python -c "from ignition.preparation.module_images import check_callback_names; check_callback_names(module_resource_abi='hgpti-bare'); print('Callback names OK; device delivery still untested')"
-  CUDA_VISIBLE_DEVICES=0 python -X faulthandler -m qualify.ppu_export --target ppu10 \
-    --module-resource-abi hgpti-bare --output /tmp/ppu-export-sdk221-bare-1
-  cargo build --release --manifest-path helios/Cargo.toml \
+  python -c "from ignition.preparation.module_images import cupti_library, check_callback_names; print('CUPTI:', cupti_library()); check_callback_names(module_resource_abi='hgpti-bare')"
+  out=$(mktemp -d /tmp/ppu-export-replay.XXXXXX)
+  python -X faulthandler -m qualify.ppu_export --target ppu10 \
+    --compiler "$ppu_sdk/bin/hgcc" --module-resource-abi hgpti-bare --output "$out"
+  cargo +stable build --locked --release --manifest-path helios/Cargo.toml \
     --features runtime-package,test-tools --bin test_actlize_runtime_package
-  CUDA_VISIBLE_DEVICES=0 helios/target/release/test_actlize_runtime_package /tmp/ppu-export-sdk221-bare-1
+  printf 'Replay directory: %s\n' "$out"
+  helios/target/release/test_actlize_runtime_package "$out"
+  )
 
 These commands require the selected SDK2.2.1's CUDA_SDK/lib64 and lib at the front
 of LD_LIBRARY_PATH, and its hgcc compiler. For ordinary ignition export, set
@@ -247,4 +266,5 @@ Use --compiler /path/to/hgcc if the native SDK compiler is not at
 /usr/local/PPU_SDK/bin/hgcc. The compile-only stage does not load device kernels
 or establish recorder/export/replay correctness. Local SDK2.2.1 builds for ppu10
 and ppu15 and the eleven ELF checks pass; three host Driver API argument tests
-and two allocation-callback tests also pass. No native PPU replay is claimed.
+and two allocation-callback tests also pass. The completed eight-replay device
+gate above qualifies the tiny ppu10 module; ppu15 remains compiler-only evidence.
