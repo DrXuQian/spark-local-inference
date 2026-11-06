@@ -86,18 +86,30 @@ SymInt probe exercises the actual fake dispatcher without initializing a
 device; its sampling probe loads kernels during preparation and checks all
 five out operators. It never disables catalog compilation to mask incompatibility.
 
-The latest box retry passes sampling without catalog compilation. Catalog
-compilation stops in Triton make_cubin while opening a missing .ptx.o file.
-To preserve the underlying assembler diagnostics, select the generated Python
-file and async_compile.triton line from that traceback:
+The non-catalog sampling test passed on the box. Its catalog failure has been
+reproduced offline with the supplied 128x1940 reduction and actual SDK2.2.1:
+vector llvm.is.fpclass.v4f32 aborts the LLVM13 backend with "Do not know how to
+split the result of this operator!". The SDK ptxas wrapper returns zero when its
+child dies from a signal, leaving Triton to report a missing .ptx.o artifact.
+Scalarizing only that classification intrinsic compiles the same IR.
+
+Sampling now classifies FP32 bit patterns using integer operations for finite
+and nonnegative checks. Both zero signs, negative subnormals, infinities and all
+NaN payloads retain the original rejection rules. Probability sums and the mass
+tolerance are unchanged. The corrected reduction compiles with 4, 8 and 16 warps
+in the real PPU compiler; full catalog replay still needs the box. Pull the
+framework change and re-run test_external_sampling_cuda.py, with both cases.
+
+If a compiler failure remains, select the generated Python file and
+async_compile.triton line from the new traceback to preserve its diagnostics:
 
   python -m qualify.triton_compile \
     /tmp/torchinductor_root/bk/cbktmsipyr2j6hayqvdtdac327azqtdxge2ft6xdkbhltgnntlxu.py \
     --line 1186
 
 This recompiles only that kernel through Inductor's compile-worker path and
-prints a short diagnostic. It preserves the kernel source, assembler inputs,
-command, return code and stdout/stderr in the printed temporary directory.
+prints a short diagnostic. It preserves the kernel source, assembler inputs
+(including PPU's .ptx.trans), command, return code and stdout/stderr in the printed temporary directory.
 It retains the selected kernel's compiler flags, does not delete shared caches
 or launch device kernels, and does not change the production compilation path.
 The file/line must match the current traceback if the generated code changes.

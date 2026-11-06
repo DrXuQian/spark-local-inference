@@ -54,8 +54,9 @@ class AssemblyLog:
         binary = working / arguments[arguments.index('-o') + 1]
         for argument in arguments:
             path = working / argument
-            if path.suffix in ('.ptx', '.ll', '.bc') and path.is_file():
-                shutil.copyfile(path, attempt / ('input' + path.suffix))
+            if path.suffix in ('.ptx', '.ll', '.bc', '.trans') and path.is_file():
+                # PPU's formatter appends .trans to the temporary .ptx name.
+                shutil.copyfile(path, attempt / ('input' + ''.join(path.suffixes)))
         result = None
         stdout = None
         # Triton redirects stderr into a temporary file but inherits stdout.

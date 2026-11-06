@@ -82,3 +82,14 @@ def test_subprocess_version_probe_and_failure_excerpt_are_bounded(tmp_path):
     assert result.stdout == b'release 13.0\n' and recorder.count == 0
     lines = excerpt('banner\nLLVM ERROR: unsupported instruction\n' + 'details\n' * 30)
     assert len(lines) == 12 and lines[0] == 'LLVM ERROR: unsupported instruction'
+
+
+def test_ppu_translated_input_survives_temporary_file_cleanup(tmp_path):
+    source = tmp_path / 'kernel.ptx.trans'
+    source.write_bytes(b'target triple = "ppu"\n')
+    recorder = AssemblyLog(subprocess, tmp_path)
+    with pytest.raises(subprocess.CalledProcessError):
+        recorder.run([sys.executable, '-c', 'import sys; sys.exit(7)',
+                      str(source), '-o', str(tmp_path / 'kernel.ptx.o')], check=True)
+    source.unlink()
+    assert (tmp_path / 'assembler-001/input.ptx.trans').read_bytes() == b'target triple = "ppu"\n'

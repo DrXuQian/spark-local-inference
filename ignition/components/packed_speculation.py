@@ -13,6 +13,7 @@ import torch
 
 from .causal_prefix import PreparedCausalPrefixAllocation
 from .collectives import PreparedAllReduce, PreparedBroadcast
+from .probability_checks import finite_nonnegative_fp32
 from .split_draft import PreparedDraftConfidence
 
 
@@ -93,8 +94,8 @@ class PreparedPackedSpeculativeRound:
         self.confidence_head()
         self.confidence.copy_(self.confidence_head.output)
         self.source_valid.copy_(s.active
-            & torch.isfinite(self.confidence).all(1)
-            & (self.confidence >= 0).all(1) & (self.confidence <= 1).all(1))
+            & finite_nonnegative_fp32(self.confidence).all(1)
+            & (self.confidence <= 1).all(1))
         self.broadcast()
         self.confidence.masked_fill_(~self.submitted[:, None], 0.)
         self.confidence_output.index_copy_(0, o.frame.to(torch.int64),

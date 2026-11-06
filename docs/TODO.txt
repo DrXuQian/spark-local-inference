@@ -473,13 +473,17 @@
     limited and unlimited probability masks; 51 related tracing/serialization/
     FA3 checks pass on Torch2.9 and Torch2.15. Catalog sampling replay remains open.
 
-[ ] Resolve the subsequent sampling catalog compiler failure. The box passes
-    the complete non-catalog sampling graph; the catalog fails compiling its
-    generated reduction with a missing .ptx.o artifact. qualify.triton_compile
-    extracts that one kernel and preserves assembler input, command, exit code
-    and diagnostics before Triton deletes them. Five host tests exercise real
-    Triton subprocess/cleanup behavior on 3.5 and 3.8, including exit-zero with
-    no output; the box compiler's underlying error still needs this probe.
+[ ] Re-run the sampling catalog after the FP32 classification fix. The supplied
+    128x1940 reduction reproduces an LLVM13 codegen abort with vector
+    llvm.is.fpclass.v4f32 in the actual SDK2.2.1 compiler, without a PPU device;
+    its ptxas wrapper loses signal failures and returns zero with no artifact.
+    Scalarizing only that intrinsic compiles. Sampling now uses exact integer
+    classification for FP32 probability entries, maxima, masses and confidence,
+    retaining negative-zero handling, FP32 sums and the original tolerance.
+    Corresponding bitwise reductions compile with 4/8/16 warps in the real PPU
+    compiler. Host parity/compilation and scratch checks pass; complete catalog
+    replay, numerical state checks and performance still require the box.
+    qualify.triton_compile also retains the formatter's .ptx.trans inputs.
 
 [x] Carry the validated external operator target into prepared graph admission
     for both normal Qwen bootstrap and the partial-GGUF qualifier. PPU capability

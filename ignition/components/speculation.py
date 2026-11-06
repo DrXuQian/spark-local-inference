@@ -21,6 +21,7 @@ from ignition.components.flashinfer_sampling import filter_probabilities_out, pr
 from ignition.components.capacity import BATCH_CAPACITIES
 from ignition.components.completion import VECTOR_TOKENS_FIELD, validate_completion_buffers
 from ignition.components.logprobs import PreparedLogprobs
+from ignition.components.probability_checks import finite_fp32, finite_nonnegative_fp32
 from ignition.components.sampling import (
     DUPLICATE_SLOT,
     ERROR,
@@ -198,7 +199,7 @@ class PreparedSpeculativeDistributions:
         allowed = ((words >> (self.vocab_ids % 32)) & 1).bool() | ~state.grammar_enabled[safe, None, None].bool()
         self.scores.copy_(torch.where(allowed, scores, -torch.inf))
         self.maximum.copy_(_sliced(self.scores).amax(-1).amax(-1))
-        self.valid.copy_(live[:, None] & prefix_valid & torch.isfinite(self.maximum))
+        self.valid.copy_(live[:, None] & prefix_valid & finite_fp32(self.maximum))
         if self.grammar_masks is not None:
             count = self.grammar_mask_count[safe, None]
             self.valid.logical_and_(~state.grammar_enabled[safe, None].bool()
@@ -330,9 +331,9 @@ class PreparedStochasticVerification:
             ids = torch.where(draft_used, self.drafts, 0)
         for probabilities in (draft_probs, target_probs):
             slices = _sliced(probabilities)
-            entries = (torch.isfinite(slices) & (slices >= 0)).all(-1).all(-1)
+            entries = finite_nonnegative_fp32(slices).all(-1).all(-1)
             mass = slices.sum(-1).sum(-1)
-            valid &= (entries & torch.isfinite(mass) & ((mass - 1).abs() <= 1e-4)).all(-1)
+            valid &= (entries & finite_fp32(mass) & ((mass - 1).abs() <= 1e-4)).all(-1)
         out.valid.copy_(valid)
         if self.token_limits is not None:
             for mask in self.probability_masks:
