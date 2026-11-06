@@ -11,6 +11,7 @@ pub(crate) mod blob;
 pub(crate) mod capture;
 pub(crate) mod conversion;
 pub(crate) mod cubin;
+pub(crate) mod graph_attributes;
 pub(crate) mod io;
 pub(crate) mod package;
 pub(crate) mod protection;

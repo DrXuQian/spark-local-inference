@@ -1,0 +1,63 @@
+PPU SDK 2.2.1: complete graph kernel attribute export/replay support
+
+Observed on the box:
+  cuGraphKernelNodeGetAttribute(node, 5, &value) -> CUDA_ERROR_INVALID_VALUE (1)
+The graph and kernel parameter queries succeeded before this call.
+
+Attribute 5 is CLUSTER_SCHEDULING_POLICY_PREFERENCE, not a kernel argument.
+The current libhggc.so graph getter/setter dispatches only attributes 1, 2, 4.
+The launch attribute dispatcher accepts cluster policy 5 and stores its value.
+Therefore an unreadable node attribute cannot generally be replaced with zero.
+This is independent of the earlier HGPTI resource ABI and FuncGetParamInfo bugs.
+
+Please fix the SDK sources around:
+  hggc_api_graph.cpp: hgapiGraphKernelNodeGetAttribute,
+                      hgapiGraphKernelNodeSetAttribute,
+                      hgiGraphKernelNodeSetAttribute
+  hggc_api_launch.cpp: hgiKlaunchCheckAttribute and capture-to-node propagation
+
+Flare queries these node attribute IDs and preserves successful values:
+  1  ACCESS_POLICY_WINDOW
+  2  COOPERATIVE
+  4  CLUSTER_DIMENSION
+  5  CLUSTER_SCHEDULING_POLICY_PREFERENCE
+  8  PRIORITY
+  9  MEM_SYNC_DOMAIN_MAP
+ 10  MEM_SYNC_DOMAIN
+ 11  PREFERRED_CLUSTER_DIMENSION
+ 13  DEVICE_UPDATABLE_KERNEL_NODE (Flare rejects an enabled value)
+ 14  PREFERRED_SHARED_MEMORY_CARVEOUT
+
+Required behavior:
+- Valid existing nodes must return the actual active attribute values, including
+  documented defaults, without changing the graph. Do not return fabricated zero
+  for state that LaunchKernelEx, stream inheritance or graph setters can change.
+- Preserve launch attributes when capture constructs graph nodes and when nodes
+  are cloned/copied. In particular, a captured nondefault cluster scheduling
+  policy must survive getter -> package -> setter -> replay.
+- Implement matching setters for supported states. For unsupported capabilities,
+  reject nondefault requests explicitly; do not report success and ignore them.
+  Check active union fields and pointer lifetimes, not uninitialized padding.
+- Keep invalid-node, wrong-node-type and unsupported-attribute failures distinct
+  from valid default states where the CUDA API contract permits them.
+- Preserve HGPTI callback names, activation, ENTER/EXIT delivery and declared ABI.
+
+Acceptance on the actual PPU:
+1. Capture a tiny kernel using a fresh stream. Read all IDs above and compare
+   active fields with the kernel/stream/launch configuration.
+2. Exercise every supported nondefault value, including LaunchKernelEx attribute
+   5 with policy 1/2 where supported; verify getter and setter round trips.
+3. Verify copied/cloned nodes and invalid-node/type rejection.
+4. Run qualify.ppu_export with the selected SDK and then the separately rebuilt
+   helios test_actlize_runtime_package; preserve exact global and indirect-pointer
+   state in every scenario. Full GGUF/MTP replay remains a separate gate.
+
+Framework workaround:
+The HGPTI recorder requires 19 additional stream/capture/attribute callbacks.
+It can omit an INVALID_VALUE query only for IDs 5,8,9,10,11,13,14 when a complete
+single-stream capture on a freshly observed stream proves the attribute stayed
+at its default. Every captured kernel must match the observed launch inventory.
+Explicit attributes, copies, older/unobserved/cloned graphs, partial captures
+and other driver errors fail closed. Supported getters remain authoritative.
+This is a constrained preparation workaround, not complete SDK attribute support.
+It adds no native decode callbacks, compilation, allocation or graph recapture.

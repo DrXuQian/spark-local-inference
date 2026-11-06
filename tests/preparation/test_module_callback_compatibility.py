@@ -33,11 +33,11 @@ def test_name_check_is_independent_of_subscription_and_start_enables_fatbinary(c
     path, library = cupti
     library.configure(alias)
     check_callback_names(path)
-    assert library.observed(0) == 47
+    assert library.observed(0) == (66 if alias else 47)
     assert [library.observed(i) for i in (1, 2, 3, 4)] == [0, 0, 0, 0]
     with ModuleImages(path):
         assert ModuleImages.active == 1
-        assert [library.observed(i) for i in (1, 2, 3, 4)] == [1, 50, 0, 1]
+        assert [library.observed(i) for i in (1, 2, 3, 4)] == [1, 69 if alias else 50, 0, 1]
     assert library.observed(3) == 1
     assert ModuleImages.active == 0
 
@@ -56,7 +56,7 @@ def test_missing_wrong_and_null_callback_names_reject_before_subscribing(cupti, 
     error = str(caught.value)
     assert message in error and 'cuFuncLoad (domain=1, id=742)' in error
     assert str(path) in error
-    assert library.observed(0) == 47
+    assert library.observed(0) == 66
     assert [library.observed(i) for i in (1, 2, 3)] == [0, 0, 0]
     assert ModuleImages.active == 0
 
@@ -111,7 +111,7 @@ def test_module_payloads_cross_the_native_callback_boundary_without_a_crash(cupt
         library.emit_module(0x1000, abi == 'hgpti-bare')
         images.native.check_error()
     assert ModuleImages.active == 0 and ModuleImages.active_resource_abi == 'cupti'
-    assert [library.observed(i) for i in (1, 2, 3)] == [1, 50, 1]
+    assert [library.observed(i) for i in (1, 2, 3)] == [1, 69, 1]
 
 
 def test_bare_context_failure_unsubscribes_and_restores_the_parent_scope(cupti):
@@ -133,3 +133,14 @@ def test_bare_mode_rejects_a_non_hgpti_provider_before_subscribing(cupti):
             pytest.fail('bare module mode accepted a non-HGPTI provider')
     assert library.observed(1) == 0
     assert ModuleImages.active_resource_abi == 'cupti'
+
+
+@pytest.mark.parametrize('fault, message', [(64, 'no callback name'), (128, 'CUPTI 27')])
+def test_hg_graph_history_requires_both_name_and_activation(cupti, fault, message):
+    path, library = cupti
+    library.configure(1 | fault)
+    with pytest.raises(RuntimeError, match=message):
+        with ModuleImages(path):
+            pytest.fail('incomplete graph-history recording was accepted')
+    assert ModuleImages.active == 0
+    assert library.observed(1) == library.observed(3)

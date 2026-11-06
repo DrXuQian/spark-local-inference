@@ -226,6 +226,22 @@ FLARE_TEST_HGCC="$ppu_sdk/bin/hgcc" python -m pytest -q --confcutdir=tests/prepa
 
 These checks do not qualify actual PPU graph export or standalone replay.
 
+The SDK2.2.1 graph-node attribute getter/setter supports IDs 1/2/4 but rejects
+several newer attributes, beginning with cluster scheduling policy (5). Its
+launch API can still set policy 5, so treating every query failure as zero would
+lose graph state. HGPTI preparation now requires 19 additional callbacks and
+records stream creation, capture boundaries, launches and attribute mutations.
+For query status INVALID_VALUE only, it omits IDs 5/8/9/10/11/13/14 when a fresh,
+fully observed single-stream capture and exact kernel inventory prove they were
+never configured. Native reconstruction then retains those defaults. Successful
+getters remain authoritative; required attributes and other errors stay fatal.
+Explicit attributes, copying, old/unobserved/cloned graphs and incomplete or
+multi-stream captures require working SDK getters instead. This conservative
+workaround changes only preparation recording/export; it adds no serving work.
+Install the refreshed Heliopause wheel and keep the recorder active through export.
+The SDK implementation and device acceptance task is in
+[ppu-graph-attributes-prompt.txt](ppu-graph-attributes-prompt.txt).
+
 ## GPU selection
 
 Inspect GPU occupancy with `nvidia-smi` before preparation or loading. Select

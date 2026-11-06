@@ -19,7 +19,7 @@ use prost::Message;
 use super::{
     Allocation, Argument, CaptureRequest, ExportResult, FilePart, FileSource, Kernel, RankOutput,
     Relocation, WeightPayloadGroup, WeightPayloadSourceSpan, WeightPayloadSources, cubin, invalid,
-    weight_payload,
+    weight_payload, graph_attributes,
     reachability::{Reachability, merge_ranges, subtract_ranges},
     recorder::Recorder,
     wire,
@@ -484,6 +484,7 @@ fn kernel_node(
     kernels: &[Kernel],
     layouts: &[Vec<(Option<usize>, usize)>],
     indices: &HashMap<usize, usize>,
+    attribute_defaults: Option<&ExportResult<graph_attributes::Defaults>>,
 ) -> ExportResult<wire::Kernel> {
     let (params, function) = kernel_params(cuda, node)?;
     let index = *indices
@@ -516,7 +517,7 @@ fn kernel_node(
             id,
             value.as_mut_ptr().cast()
         );
-        if id == 11 && status == 1 {
+        if graph_attributes::omit_unavailable(status, id, node as usize, attribute_defaults)? {
             continue;
         }
         cuda.check(&format!("cuGraphKernelNodeGetAttribute({id})"), status)?;
@@ -593,6 +594,15 @@ fn capture_graph(
         })
         .collect::<ExportResult<Vec<_>>>()?;
     ordered.sort_by_key(|&(id, _)| id);
+    let attribute_defaults = if let Some(recorder) = recorder.filter(|r| r.tracks_graph_attributes()) {
+        let mut functions = BTreeMap::new();
+        for &(_, node) in &ordered {
+            if node_kind(cuda, node)? == 0 {
+                *functions.entry(kernel_params(cuda, node)?.1).or_default() += 1;
+            }
+        }
+        recorder.graph_defaults(graph.graph, &functions)
+    } else { None };
     let node_indices: HashMap<_, _> = ordered
         .iter()
         .enumerate()
@@ -609,6 +619,7 @@ fn capture_graph(
                 kernels,
                 layouts,
                 indices,
+                attribute_defaults.as_ref(),
             )?),
             1 => {
                 let mut params = CopyParams::default();

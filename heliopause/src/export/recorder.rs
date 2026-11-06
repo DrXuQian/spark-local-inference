@@ -5,7 +5,7 @@
 
 //! Preparation-scoped CUPTI recording. Callbacks copy owned data without CUDA calls.
 
-use super::{ExportResult, invalid};
+use super::{ExportResult, graph_attributes, invalid};
 use libloading::Library;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -161,6 +161,7 @@ struct State {
     kernels: BTreeMap<usize, Arc<Image>>,
     pending: HashMap<ThreadId, Vec<(String, usize, Vec<Arc<Image>>)>>,
     allocations: BTreeMap<u64, RecordedAllocation>,
+    graph_history: Option<graph_attributes::History>,
     error: Option<String>,
 }
 struct CallbackState {
@@ -300,6 +301,9 @@ impl State {
             self.allocations
                 .retain(|_, a| a.context != Some(resource.context));
             self.modules.retain(|_, i| i.context != resource.context);
+            if let Some(history) = &mut self.graph_history {
+                history.drop_context(resource.context);
+            }
             // Libraries can retain the same cubin in another CUDA context.
             for binding in self.libraries.values_mut() {
                 if binding
@@ -393,7 +397,7 @@ impl State {
         let name = translated.as_deref().unwrap_or(name);
         let thread = std::thread::current().id();
         let mut images = Vec::new();
-        if materializer(name) {
+        if materializer(name) || (self.graph_history.is_some() && graph_attributes::capture_boundary(name)) {
             if call.site == 0 {
                 self.pending
                     .entry(thread)
@@ -437,7 +441,22 @@ impl State {
             }
         }
         if unsafe { *call.result } != 0 {
+            if name.starts_with("cuStreamEndCapture") {
+                if let Some(history) = &mut self.graph_history {
+                    history.failed(name, value(0));
+                }
+            }
             return Ok(());
+        }
+        if let Some(history) = &mut self.graph_history {
+            let parents = self.pending.get(&thread).into_iter().flatten();
+            let nested = parents.clone().any(|(parent, _, _)| {
+                (graph_attributes::is_launch(name) && graph_attributes::is_launch(parent))
+                    || (graph_attributes::capture_boundary(name) && graph_attributes::capture_boundary(parent))
+            });
+            if !nested || !graph_attributes::capture_boundary(name) {
+                unsafe { history.observe(name, call.context, call.params, nested)?; }
+            }
         }
         if images.len() == 1 {
             let image = &images[0];
@@ -696,7 +715,7 @@ impl Recorder {
             description.unwrap_or_default()
         )))
     }
-    fn check_callback_names(&self) -> ExportResult<()> {
+    fn check_callback_names(&self) -> ExportResult<bool> {
         let bare =
             self.state().state.lock().unwrap().module_resource_abi == ModuleResourceAbi::HgptiBare;
         type GetName = unsafe extern "C" fn(i32, u32, *mut *const c_char) -> i32;
@@ -708,29 +727,34 @@ impl Recorder {
                 .get::<GetName>(b"cuptiGetCallbackName\0")?
         };
         let mut failures = Vec::new();
-        for &(id, expected) in DRIVER_CALLBACKS {
-            let mut name = std::ptr::null();
-            let status = unsafe { get_name(1, id, &mut name) };
-            if status != 0 || name.is_null() {
-                failures.push(format!(
-                    "{expected} (domain=1, id={id}): CUPTI {status}, no callback name"
-                ));
-                continue;
-            }
-            let actual = unsafe { CStr::from_ptr(name) }.to_string_lossy();
-            if actual != expected && actual.strip_prefix("hg") != expected.strip_prefix("cu") {
-                failures.push(format!(
-                    "{expected} (domain=1, id={id}): unexpected callback name {actual:?}"
-                ));
-            }
-            if bare && !actual.starts_with("hg") {
-                failures.push(format!(
-                    "{expected} (id={id}): hgpti-bare requires HGPTI callback names"
-                ));
+        let mut hgpti = false;
+        for (batch, callbacks) in [DRIVER_CALLBACKS, graph_attributes::CALLBACKS].into_iter().enumerate() {
+            if batch == 1 && !hgpti { break; }
+            for &(id, expected) in callbacks {
+                let mut name = std::ptr::null();
+                let status = unsafe { get_name(1, id, &mut name) };
+                if status != 0 || name.is_null() {
+                    failures.push(format!(
+                        "{expected} (domain=1, id={id}): CUPTI {status}, no callback name"
+                    ));
+                    continue;
+                }
+                let actual = unsafe { CStr::from_ptr(name) }.to_string_lossy();
+                if batch == 0 { hgpti |= actual.starts_with("hg"); }
+                if actual != expected && actual.strip_prefix("hg") != expected.strip_prefix("cu") {
+                    failures.push(format!(
+                        "{expected} (domain=1, id={id}): unexpected callback name {actual:?}"
+                    ));
+                }
+                if bare && !actual.starts_with("hg") {
+                    failures.push(format!(
+                        "{expected} (id={id}): hgpti-bare requires HGPTI callback names"
+                    ));
+                }
             }
         }
         if failures.is_empty() {
-            Ok(())
+            Ok(hgpti)
         } else {
             Err(invalid(format!(
                 "CUPTI callback table in {} cannot record the required driver APIs:\n{}\n\
@@ -745,7 +769,8 @@ impl Recorder {
         if self.subscriber != 0 {
             return Err(invalid("module image recorder is already active"));
         }
-        self.check_callback_names()?;
+        let hgpti = self.check_callback_names()?;
+        self.state().state.lock().unwrap().graph_history = None;
         let library = self.library.as_ref().unwrap();
         let subscribe = unsafe { *library.get::<Subscribe>(b"cuptiSubscribe\0")? };
         let enable = unsafe { *library.get::<Enable>(b"cuptiEnableCallback\0")? };
@@ -758,7 +783,9 @@ impl Recorder {
                     enable(1, self.subscriber, 3, id)
                 })?;
             }
-            for &(id, name) in DRIVER_CALLBACKS {
+            for &(id, name) in DRIVER_CALLBACKS.iter().chain(
+                if hgpti { graph_attributes::CALLBACKS } else { &[] }.iter()
+            ) {
                 self.check(
                     &format!("cuptiEnableCallback(domain=1, id={id}, name={name})"),
                     unsafe { enable(1, self.subscriber, 1, id) },
@@ -768,6 +795,8 @@ impl Recorder {
         })();
         if result.is_err() {
             let _ = self.stop();
+        } else if hgpti {
+            self.state().state.lock().unwrap().graph_history = Some(graph_attributes::History::default());
         }
         result
     }
@@ -828,6 +857,23 @@ impl Recorder {
         let mut id = 0;
         self.check("cuptiGetGraphNodeId", unsafe { get(node, &mut id) })?;
         Ok(id)
+    }
+
+    pub(super) fn tracks_graph_attributes(&self) -> bool {
+        self.state().state.lock().unwrap_or_else(|e| e.into_inner()).graph_history.is_some()
+    }
+
+    pub(super) fn graph_defaults(&self, graph: usize, functions: &BTreeMap<usize, usize>)
+        -> Option<ExportResult<graph_attributes::Defaults>>
+    {
+        let state = self.state().state.lock().unwrap_or_else(|e| e.into_inner());
+        state.graph_history.as_ref().map(|history| {
+            if self.subscriber == 0 {
+                return Err(invalid("default-attribute proof requires an active recorder"));
+            }
+            if let Some(error) = &state.error { return Err(invalid(error)); }
+            history.defaults(graph, functions)
+        })
     }
 
     pub(crate) fn image_for(&self, function: usize) -> ExportResult<Arc<[u8]>> {
@@ -992,6 +1038,7 @@ impl NativeModuleRecorder {
     /// Successful activation and event delivery still require device qualification.
     fn check_callback_names(&self, py: Python<'_>) -> PyResult<()> {
         py.detach(|| self.recorder.lock().unwrap().check_callback_names())
+            .map(|_| ())
             .map_err(py_error)
     }
     fn stop(&self, py: Python<'_>) -> PyResult<()> {
@@ -1072,6 +1119,48 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
 mod tests {
     use super::*;
     use std::ffi::CString;
+
+    #[test]
+    fn graph_history_uses_real_callback_layouts_and_ignores_nested_launch_duplicates() {
+        let owner = CallbackState::new();
+        owner.state.lock().unwrap().graph_history = Some(Default::default());
+        let (stream, graph, function, node) = (0x100usize, 0x200usize, 0x300usize, 0x400usize);
+        call(&owner, "hgStreamCreate", 1, &[&stream as *const _ as usize, 0], 0, 17);
+        for name in ["hgStreamBeginCapture_v2", "hgStreamBeginCapture"] {
+            call(&owner, name, 0, &[stream, 0], 0, 17);
+        }
+        for name in ["hgStreamBeginCapture", "hgStreamBeginCapture_v2"] {
+            call(&owner, name, 1, &[stream, 0], 0, 17);
+        }
+        // CU launch parameters: function, six u32 dimensions, shared/pad,
+        // stream, argument array and extra. This is not a device launch.
+        let launch = [function, 0x100000001, 0x100000001, 0x100000001, 0, stream, 0, 0];
+        for name in ["hgLaunchKernel_ptsz", "hgLaunchKernel"] {
+            call(&owner, name, 0, &launch, 0, 17);
+        }
+        for name in ["hgLaunchKernel", "hgLaunchKernel_ptsz"] {
+            call(&owner, name, 1, &launch, 0, 17);
+        }
+        let end = [stream, &graph as *const _ as usize];
+        for name in ["hgStreamEndCapture_ptsz", "hgStreamEndCapture"] {
+            call(&owner, name, 0, &end, 0, 0);
+        }
+        for name in ["hgStreamEndCapture", "hgStreamEndCapture_ptsz"] {
+            call(&owner, name, 1, &end, 0, 0);
+        }
+        let check = || {
+            let state = owner.state.lock().unwrap();
+            assert!(state.error.is_none(), "{:?}", state.error);
+            state.graph_history.as_ref().unwrap().defaults(graph, &[(function, 1)].into())
+                .unwrap().check(node, 5)
+        };
+        assert!(check().is_ok());
+        call(&owner, "hgGraphKernelNodeSetAttribute", 1, &[node, 5, 0], 1, 0);
+        assert!(check().is_ok());
+        // Context-independent graph APIs may report a null callback context.
+        call(&owner, "hgGraphKernelNodeSetAttribute", 1, &[node, 5, 0], 0, 0);
+        assert!(check().is_err());
+    }
 
     fn call(
         owner: &CallbackState,

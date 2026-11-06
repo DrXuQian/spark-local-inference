@@ -8,6 +8,16 @@ static unsigned options, counts[5];
 static void (*notify)(void *, int, uint32_t, const void *);
 static void *notify_user;
 static const char *names[743] = {
+    [124] = "cuStreamCreate", [367] = "cuStreamCreateWithPriority",
+    [127] = "cuStreamDestroy", [326] = "cuStreamDestroy_v2",
+    [495] = "cuStreamBeginCapture", [496] = "cuStreamBeginCapture_ptsz",
+    [539] = "cuStreamBeginCapture_v2", [540] = "cuStreamBeginCapture_v2_ptsz",
+    [497] = "cuStreamEndCapture", [498] = "cuStreamEndCapture_ptsz",
+    [720] = "cuStreamBeginCaptureToGraph", [721] = "cuStreamBeginCaptureToGraph_ptsz",
+    [517] = "cuGraphDestroy", [571] = "cuGraphKernelNodeSetAttribute",
+    [569] = "cuGraphKernelNodeCopyAttributes",
+    [576] = "cuStreamSetAttribute", [577] = "cuStreamSetAttribute_ptsz",
+    [572] = "cuStreamCopyAttributes", [573] = "cuStreamCopyAttributes_ptsz",
     [18] = "cuModuleLoad", [19] = "cuModuleLoadData", [20] = "cuModuleLoadDataEx",
     [21] = "cuModuleLoadFatBinary", [22] = "cuModuleUnload", [23] = "cuModuleGetFunction",
     [678] = "cuLibraryLoadData", [679] = "cuLibraryLoadFromFile", [680] = "cuLibraryUnload",
@@ -40,6 +50,7 @@ int cuptiGetCallbackName(int domain, uint32_t id, const char **name) {
     if (((options & 2) && id == 742) || ((options & 4) && id == 18)) return 1;
     if ((options & 16) && id == 742) return 0;
     const char *value = ((options & 8) && id == 742) ? "cuFuncIsLoaded" : names[id];
+    if ((options & 64) && id == 497) return 1;
     if (options & 1) {
         snprintf(translated, sizeof(translated), "hg%s", value + 2);
         value = translated;
@@ -59,7 +70,8 @@ int cuptiSubscribe(void **subscriber, void (*callback)(void *, int, uint32_t, co
 int cuptiEnableCallback(uint32_t enable, void *subscriber, int domain, uint32_t id) {
     if (subscriber != (void *)(uintptr_t)0x1234 || enable != 1) return 1;
     counts[2]++;
-    if ((options & 32) && domain == 1 && id == 742) return 27;
+    if (((options & 32) && domain == 1 && id == 742) ||
+        ((options & 128) && domain == 1 && id == 497)) return 27;
     if (domain == 1) {
         if (id >= 743 || !names[id]) return 1;
         if (id == 21) counts[4]++;

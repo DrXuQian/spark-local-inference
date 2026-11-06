@@ -575,6 +575,23 @@
     execution and the complete tiny export/replay gate remain pending. Reinstall
     the refreshed Heliopause wheel and rebuild the Rust replay executable.
 
+[x] Handle SDK2.2.1 unreadable graph-node attributes without assuming zero.
+    Graph getter/setter accepts 1/2/4; launch can nevertheless set policy 5.
+    Require 19 additional HGPTI callbacks and prove defaults from a fresh
+    single-stream capture with an exact launch inventory. Keep explicit/copied
+    attributes, changed inherited function policy, unobserved captures and other
+    query errors fatal; preserve supported getter values and NVIDIA behavior.
+    Forty-nine focused Rust checks pass (three CUDA cases ignored), along with
+    64 Python/native checks (one device case skipped). Real SDK callback names
+    and host-compiled ABI layouts match; synthetic HGPTI dispatch reaches the
+    native audit and rejects a bad attribute inventory. These are host checks,
+    not device activation or graph replay. A broader export run hit the existing
+    verified_inode_mutation_is_rejected_before_link failure; the pre-change
+    native test binary fails the same test. Reinstall the Heliopause wheel and
+    rerun the tiny PPU export/replay gate. The complete SDK attribute task is in
+    ppu-graph-attributes-prompt.txt; nondefault and more complex graph histories
+    need working SDK getters/setters before they can qualify.
+
 [x] Check required callback names before native recorder subscription and before
     compiling the standalone PPU export module. Report all missing/mismatched
     APIs, retaining fatal activation errors. Also enable the omitted FatBinary
