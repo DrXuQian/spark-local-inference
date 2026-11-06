@@ -250,6 +250,10 @@ five affected cases with the same SDK/helper-library environment:
   python -m pytest -q --tb=short tests/components/test_quactlize_helpers_cuda.py \
     -k '42 and file_lookup_routing_and_rounded_activation_share_one_graph'
 
+The user now reports these five PPU cases passing after the 5d5e03b update.
+Proceed to the partial target + complete shared-MTP export below. Component
+graph replay does not qualify the complete model package or native serving gaps.
+
 Local review passes 82 QUactlize Q2_0 host tests, 64 installed native ABI queries
 and 132 framework host bridge/metadata/reader cases. The installed native check
 uses the actual 0.2.1 DSO and matching SDK runtime; it does not initialize a GPU.

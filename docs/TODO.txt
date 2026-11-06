@@ -232,7 +232,8 @@
     through PreparedEmbedding, then validate both 16-bit dtypes at widths 640
     and 2560 through the installed 0.2.1 fake dispatcher. All 21 helper host
     checks pass, including rejection of an unsupported row format. No operator
-    binary changes; the five PPU cases still need a device rerun.
+    binary changes. The user now reports the five PPU lookup graph cases passing
+    after the 5d5e03b framework update; complete target/MTP qualification is open.
 
 [ ] Qualify the supplied Q2_0 MTP on PPU. Fifteen added device cases cover file
     packing, dense decoding, prepared projection catalog rebinding and graph
