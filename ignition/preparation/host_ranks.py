@@ -345,8 +345,11 @@ class HostRendezvous:
                 # Peers connect only after receiving the store's port, so rank zero does not wait for them here.
                 self.store = dist.TCPStore(self.address[0], 0, self.world, True, timeout=_PREPARATION_TIMEOUT,
                                            wait_for_workers=False)
+                from .module_images import ModuleImages
+
                 assignment = {"store": (self.address[0], self.store.port), "config": config, "prepare": prepare,
-                              "packaged": package_storage is not None}
+                              "packaged": package_storage is not None,
+                              "module_resource_abi": ModuleImages.active_resource_abi if package_storage is not None else "cupti"}
                 for control in controls:
                     send_object(control, assignment)
                 dist.init_process_group("gloo", store=self.store, rank=0, world_size=self.world,
@@ -642,7 +645,7 @@ def serve_peer(control, executor, rank, world, *, hub_cache, progress=None, expo
             from .module_images import ModuleImages
             from .package_storage import PackageStorage
 
-            recorder = ModuleImages()
+            recorder = ModuleImages(module_resource_abi=assignment.get("module_resource_abi", "cupti"))
             with recorder:
                 torch.cuda.set_device(0)
                 storage = PackageStorage(rank=rank, world=world, device=0, local_ranks=1)

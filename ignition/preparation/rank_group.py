@@ -41,7 +41,8 @@ def minimum_across_ranks(value, group):
     return result.item()
 
 
-def _peer(parent, snapshot, config, rank, rendezvous, connection, control, prepare, packaged, recording):
+def _peer(parent, snapshot, config, rank, rendezvous, connection, control, prepare, packaged, recording,
+          module_resource_abi='cupti'):
     import flare_heliopause
 
     flare_heliopause.bind_parent_lifetime(parent)
@@ -58,7 +59,7 @@ def _peer(parent, snapshot, config, rank, rendezvous, connection, control, prepa
             import torch
 
             # Only an export needs module images; without one, a profiler may own CUPTI.
-            recorder = ModuleImages() if recording else None
+            recorder = ModuleImages(module_resource_abi=module_resource_abi) if recording else None
             with recorder if recording else contextlib.nullcontext():
                 torch.cuda.set_device(config.devices[rank])
                 storage = PackageStorage(rank=rank, world=len(config.devices), device=config.devices[rank])
@@ -264,7 +265,8 @@ def prepare_group(snapshot, config, prepare, *, progress=None, package_storage=N
             control, child_control = context.Pipe()
             controls.append(control)
             process = context.Process(target=_peer, args=(os.getpid(), snapshot, config, rank,
-                address, peer, child_control, prepare, package_storage is not None, recording),
+                address, peer, child_control, prepare, package_storage is not None, recording,
+                ModuleImages.active_resource_abi if recording else 'cupti'),
                 name=f"flare-rank-{rank}")
             try:
                 process.start()

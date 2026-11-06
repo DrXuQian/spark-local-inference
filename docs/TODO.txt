@@ -535,11 +535,21 @@
     module resource image inside cuModuleGetFunction. Actual SDK2.2.1 dispatcher
     calls with synthetic host events reproduce bare ModuleResourceData for both
     load/unload callbacks, instead of ResourceData containing context/descriptor.
-    Fix the HGPTI resource wrapper and qualify real delivery before export/replay.
+    Qualify real delivery/export/replay with the explicit hgpti-bare recorder
+    workaround, or a fixed HGPTI resource wrapper using the default cupti ABI.
     qualify.ppu_hgpti_resource_abi reproduces that ABI failure without a device;
     it does not qualify activation or real module loading. LAZY mode remains
     required; no callbacks or context/image validation may be skipped. The SDK
     task and reproduction details are in ppu-hgpti-callback-prompt.txt.
+
+[x] Add an explicit hgpti-bare preparation recorder mode for SDK2.2.1. Retain
+    owned images, per-thread nested driver contexts, unload/context teardown,
+    activation errors and standard CUPTI behavior. Twenty Rust recorder tests
+    and seventeen Python/native ABI checks pass; one device test is skipped.
+    Actual SDK synthetic driver/module events also reach the native workaround
+    without a crash and preserve context; activation/device export are untested
+    locally. Export configuration and qualification flags carry the selection;
+    179 CLI/configuration and twelve rank cleanup/selection checks pass.
 
 [x] Check required callback names before native recorder subscription and before
     compiling the standalone PPU export module. Report all missing/mismatched

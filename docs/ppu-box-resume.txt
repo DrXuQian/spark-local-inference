@@ -182,21 +182,16 @@ compatibility are still separate checks; prepare on the intended platform.
 Seven naming tests and fourteen native publication/conversion tests pass;
 both the CLI and exporter compile checks pass. The rebuilt local Heliopause
 extension preserves signed PCI identities through real cache conversion.
-The older SDK2.1.1 lacks the cuFuncLoad callback; local SDK2.2.1 resolves callback
-742 to hgFuncLoad, but real recorder startup must still succeed on the box.
-The deployment box now passes module compilation and ELF global checks, then
-fails recorder startup at cuptiEnableCallback(domain=1, id=742). Its actual
-CUDA_SDK/targets/x86_64-linux/lib/libcupti.so.2025.3.0 loads
-PPU_SDK/targets/x86_64-linux/lib/libhgpti.so. Callback-name queries for 18, 687
-and 732 succeed, while 742 returns INVALID_PARAMETER with no name. The reported
-CUPTI API version 22 does not establish support for this callback. The box
-reports module-loading mode 2 (LAZY), so an eager-loading condition does not
-apply. Use a platform-compatible HGPTI/driver combination that both resolves
-and enables hgFuncLoad, then rerun the complete gate below. Do not skip the callback or
-treat a successful whole-domain subscription as proof of event delivery;
-module association and allocation recording must remain complete. The previously
-supplied wheel installed successfully; rebuilding it does not add SDK callbacks.
-The SDK task and standalone reproducer are in ppu-hgpti-callback-prompt.txt.
+The older SDK2.1.1 lacks the cuFuncLoad callback. The box's SDK2.2.1 upgrade now
+passes all three module_images tests, including activation and real allocation/
+context lifetimes. It next hits a module-resource ABI mismatch during lazy
+cuModuleGetFunction: HGPTI sends a bare module descriptor instead of the CUPTI
+resource wrapper. The refreshed Heliopause wheel offers --module-resource-abi
+hgpti-bare for the qualification below; it recovers context from the same thread's
+innermost driver materializer and rejects missing/ambiguous ownership. All callbacks
+still must enable successfully. LAZY loading stays unchanged. The SDK library is
+not patched; its raw ABI diagnostic will still report the defect. SDK repair and
+the raw reproducer are documented in ppu-hgpti-callback-prompt.txt.
 
 The updated wheel checks all 47 required driver callback names before subscribing
 and reports missing or mismatched entries together. cu*/hg* aliases are accepted;
@@ -204,8 +199,8 @@ activation errors remain fatal. qualify.ppu_export performs this check before
 compiling its module. --compile-only still performs only the offline ELF stage.
 The recorder also enables the previously omitted cuModuleLoadFatBinary callback
 21 and binds its single selected native image, retaining unload/lifetime checks.
-Fifteen Rust recorder tests and thirteen Python/native ABI tests pass locally;
-the real allocation/context test is skipped without a device. Actual SDK2.1.1
+Twenty Rust recorder tests and seventeen Python/native ABI tests pass locally;
+the real allocation/context test is skipped locally without a device. Actual SDK2.1.1
 name queries fail only at 742, while all 47 resolve in local SDK2.2.1. Neither
 name-query result establishes device event delivery or export/replay support.
 
@@ -228,11 +223,17 @@ cases pass. Driver/CUPTI loading and PPU graph export still require the box.
   python -m pip install --no-deps --force-reinstall \
     artifacts/ppu/20261106/wheels/flare_heliopause-0.1.0-cp312-cp312-linux_x86_64.whl
   python -c "import sys, flare_heliopause; print(sys.executable); print(flare_heliopause.__file__)"
-  python -c "from ignition.preparation.module_images import check_callback_names; check_callback_names(); print('Callback names OK; device delivery still untested')"
-  CUDA_VISIBLE_DEVICES=0 python -m qualify.ppu_export --target ppu10 --output /tmp/ppu-export-replay-1
+  python -c "from ignition.preparation.module_images import check_callback_names; check_callback_names(module_resource_abi='hgpti-bare'); print('Callback names OK; device delivery still untested')"
+  CUDA_VISIBLE_DEVICES=0 python -X faulthandler -m qualify.ppu_export --target ppu10 \
+    --module-resource-abi hgpti-bare --output /tmp/ppu-export-sdk221-bare-1
   cargo build --release --manifest-path helios/Cargo.toml \
     --features runtime-package,test-tools --bin test_actlize_runtime_package
-  CUDA_VISIBLE_DEVICES=0 helios/target/release/test_actlize_runtime_package /tmp/ppu-export-replay-1
+  CUDA_VISIBLE_DEVICES=0 helios/target/release/test_actlize_runtime_package /tmp/ppu-export-sdk221-bare-1
+
+These commands require the selected SDK2.2.1's CUDA_SDK/lib64 and lib at the front
+of LD_LIBRARY_PATH, and its hgcc compiler. For ordinary ignition export, set
+[preparation] module_resource_abi="hgpti-bare" in the configuration file. Keep
+the default cupti ABI on NVIDIA or after the SDK fixes the resource wrapper.
 
 The wheel avoids building the Python extension on the box; the replay executable
 above still needs Cargo and native build prerequisites. For another Python/host

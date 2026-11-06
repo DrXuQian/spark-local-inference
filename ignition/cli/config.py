@@ -23,7 +23,8 @@ _SECTIONS = {
     "defaults": {"model": str, "max_concurrency": int, "image_concurrency": int,
                  "speculative_token_capacity": int, "speculative_graph_budget": int},
     "memory": {"reserve": str},
-    "preparation": {"compile_workers": int, "autotune_effort": str, "collective_tuning": str, "checkpoint_token_file": str},
+    "preparation": {"compile_workers": int, "autotune_effort": str, "collective_tuning": str,
+                    "checkpoint_token_file": str, "module_resource_abi": str},
     "prefix_cache": {"memory": str, "disk_limit": str, "drain_on_shutdown": str, "max_age": str},
     "paths": {"hub_cache": str, "kernel_cache": str, "package_cache": str, "export_staging": str,
               "prefix_cache": str, "cuda": str},
@@ -39,6 +40,7 @@ _BUILT_IN = {
     "preparation.autotune_effort": "default",
     "preparation.collective_tuning": None,
     "preparation.checkpoint_token_file": "~/.config/flare/agent.token",
+    "preparation.module_resource_abi": "cupti",
     "prefix_cache.memory": "", "prefix_cache.disk_limit": "", "prefix_cache.drain_on_shutdown": "", "prefix_cache.max_age": "off",
     "paths.hub_cache": "~/.cache/huggingface/hub", "paths.kernel_cache": "~/.cache/flare/kernels",
     "paths.package_cache": "~/.cache/flare/packages",
@@ -120,6 +122,8 @@ class Configuration:
                 raise UsageError(f"{path}: autotune_effort must be one of {', '.join(AUTOTUNE_EFFORTS)}")
             if key == "collective_tuning" and value not in ("static", "runtime"):
                 raise UsageError(f"{path}: collective_tuning must be static or runtime")
+            if key == "module_resource_abi" and value not in ("cupti", "hgpti-bare"):
+                raise UsageError(f"{path}: module_resource_abi must be cupti or hgpti-bare")
             if key == "port" and not 1 <= value <= 65535:
                 raise UsageError(f"{path}: port in [{section}] must be 1 through 65535")
             if key == "thinking_token_budget" and not 1 <= value <= 2**32 - 1:
@@ -182,6 +186,7 @@ class Configuration:
             '# compile_workers = 24           # CPU processes per host; default: automatic, bounded by memory',
             '# autotune_effort = "default"    # off, default, audit',
             '# collective_tuning = "static"  # static, runtime; omitted uses recipe default',
+            '# module_resource_abi = "cupti" # hgpti-bare: SDK 2.2.1 module callback workaround',
             "", "[memory]",
             f'# reserve = "{self.get("memory.reserve").value}"'
             "                   # GPU memory left untouched for processes that start later",

@@ -177,6 +177,24 @@ installed extension explicitly:
 uv pip install --python .venv/bin/python --no-deps ./heliopause
 ```
 
+SDK 2.2.1 HGPTI sends bare module resource descriptors. For that SDK, the native
+recorder offers an explicit preparation workaround after installing the matching
+Heliopause wheel:
+
+```toml
+[preparation]
+module_resource_abi = "hgpti-bare"
+```
+
+The default is `cupti`. The workaround reads the known bare payload and obtains
+its context from the innermost driver materializer on the same thread. Missing
+context and a module ID live in two contexts are fatal. Unload resolves the
+recorded module ID; context destruction still clears all its bindings. Callback
+activation remains mandatory. This changes preparation recording only; exported
+packages and Rust replay have no ABI selector or extra decode work. Qualification
+commands accept `--module-resource-abi hgpti-bare`. The raw SDK ABI diagnostic
+still reports the library defect; the workaround does not modify the SDK.
+
 ## GPU selection
 
 Inspect GPU occupancy with `nvidia-smi` before preparation or loading. Select

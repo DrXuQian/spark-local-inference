@@ -75,6 +75,8 @@ def host(monkeypatch, tmp_path):
     class Scope:
         def __init__(self, **kwargs):
             self.host_regions = []
+            if 'module_resource_abi' in kwargs:
+                calls['module_resource_abi'] = kwargs['module_resource_abi']
         def __enter__(self):
             return self
         def __exit__(self, *exception):
@@ -168,6 +170,14 @@ def test_export_records_rebuild_settings_and_closes_preparation(host):
     local = ResolvedModel(host['plan'].recipe, host['plan'].checkpoint, Path('/local/checkpoint'))
     local_manifest = types.SimpleNamespace(**from_plan(local, host['plan'], compiled_forwards=True))
     assert local_manifest.local_checkpoint and not local_manifest.checkpoint_revision
+
+
+@pytest.mark.parametrize('abi', ['cupti', 'hgpti-bare'])
+def test_export_uses_the_configured_module_resource_abi(host, tmp_path, abi):
+    config = tmp_path / 'resource-abi.toml'
+    config.write_text(f'[preparation]\nmodule_resource_abi="{abi}"\n')
+    assert export('qwen3.8-flash', '--config', str(config), '--no-compile') == 0
+    assert host['module_resource_abi'] == abi
 
 
 @pytest.mark.parametrize("budget", [None, 1536])

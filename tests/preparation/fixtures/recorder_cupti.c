@@ -5,6 +5,8 @@
 #include <string.h>
 
 static unsigned options, counts[5];
+static void (*notify)(void *, int, uint32_t, const void *);
+static void *notify_user;
 static const char *names[743] = {
     [18] = "cuModuleLoad", [19] = "cuModuleLoadData", [20] = "cuModuleLoadDataEx",
     [21] = "cuModuleLoadFatBinary", [22] = "cuModuleUnload", [23] = "cuModuleGetFunction",
@@ -49,6 +51,8 @@ int cuptiGetCallbackName(int domain, uint32_t id, const char **name) {
 int cuptiSubscribe(void **subscriber, void (*callback)(void *, int, uint32_t, const void *), void *user) {
     if (!callback || !user) return 1;
     counts[1]++;
+    notify = callback;
+    notify_user = user;
     *subscriber = (void *)(uintptr_t)0x1234;
     return 0;
 }
@@ -65,9 +69,49 @@ int cuptiEnableCallback(uint32_t enable, void *subscriber, int domain, uint32_t 
 int cuptiUnsubscribe(void *subscriber) {
     if (subscriber != (void *)(uintptr_t)0x1234) return 1;
     counts[3]++;
+    notify = NULL;
+    notify_user = NULL;
     return 0;
 }
 int cuptiGetResultString(int status, const char **message) {
     *message = status == 27 ? "not supported" : "invalid parameter";
     return 0;
+}
+
+/* The SDK 2.2.1 module payload has this layout, without Resource around it. */
+struct Module { uint32_t id; size_t size; const unsigned char *image; };
+struct Resource { uintptr_t context, handle; const struct Module *descriptor; };
+struct Call {
+    int site;
+    const char *name;
+    const uintptr_t *params;
+    const int *result;
+    const char *symbol;
+    uintptr_t context;
+    uint32_t context_id;
+    uint64_t *correlation;
+    uint32_t correlation_id;
+};
+
+void emit_module(uintptr_t context, int bare) {
+    uintptr_t function = 0x500;
+    uintptr_t params[] = {(uintptr_t)&function, 0x100, (uintptr_t)"probe"};
+    int success = 0;
+    struct Call call = {.name = (options & 1) ? "hgModuleGetFunction" : "cuModuleGetFunction",
+                        .params = params, .result = &success, .context = context};
+    const unsigned char bytes[] = "native PPU image";
+    struct Module module = {19, sizeof(bytes), bytes};
+    struct Resource resource = {context, 0, &module};
+    notify(notify_user, 1, 23, &call);
+    notify(notify_user, 3, 6, bare ? (const void *)&module : (const void *)&resource);
+    call.site = 1;
+    notify(notify_user, 1, 23, &call);
+    notify(notify_user, 3, 7, bare ? (const void *)&module : (const void *)&resource);
+    notify(notify_user, 3, 2, &resource);
+}
+
+/* Also permits a real SDK dispatcher to deliver into this host test subscriber. */
+void forward_callback(void *user, int domain, uint32_t id, const void *data) {
+    (void)user;
+    notify(notify_user, domain, id, data);
 }

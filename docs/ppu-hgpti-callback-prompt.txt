@@ -1,5 +1,18 @@
 任务：修复 PPU HGPTI 模块资源回调 ABI，并补齐真实事件交付；保留 LAZY 加载。
 
+框架侧可先采用的 workaround
+---------------------------
+更新框架与匹配的 flare-heliopause wheel 后，qualify.ppu_export、
+qualify.qwen38_gguf 等导出检查可显式指定 --module-resource-abi hgpti-bare。
+正式 ignition export 对应的配置为 [preparation] module_resource_abi="hgpti-bare"。
+原生 recorder 按裸 ModuleResourceData 读取，并从同线程最内层 driver
+materializer 的 ENTER 回调取得真实 context；卸载使用已记录 moduleId 的
+唯一 context。缺少 context、跨 context 的重复 ID 均报错，不猜测地址布局。
+标准 CUPTI 仍是默认；不修改 SDK、Torch、Triton 或服务回放。
+这条路径仍须实机导出/独立 Rust 回放验证。本文的原始 SDK ABI 检查会继续
+报告未修改库的缺陷，不能据此认定框架 workaround 失败。SDK 正式修复后，
+恢复默认 cupti 模式；不能对已经修复为外层结构的 SDK 使用 hgpti-bare。
+
 当前阻塞：SDK 2.2.1 的模块资源回调缺少外层结构
 -------------------------------------------------
 部署已从 2.1.1 切换到：

@@ -1150,6 +1150,7 @@ max_concurrency = 4
 # compile_workers = 24           # Optional CPU process budget per host.
 # autotune_effort = "default"     # off, default, audit.
 # collective_tuning = "static"    # static, runtime; omitted uses the recipe default.
+# module_resource_abi = "cupti"   # hgpti-bare: explicit SDK 2.2.1 recorder workaround.
 
 [memory]
 reserve = "0"                     # GPU memory left for processes started later.

@@ -13,11 +13,11 @@ def cupti_library(library=None):
     return library
 
 
-def check_callback_names(library=None):
+def check_callback_names(library=None, *, module_resource_abi='cupti'):
     """Check required API names only; this does not enable or exercise callbacks."""
     from flare_heliopause import NativeModuleRecorder
 
-    NativeModuleRecorder(str(cupti_library(library))).check_callback_names()
+    NativeModuleRecorder(str(cupti_library(library)), module_resource_abi=module_resource_abi).check_callback_names()
 
 
 def strip_debug(image):
@@ -42,11 +42,13 @@ class ModuleImages:
     """Keep native module images and driver allocation records through export."""
 
     active = 0
+    active_resource_abi = 'cupti'
 
-    def __init__(self, library=None):
+    def __init__(self, library=None, *, module_resource_abi='cupti'):
         from flare_heliopause import NativeModuleRecorder
 
-        self.native = NativeModuleRecorder(str(cupti_library(library)))
+        self.native = NativeModuleRecorder(str(cupti_library(library)), module_resource_abi=module_resource_abi)
+        self.module_resource_abi = module_resource_abi
         self._active = False
 
     @property
@@ -59,6 +61,8 @@ class ModuleImages:
 
     def __enter__(self):
         self.native.start()
+        self._previous_resource_abi = ModuleImages.active_resource_abi
+        ModuleImages.active_resource_abi = self.module_resource_abi
         self._active = True
         ModuleImages.active += 1
         return self
@@ -69,4 +73,5 @@ class ModuleImages:
         finally:
             if self._active:
                 ModuleImages.active -= 1
+                ModuleImages.active_resource_abi = self._previous_resource_abi
                 self._active = False

@@ -269,7 +269,7 @@ def prepare(args):
     quant_target = 'nvidia' if target == 'cuda_sm120' else target
     quant, helpers = resolve_quactlize(args.quactlize_abi_library, args.quactlize_helpers_library,
                                       target=quant_target)
-    with ModuleImages() as images, PackageStorage(device=0) as storage:
+    with ModuleImages(module_resource_abi=args.module_resource_abi) as images, PackageStorage(device=0) as storage:
         torch.cuda.set_device(0)
         from ignition.preparation.flash_attn3 import FlashAttention3Spec
         from ignition.preparation.qwen38_gguf import GgufInputs
@@ -460,6 +460,7 @@ if __name__ == '__main__':
     from qualify.qwen38_gguf import prepare
 
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--module-resource-abi', choices=('cupti', 'hgpti-bare'), default='cupti')
     parser.add_argument('--operator-target', choices=('cuda_sm120', 'ppu10', 'ppu15'), default='cuda_sm120',
                         help='actual target of the external QUactlize and actlizeLA libraries')
     parser.add_argument('--quactlize-helpers-library', type=Path,

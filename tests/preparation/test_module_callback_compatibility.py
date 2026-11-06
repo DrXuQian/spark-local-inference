@@ -24,6 +24,7 @@ def cupti(tmp_path):
     library = C.CDLL(str(path))
     library.configure.argtypes, library.configure.restype = [C.c_uint], None
     library.observed.argtypes, library.observed.restype = [C.c_uint], C.c_uint
+    library.emit_module.argtypes, library.emit_module.restype = [C.c_size_t, C.c_int], None
     return path, library
 
 
@@ -98,3 +99,37 @@ def test_ppu_export_rejects_callback_table_before_compiling_or_creating_output(c
         main(['--target', 'ppu10', '--compiler', '/must-not-run', '--output', str(output)])
     assert not output.exists()
     assert library.observed(1) == 0
+
+
+@pytest.mark.parametrize('abi', ['cupti', 'hgpti-bare'])
+def test_module_payloads_cross_the_native_callback_boundary_without_a_crash(cupti, abi):
+    path, library = cupti
+    library.configure(1)
+    assert ModuleImages.active_resource_abi == 'cupti'
+    with ModuleImages(path, module_resource_abi=abi) as images:
+        assert ModuleImages.active_resource_abi == abi
+        library.emit_module(0x1000, abi == 'hgpti-bare')
+        images.native.check_error()
+    assert ModuleImages.active == 0 and ModuleImages.active_resource_abi == 'cupti'
+    assert [library.observed(i) for i in (1, 2, 3)] == [1, 50, 1]
+
+
+def test_bare_context_failure_unsubscribes_and_restores_the_parent_scope(cupti):
+    path, library = cupti
+    library.configure(1)
+    with pytest.raises(RuntimeError, match='no owning driver context'):
+        with ModuleImages(path, module_resource_abi='hgpti-bare') as images:
+            library.emit_module(0, True)
+            images.native.check_error()
+    assert ModuleImages.active == 0 and ModuleImages.active_resource_abi == 'cupti'
+    assert library.observed(3) == 1
+
+
+def test_bare_mode_rejects_a_non_hgpti_provider_before_subscribing(cupti):
+    path, library = cupti
+    library.configure(0)
+    with pytest.raises(RuntimeError, match='hgpti-bare requires HGPTI callback names'):
+        with ModuleImages(path, module_resource_abi='hgpti-bare'):
+            pytest.fail('bare module mode accepted a non-HGPTI provider')
+    assert library.observed(1) == 0
+    assert ModuleImages.active_resource_abi == 'cupti'

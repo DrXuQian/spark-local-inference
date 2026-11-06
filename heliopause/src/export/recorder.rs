@@ -89,6 +89,21 @@ struct Call {
     correlation: *mut u64,
     correlation_id: u32,
 }
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum ModuleResourceAbi {
+    #[default]
+    Cupti,
+    HgptiBare,
+}
+impl ModuleResourceAbi {
+    fn parse(value: &str) -> ExportResult<Self> {
+        match value {
+            "cupti" => Ok(Self::Cupti),
+            "hgpti-bare" => Ok(Self::HgptiBare),
+            _ => Err(invalid("module_resource_abi must be cupti or hgpti-bare")),
+        }
+    }
+}
 #[derive(Clone, Debug)]
 struct Image {
     context: usize,
@@ -138,12 +153,13 @@ pub(crate) struct RecordedAllocation {
 }
 #[derive(Default)]
 struct State {
+    module_resource_abi: ModuleResourceAbi,
     images: BTreeMap<(usize, u32), Arc<Image>>,
     modules: BTreeMap<usize, Binding>,
     libraries: BTreeMap<usize, Binding>,
     functions: BTreeMap<usize, Arc<Image>>,
     kernels: BTreeMap<usize, Arc<Image>>,
-    pending: HashMap<ThreadId, Vec<(String, Vec<Arc<Image>>)>>,
+    pending: HashMap<ThreadId, Vec<(String, usize, Vec<Arc<Image>>)>>,
     allocations: BTreeMap<u64, RecordedAllocation>,
     error: Option<String>,
 }
@@ -270,8 +286,8 @@ impl State {
         }
     }
     unsafe fn resource(&mut self, callback: u32, data: *const c_void) -> ExportResult<()> {
-        let resource = unsafe { &*data.cast::<Resource>() };
         if callback == 2 {
+            let resource = unsafe { &*data.cast::<Resource>() };
             let keys: Vec<_> = self
                 .images
                 .keys()
@@ -299,26 +315,69 @@ impl State {
         if !matches!(callback, 6 | 7) {
             return Ok(());
         }
-        if resource.descriptor.is_null() {
-            return Err(invalid("CUPTI returned a module without its descriptor"));
-        }
-        let module = unsafe { &*resource.descriptor };
+        let (context, module) = if self.module_resource_abi == ModuleResourceAbi::HgptiBare {
+            // SDK 2.2.1 sends ModuleResourceData directly for module events.
+            // This is explicitly selected, never inferred from pointer values.
+            let module = unsafe { &*data.cast::<Module>() };
+            let context = if callback == 7 {
+                let mut matches = self.images.keys().filter(|(_, id)| *id == module.id);
+                let Some(&(context, _)) = matches.next() else {
+                    // Like CUPTI, an unload can refer to a module loaded before
+                    // recording began, or already removed by context teardown.
+                    return Ok(());
+                };
+                if matches.next().is_some() {
+                    return Err(invalid("HGPTI module unload has ambiguous context"));
+                }
+                context
+            } else {
+                let context = self
+                    .pending
+                    .get(&std::thread::current().id())
+                    .and_then(|stack| stack.last())
+                    .map(|(_, context, _)| *context)
+                    .filter(|context| *context != 0)
+                    .ok_or_else(|| {
+                        invalid(
+                            "HGPTI bare module load has no owning driver context; \
+                        use an SDK with complete CUPTI resource callbacks",
+                        )
+                    })?;
+                if self
+                    .images
+                    .keys()
+                    .any(|&(owner, id)| id == module.id && owner != context)
+                {
+                    return Err(invalid(
+                        "HGPTI module ID is already live in another context",
+                    ));
+                }
+                context
+            };
+            (context, module)
+        } else {
+            let resource = unsafe { &*data.cast::<Resource>() };
+            if resource.descriptor.is_null() {
+                return Err(invalid("CUPTI returned a module without its descriptor"));
+            }
+            (resource.context, unsafe { &*resource.descriptor })
+        };
         if callback == 7 {
-            self.drop_module(resource.context, module.id);
+            self.drop_module(context, module.id);
             return Ok(());
         }
         if module.image.is_null() || module.size == 0 {
             return Err(invalid("CUPTI returned a module without its cubin"));
         }
         let image = Arc::new(Image {
-            context: resource.context,
+            context,
             module_id: module.id,
             cubin: Arc::from(unsafe { std::slice::from_raw_parts(module.image, module.size) }),
         });
         self.images
             .insert((image.context, image.module_id), image.clone());
         if let Some(stack) = self.pending.get_mut(&std::thread::current().id()) {
-            if let Some((_, images)) = stack.last_mut() {
+            if let Some((_, _, images)) = stack.last_mut() {
                 images.push(image);
             }
         }
@@ -339,14 +398,14 @@ impl State {
                 self.pending
                     .entry(thread)
                     .or_default()
-                    .push((name.into(), vec![]));
+                    .push((name.into(), call.context, vec![]));
                 return Ok(());
             }
             let stack = self
                 .pending
                 .get_mut(&thread)
                 .ok_or_else(|| invalid("unbalanced CUDA driver callbacks"))?;
-            let (entered, loaded) = stack
+            let (entered, _, loaded) = stack
                 .pop()
                 .ok_or_else(|| invalid("unbalanced CUDA driver callbacks"))?;
             if entered != name {
@@ -599,11 +658,13 @@ pub(crate) struct Recorder {
     subscriber: usize,
 }
 impl Recorder {
-    pub(crate) fn new(path: &str) -> ExportResult<Self> {
+    fn new(path: &str, module_resource_abi: ModuleResourceAbi) -> ExportResult<Self> {
+        let state = CallbackState::new();
+        state.state.lock().unwrap().module_resource_abi = module_resource_abi;
         Ok(Self {
             path: path.into(),
             library: Some(unsafe { Library::new(path) }?),
-            state: Some(Box::new(CallbackState::new())),
+            state: Some(Box::new(state)),
             subscriber: 0,
         })
     }
@@ -636,6 +697,8 @@ impl Recorder {
         )))
     }
     fn check_callback_names(&self) -> ExportResult<()> {
+        let bare =
+            self.state().state.lock().unwrap().module_resource_abi == ModuleResourceAbi::HgptiBare;
         type GetName = unsafe extern "C" fn(i32, u32, *mut *const c_char) -> i32;
         let get_name = unsafe {
             *self
@@ -658,6 +721,11 @@ impl Recorder {
             if actual != expected && actual.strip_prefix("hg") != expected.strip_prefix("cu") {
                 failures.push(format!(
                     "{expected} (domain=1, id={id}): unexpected callback name {actual:?}"
+                ));
+            }
+            if bare && !actual.starts_with("hg") {
+                failures.push(format!(
+                    "{expected} (id={id}): hgpti-bare requires HGPTI callback names"
                 ));
             }
         }
@@ -904,9 +972,16 @@ pub(crate) struct NativeModuleRecorder {
 #[pymethods]
 impl NativeModuleRecorder {
     #[new]
-    fn new(path: &str) -> PyResult<Self> {
+    #[pyo3(signature = (path, *, module_resource_abi="cupti"))]
+    fn new(path: &str, module_resource_abi: &str) -> PyResult<Self> {
         Ok(Self {
-            recorder: Mutex::new(Recorder::new(path).map_err(py_error)?),
+            recorder: Mutex::new(
+                Recorder::new(
+                    path,
+                    ModuleResourceAbi::parse(module_resource_abi).map_err(py_error)?,
+                )
+                .map_err(py_error)?,
+            ),
         })
     }
     fn start(&self, py: Python<'_>) -> PyResult<()> {
@@ -1050,6 +1125,135 @@ mod tests {
             vec![0, handle]
         };
         call(owner, name, 1, &params, 0, context);
+    }
+    fn bare_owner() -> CallbackState {
+        let owner = CallbackState::new();
+        owner.state.lock().unwrap().module_resource_abi = ModuleResourceAbi::HgptiBare;
+        owner
+    }
+    fn bare_resource(owner: &CallbackState, id: u32, kind: u32, image: &[u8]) {
+        let module = Module {
+            id,
+            size: image.len(),
+            image: image.as_ptr(),
+        };
+        unsafe {
+            callback(
+                owner as *const _ as *mut c_void,
+                3,
+                kind,
+                &module as *const _ as *const c_void,
+            );
+        }
+    }
+    #[test]
+    fn bare_module_get_function_copies_bytes_and_unload_releases_binding() {
+        let owner = bare_owner();
+        let function = 0x500usize;
+        let mut bytes = b"native PPU image".to_vec();
+        call(&owner, "hgModuleGetFunction", 0, &[], 0, 0x1000);
+        bare_resource(&owner, 19, 6, &bytes);
+        bytes.fill(0);
+        call(
+            &owner,
+            "hgModuleGetFunction",
+            1,
+            &[&function as *const _ as usize, 0x100, 0],
+            0,
+            0x1000,
+        );
+        let retained = {
+            let state = owner.state.lock().unwrap();
+            assert!(state.error.is_none(), "{:?}", state.error);
+            assert_eq!(state.modules[&0x100].context, 0x1000);
+            assert_eq!(&*state.modules[&0x100].cubin, b"native PPU image");
+            Arc::downgrade(&state.images[&(0x1000, 19)])
+        };
+        // Unload need not occur on the materializing thread or during a driver
+        // materializer. Its module ID resolves the previously recorded context.
+        std::thread::scope(|scope| {
+            scope.spawn(|| bare_resource(&owner, 19, 7, &[]));
+        });
+        let state = owner.state.lock().unwrap();
+        assert!(state.error.is_none(), "{:?}", state.error);
+        assert!(state.images.is_empty() && state.modules.is_empty());
+        assert!(retained.upgrade().is_none());
+    }
+    #[test]
+    fn bare_nested_concurrent_materializers_preserve_each_context() {
+        let owner = Arc::new(bare_owner());
+        std::thread::scope(|scope| {
+            for i in 1..=8 {
+                let owner = &owner;
+                scope.spawn(move || {
+                    call(owner, "hgLaunchKernel", 0, &[], 0, i);
+                    call(owner, "hgFuncGetAttribute", 0, &[], 0, i + 100);
+                    bare_resource(owner, i as u32, 6, b"nested image");
+                    call(owner, "hgFuncGetAttribute", 1, &[0, 0, i], 1, i + 100);
+                    bare_resource(owner, i as u32 + 100, 6, b"outer image");
+                    call(owner, "hgLaunchKernel", 1, &[i + 100], 0, i);
+                });
+            }
+        });
+        let state = owner.state.lock().unwrap();
+        assert!(state.error.is_none(), "{:?}", state.error);
+        assert!(state.pending.is_empty());
+        assert_eq!(state.functions.len(), 16);
+        for i in 1..=8 {
+            assert_eq!(state.functions[&i].context, i + 100);
+            assert_eq!(state.functions[&(i + 100)].context, i);
+        }
+    }
+    #[test]
+    fn bare_load_rejects_missing_context_without_guessing_or_retaining_image() {
+        for entered in [false, true] {
+            let owner = bare_owner();
+            if entered {
+                call(&owner, "hgFuncLoad", 0, &[], 0, 0);
+            }
+            bare_resource(&owner, 1, 6, b"unbound");
+            let state = owner.state.lock().unwrap();
+            assert!(
+                state
+                    .error
+                    .as_ref()
+                    .unwrap()
+                    .contains("no owning driver context")
+            );
+            assert!(state.images.is_empty());
+            assert_eq!(*owner.inflight.lock().unwrap(), 0);
+        }
+    }
+    #[test]
+    fn bare_context_teardown_prevents_resurrection_on_driver_exit() {
+        let owner = bare_owner();
+        call(&owner, "hgFuncLoad", 0, &[], 0, 0x1000);
+        bare_resource(&owner, 1, 6, b"retired");
+        resource(&owner, 0x1000, 0, 2, &[]);
+        bare_resource(&owner, 1, 7, &[]);
+        call(&owner, "hgFuncLoad", 1, &[0x11], 0, 0x1000);
+        call(&owner, "hgFuncLoad", 0, &[], 0, 0x2000);
+        bare_resource(&owner, 1, 6, b"reused module ID");
+        call(&owner, "hgFuncLoad", 1, &[0x22], 0, 0x2000);
+        let state = owner.state.lock().unwrap();
+        assert!(state.error.is_none(), "{:?}", state.error);
+        assert!(!state.functions.contains_key(&0x11));
+        assert_eq!(state.functions[&0x22].context, 0x2000);
+        assert_eq!(state.images.len(), 1);
+    }
+    #[test]
+    fn bare_module_ids_cannot_clobber_a_different_live_context() {
+        let owner = bare_owner();
+        for context in [0x1000, 0x2000] {
+            call(&owner, "hgFuncLoad", 0, &[], 0, context);
+            bare_resource(&owner, 1, 6, b"image");
+            call(&owner, "hgFuncLoad", 1, &[context + 1], 0, context);
+        }
+        let state = owner.state.lock().unwrap();
+        assert!(state.error.as_ref().unwrap().contains("another context"));
+        assert_eq!(state.images.len(), 1);
+        assert_eq!(state.functions[&0x1001].context, 0x1000);
+        assert!(!state.functions.contains_key(&0x2001));
     }
     #[test]
     fn occupancy_queries_bind_even_when_configuration_fails() {

@@ -170,7 +170,7 @@ import torch
 from ignition.preparation import rank_group
 
 # Controlled owners isolate process lifecycle; this test does not execute CUDA.
-mode, failure = sys.argv[1:]
+mode, failure, abi = sys.argv[1:]
 def cleanup(name):
     print(name, flush=True)
     if name == failure:
@@ -214,7 +214,10 @@ rank_group.dist = SimpleNamespace(
     destroy_process_group=lambda: cleanup("distributed-close"),
 )
 torch.cuda.set_device = lambda device: None
-sys.modules["ignition.preparation.module_images"] = SimpleNamespace(ModuleImages=nullcontext)
+def recorder(*, module_resource_abi):
+    assert module_resource_abi == abi
+    return nullcontext()
+sys.modules["ignition.preparation.module_images"] = SimpleNamespace(ModuleImages=recorder)
 sys.modules["ignition.preparation.package_storage"] = SimpleNamespace(PackageStorage=Storage)
 connection = SimpleNamespace(close=lambda: cleanup("connection-close"))
 def prepare(*args, **kwargs):
@@ -226,7 +229,7 @@ def prepare(*args, **kwargs):
         raise rank_group.TuningComplete()
     return Model()
 rank_group._peer(os.getppid(), None, SimpleNamespace(devices=(0, 1)), 1,
-    "unused", connection, Control(), prepare, True, True)
+    "unused", connection, Control(), prepare, True, True, abi)
 print("peer-returned", flush=True)
 '''
 
@@ -235,8 +238,9 @@ print("peer-returned", flush=True)
     ("model", "success"), ("model", "model-close"), ("model", "host-0-close"),
     ("model", "host-1-close"), ("model", "distributed-close"), ("tuning", "success"),
 ])
-def test_preparation_peer_exits_only_after_explicit_cleanup(mode, failure):
-    process = subprocess.Popen([sys.executable, "-u", "-c", PEER_CLEANUP, mode, failure], text=True,
+@pytest.mark.parametrize('abi', ['cupti', 'hgpti-bare'])
+def test_preparation_peer_exits_only_after_explicit_cleanup(mode, failure, abi):
+    process = subprocess.Popen([sys.executable, "-u", "-c", PEER_CLEANUP, mode, failure, abi], text=True,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
     try:
         output, error = process.communicate(timeout=10)

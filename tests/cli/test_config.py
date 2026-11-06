@@ -34,6 +34,14 @@ def test_an_explicit_missing_file_is_a_usage_error(tmp_path):
         Configuration.load(tmp_path / "absent.toml")
 
 
+def test_module_resource_abi_is_explicit_and_validated(tmp_path):
+    assert load(tmp_path, '').get('preparation.module_resource_abi').value == 'cupti'
+    assert load(tmp_path, '[preparation]\nmodule_resource_abi="hgpti-bare"\n').get(
+        'preparation.module_resource_abi').value == 'hgpti-bare'
+    with pytest.raises(UsageError, match='module_resource_abi must be'):
+        load(tmp_path, '[preparation]\nmodule_resource_abi="auto"\n')
+
+
 def test_flags_override_the_file_which_overrides_the_recipe(tmp_path):
     configuration = load(tmp_path, """
 [server]

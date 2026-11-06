@@ -221,7 +221,7 @@ def _export_hosts(args):
         from ignition.preparation.module_images import ModuleImages
         from ignition.preparation.package_storage import PackageStorage
 
-        recorder = ModuleImages()
+        recorder = ModuleImages(module_resource_abi=configuration.get("preparation.module_resource_abi").value)
         with recorder:
             torch.cuda.set_device(0)
             storage = PackageStorage(world=plan.world_size, local_ranks=1)
@@ -327,7 +327,7 @@ def _prepare(args):
             from ignition.preparation.module_images import ModuleImages
             from ignition.preparation.tuning_replicas import prepare_recipe
 
-            recorder = ModuleImages()
+            recorder = ModuleImages(module_resource_abi=configuration.get("preparation.module_resource_abi").value)
             preparation_options = {"retain_graphs": True}
             with recorder:
                 import torch

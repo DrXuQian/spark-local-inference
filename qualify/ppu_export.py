@@ -23,6 +23,8 @@ def parser():
     result.add_argument('--compiler', type=Path, default=Path('/usr/local/PPU_SDK/bin/hgcc'))
     result.add_argument('--output', type=Path, required=True)
     result.add_argument('--compile-only', action='store_true', help='offline module check; does not export or execute')
+    result.add_argument('--module-resource-abi', choices=('cupti', 'hgpti-bare'), default='cupti',
+                        help='explicit workaround for the SDK 2.2.1 bare HGPTI module payload')
     return result
 
 
@@ -81,7 +83,8 @@ def prepare(args, module_path):
     from qualify.actlize_export import export_fixture, save
 
     graphs = {}
-    with ModuleImages() as images:
+    with ModuleImages(module_resource_abi=args.module_resource_abi) as images:
+        print(f'Module recording ABI: {args.module_resource_abi}', flush=True)
         torch.cuda.set_device(0)
         with PackageStorage() as storage:
             cuda = storage.cuda
@@ -95,6 +98,8 @@ def prepare(args, module_path):
                 value = C.c_uint64(211)
                 cuda.call('cuMemcpyHtoD_v2', indirect, C.byref(value), C.c_size_t(8))
                 cuda.call('cuModuleGetFunction', C.byref(function), module, C.c_char_p(b'qwen_export_state_probe'))
+                images.native.check_error()
+                print('Module function resolved; initializing globals and graphs', flush=True)
                 write_global(cuda, module, 'qwen_export_constants', (C.c_uint64 * 2)(31, 47))
                 write_global(cuda, module, 'qwen_export_pointer', indirect)
                 output = torch.zeros(6, dtype=torch.int64, device='cuda:0')
@@ -153,7 +158,7 @@ def main(argv=None):
     if not args.compile_only:
         from ignition.preparation.module_images import check_callback_names
 
-        check_callback_names()
+        check_callback_names(module_resource_abi=args.module_resource_abi)
     module = compile_module(args)
     if args.compile_only:
         print('Compile-only: device recording, export and Rust replay remain untested', flush=True)
