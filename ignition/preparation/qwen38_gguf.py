@@ -178,7 +178,10 @@ def validate_frontend_token_ids(path, tokenizer):
 
 
 def inspect_qwen38_gguf(inputs: GgufInputs):
+    from .qwen38_mtp_gguf import validate_mtp_gguf
+
     main, draft = inspect_gguf_checkpoint(inputs.main), inspect_gguf_checkpoint(inputs.mtp)
+    draft_architecture = validate_mtp_gguf(draft)
     expected = {
         'embedding_length': 2560, 'context_length': 262144, 'attention.head_count': 24,
         'attention.head_count_kv': 2, 'attention.key_length': 256, 'attention.value_length': 256,
@@ -189,7 +192,8 @@ def inspect_qwen38_gguf(inputs: GgufInputs):
         'rope.dimension_count': 64, 'rope.dimension_sections': (11, 11, 10, 0), 'rope.freq_base': 10000000.,
         'attention.indexer.head_count': 4, 'attention.indexer.key_length': 128, 'attention.indexer.top_k': 2048,
     }
-    for checkpoint, layers in ((main, 48), (draft, 49)):
+    geometries = ((main, 48), (draft, 49)) if draft_architecture == 'qwen4exp' else ((main, 48),)
+    for checkpoint, layers in geometries:
         if checkpoint.metadata.get('general.architecture') != 'qwen4exp':
             raise CheckpointError('GGUF main and shared MTP must use qwen4exp')
         for name, value in {**expected, 'block_count': layers}.items():
@@ -200,10 +204,6 @@ def inspect_qwen38_gguf(inputs: GgufInputs):
         ratios = tuple(4 if i % 4 == 3 else 0 for i in range(layers))
         if checkpoint.metadata.get('qwen4exp.attention.compress_ratios') != ratios:
             raise CheckpointError('GGUF attention compression ratios differ from the prepared layer layout')
-    if (draft.metadata.get('qwen4exp.nextn_shared_target_tensors') is not True
-            or draft.metadata.get('qwen4exp.nextn_predict_layers') != 1
-            or any(not name.startswith('blk.48.') for name in draft.tensors)):
-        raise CheckpointError('GGUF draft must share the target embedding/head and contain only layer 48')
     if (main.vocab_size != 248320 or main.metadata.get('qwen4exp.ple.layers') != (1,)
             or main.metadata.get('qwen4exp.ple.ngram_size') != 3
             or main.metadata.get('qwen4exp.ple.heads_per_ngram') != 8
@@ -226,6 +226,7 @@ def inspect_qwen38_gguf(inputs: GgufInputs):
 
 def device_weight_bytes(checkpoint):
     """Resident packed experts/embedding and the once-expanded dense matrices."""
-    return sum(tensor.nbytes if '_exps.' in name or name == 'token_embd.weight' or tensor.dtype != 'U8'
+    return sum(tensor.nbytes if '_exps.' in name or '.mlp.experts.' in name
+               or name == 'token_embd.weight' or tensor.dtype != 'U8'
                else prod(tensor.shape) * 2
                for name, tensor in checkpoint.tensors.items() if tensor.component != 'ple_tables')

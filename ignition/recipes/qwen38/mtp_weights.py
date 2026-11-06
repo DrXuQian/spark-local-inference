@@ -130,9 +130,22 @@ class MTPWeights:
                   progress=None, read_mode=None, shard=TensorParallelShard(0, 1),
                   quactlize_helpers=None, quactlize_packing=None):
         from .gguf_weights import QwenGgufWeightLoader, _parameter
+        from ignition.preparation.qwen38_mtp_gguf import validate_mtp_gguf
 
+        architecture = validate_mtp_gguf(manifest)
         module = create_mtp_modules(structure_manifest)
         before = torch.cuda.memory_allocated(device)
+        if architecture == 'qwen4exp-mtp':
+            from .mtp_gguf_weights import HFMtpGgufWeightLoader
+
+            with HFMtpGgufWeightLoader(manifest, device, progress=progress, read_mode=read_mode,
+                    shard=shard, quactlize_helpers=quactlize_helpers, quactlize_packing=quactlize_packing) as loader:
+                attention = loader.load_module(module)
+                moe = loader.load_moe()
+            torch.cuda.synchronize(device)
+            return cls(module, attention, moe, embedding_weight, lm_head_weight,
+                       sum(t.nbytes for t in manifest.tensors.values()),
+                       torch.cuda.memory_allocated(device) - before, shard)
         with QwenGgufWeightLoader(manifest, device, progress=progress, read_mode=read_mode,
                 shard=shard, quactlize_helpers=quactlize_helpers, quactlize_packing=quactlize_packing) as loader:
             prefix = 'blk.48.nextn'

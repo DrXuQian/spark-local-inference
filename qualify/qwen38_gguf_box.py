@@ -83,7 +83,8 @@ def inspect_mtp(path):
     reader = HeaderReader(path, mode='r')
     print(f'MTP file: {path} ({path.stat().st_size} bytes)', flush=True)
     for key in ('general.architecture', 'general.file_type', 'qwen4exp.block_count',
-                'qwen4exp.nextn_predict_layers', 'qwen4exp.nextn_shared_target_tensors'):
+                'qwen4exp.nextn_predict_layers', 'qwen4exp.nextn_shared_target_tensors',
+                'strata.mtp.source', 'strata.mtp.expert_format'):
         field = reader.get_field(key)
         print(f'  {key}: {None if field is None else field.contents()}', flush=True)
     counts, sizes, headers, unreadable, names = Counter(), Counter(), [], set(), set()
@@ -140,31 +141,9 @@ def inspect_mtp(path):
 def validate_mtp(path):
     """Reject incompatible shared-MTP storage before allocating target weights."""
     from ignition.preparation.gguf import inspect_gguf_checkpoint
+    from ignition.preparation.qwen38_mtp_gguf import validate_mtp_gguf
 
-    checkpoint = inspect_gguf_checkpoint(path)
-    expected = {'general.architecture': 'qwen4exp', 'qwen4exp.block_count': 49,
-                'qwen4exp.nextn_predict_layers': 1, 'qwen4exp.nextn_shared_target_tensors': True}
-    for name, value in expected.items():
-        actual = checkpoint.metadata.get(name)
-        if actual != value or type(actual) is not type(value):
-            raise ValueError(f'MTP {name}={actual!r}; the current shared-MTP fixture requires {value!r}')
-    if not checkpoint.tensors or any(not name.startswith('blk.48.') for name in checkpoint.tensors):
-        raise ValueError('the current shared-MTP fixture requires only blk.48.* tensors')
-    ratios = checkpoint.metadata.get('qwen4exp.attention.compress_ratios')
-    if not isinstance(ratios, tuple) or len(ratios) != 49 or ratios[48] != 0:
-        raise ValueError('MTP requires an uncompressed layer 48 in attention.compress_ratios')
-    for part, shape in (('gate', (512, 640, 2560)), ('up', (512, 640, 2560)),
-                        ('down', (512, 2560, 640))):
-        name = f'blk.48.ffn_{part}_exps.weight'
-        tensor = checkpoint.tensors.get(name)
-        if tensor is None or tensor.shape != shape:
-            raise ValueError(f'MTP {name} requires shape {shape}')
-        if tensor.dtype != 'U8':
-            raise ValueError(f'MTP {name} uses {tensor.encoding}; the current GGUF expert path requires quantized blocks')
-    # Full matrix/type admission still belongs to the selected operator library.
-    gate, up = (checkpoint.tensors[f'blk.48.ffn_{part}_exps.weight'] for part in ('gate', 'up'))
-    if gate.encoding != up.encoding:
-        raise ValueError('MTP gate/up experts require equal encodings for the existing fused load')
+    validate_mtp_gguf(inspect_gguf_checkpoint(path))
 
 
 def installed_attention():
@@ -180,7 +159,7 @@ def installed_attention():
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--model-dir', type=Path, required=True, help='existing UD-Q4_K_XL directory')
-    parser.add_argument('--mtp', type=Path, help='explicit shared MTP GGUF; types are read from its header')
+    parser.add_argument('--mtp', type=Path, help='explicit MTP GGUF; layout and types are read from its header')
     parser.add_argument('--inspect-only', action='store_true', help='report MTP headers without downloading, patching or loading operators')
     frontend = parser.add_mutually_exclusive_group()
     frontend.add_argument('--frontend', type=Path, help='existing pinned config/tokenizer/template directory')

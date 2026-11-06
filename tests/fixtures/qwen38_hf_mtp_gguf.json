@@ -1,0 +1,243 @@
+[
+  {
+    "name": "mtp.fc_embedding.weight",
+    "shape": [
+      2560,
+      2560
+    ],
+    "encoding": "BF16"
+  },
+  {
+    "name": "mtp.fc_hidden.weight",
+    "shape": [
+      2560,
+      2560
+    ],
+    "encoding": "BF16"
+  },
+  {
+    "name": "mtp.hyper_connection_mixer.hc_norm.weight",
+    "shape": [
+      10240
+    ],
+    "encoding": "F32"
+  },
+  {
+    "name": "mtp.hyper_connection_mixer.input_mix_weight_down.weight",
+    "shape": [
+      320,
+      10240
+    ],
+    "encoding": "BF16"
+  },
+  {
+    "name": "mtp.hyper_connection_mixer.input_mix_weight_up.weight",
+    "shape": [
+      10240,
+      320
+    ],
+    "encoding": "BF16"
+  },
+  {
+    "name": "mtp.layers.0.attn_hyper_connection.block_inject_weight.weight",
+    "shape": [
+      4,
+      10240
+    ],
+    "encoding": "BF16"
+  },
+  {
+    "name": "mtp.layers.0.attn_hyper_connection.hc_norm.weight",
+    "shape": [
+      10240
+    ],
+    "encoding": "F32"
+  },
+  {
+    "name": "mtp.layers.0.attn_hyper_connection.input_mix_weight_down.weight",
+    "shape": [
+      320,
+      10240
+    ],
+    "encoding": "BF16"
+  },
+  {
+    "name": "mtp.layers.0.attn_hyper_connection.input_mix_weight_up.weight",
+    "shape": [
+      10240,
+      320
+    ],
+    "encoding": "BF16"
+  },
+  {
+    "name": "mtp.layers.0.mlp.experts.down_proj",
+    "shape": [
+      512,
+      2560,
+      640
+    ],
+    "encoding": "Q2_0"
+  },
+  {
+    "name": "mtp.layers.0.mlp.experts.gate_up_proj",
+    "shape": [
+      512,
+      1280,
+      2560
+    ],
+    "encoding": "Q2_0"
+  },
+  {
+    "name": "mtp.layers.0.mlp.gate.weight",
+    "shape": [
+      512,
+      2560
+    ],
+    "encoding": "BF16"
+  },
+  {
+    "name": "mtp.layers.0.mlp.shared_expert.down_proj.weight",
+    "shape": [
+      2560,
+      640
+    ],
+    "encoding": "BF16"
+  },
+  {
+    "name": "mtp.layers.0.mlp.shared_expert.gate_proj.weight",
+    "shape": [
+      640,
+      2560
+    ],
+    "encoding": "BF16"
+  },
+  {
+    "name": "mtp.layers.0.mlp.shared_expert.up_proj.weight",
+    "shape": [
+      640,
+      2560
+    ],
+    "encoding": "BF16"
+  },
+  {
+    "name": "mtp.layers.0.mlp.shared_expert_gate.weight",
+    "shape": [
+      1,
+      2560
+    ],
+    "encoding": "BF16"
+  },
+  {
+    "name": "mtp.layers.0.mlp_hyper_connection.block_inject_weight.weight",
+    "shape": [
+      4,
+      10240
+    ],
+    "encoding": "BF16"
+  },
+  {
+    "name": "mtp.layers.0.mlp_hyper_connection.hc_norm.weight",
+    "shape": [
+      10240
+    ],
+    "encoding": "F32"
+  },
+  {
+    "name": "mtp.layers.0.mlp_hyper_connection.input_mix_weight_down.weight",
+    "shape": [
+      320,
+      10240
+    ],
+    "encoding": "BF16"
+  },
+  {
+    "name": "mtp.layers.0.mlp_hyper_connection.input_mix_weight_up.weight",
+    "shape": [
+      10240,
+      320
+    ],
+    "encoding": "BF16"
+  },
+  {
+    "name": "mtp.layers.0.self_attn.indexer.index_qk_proj.weight",
+    "shape": [
+      640,
+      2560
+    ],
+    "encoding": "BF16"
+  },
+  {
+    "name": "mtp.layers.0.self_attn.indexer.k_layernorm.weight",
+    "shape": [
+      128
+    ],
+    "encoding": "F32"
+  },
+  {
+    "name": "mtp.layers.0.self_attn.indexer.q_layernorm.weight",
+    "shape": [
+      128
+    ],
+    "encoding": "F32"
+  },
+  {
+    "name": "mtp.layers.0.self_attn.k_norm.weight",
+    "shape": [
+      256
+    ],
+    "encoding": "F32"
+  },
+  {
+    "name": "mtp.layers.0.self_attn.k_proj.weight",
+    "shape": [
+      512,
+      2560
+    ],
+    "encoding": "BF16"
+  },
+  {
+    "name": "mtp.layers.0.self_attn.o_proj.weight",
+    "shape": [
+      2560,
+      6144
+    ],
+    "encoding": "BF16"
+  },
+  {
+    "name": "mtp.layers.0.self_attn.q_norm.weight",
+    "shape": [
+      256
+    ],
+    "encoding": "F32"
+  },
+  {
+    "name": "mtp.layers.0.self_attn.q_proj.weight",
+    "shape": [
+      12288,
+      2560
+    ],
+    "encoding": "BF16"
+  },
+  {
+    "name": "mtp.layers.0.self_attn.v_proj.weight",
+    "shape": [
+      512,
+      2560
+    ],
+    "encoding": "BF16"
+  },
+  {
+    "name": "mtp.pre_fc_norm_embedding.weight",
+    "shape": [
+      2560
+    ],
+    "encoding": "F32"
+  },
+  {
+    "name": "mtp.pre_fc_norm_hidden.weight",
+    "shape": [
+      10240
+    ],
+    "encoding": "F32"
+  }
+]

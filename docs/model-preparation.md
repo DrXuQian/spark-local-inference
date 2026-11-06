@@ -677,9 +677,12 @@ alone does not qualify request behavior or absence of GPU idle intervals.
 On the PPU box, `qualify.qwen38_gguf_box` resolves the first/fourth shards from
 `--model-dir`, accepts an explicit `--mtp`, and uses the installed operator
 packages with the same fixture. `--inspect-only` reports the MTP's actual GGUF
-types and layer names without Torch, downloads or device execution. Export also
-checks the shared layer-48 boundary before target allocation; filenames and file
-sizes never select an encoding. See [box commands](ppu-box-resume.txt) for the
+types and layer names without Torch, downloads or device execution. Export
+accepts the original `qwen4exp` shared layer-48 layout and Strata's
+`qwen4exp-mtp` 31-tensor HF-name layout, validating each before target allocation.
+The latter retains zero-centered norm parameters, separate feedback matrices
+and fused gate/up experts; it reuses the same captured model computation.
+Filenames and file sizes never select an encoding. See [box commands](ppu-box-resume.txt) for the
 supplied checkpoint paths, SDK selection and optional pinned frontend download.
 
 Native RTX qualification uses batch one, context 1024, prefill 64, RAM table

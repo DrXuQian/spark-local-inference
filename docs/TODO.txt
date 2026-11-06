@@ -235,12 +235,21 @@
     binary changes. The user now reports the five PPU lookup graph cases passing
     after the 5d5e03b framework update; complete target/MTP qualification is open.
 
+[x] Map the reported qwen4exp-mtp architecture through its actual Strata
+    producer layout: 31 HF-named tensors, BF16 dense weights, raw zero-centered
+    F32 norms and already-fused quantized experts. Keep legacy blk.48 validation.
+    Share header admission across the box launcher, full recipe and MTP loader;
+    retain compressed experts in resident-weight accounting. The 44 header,
+    eight loader, 45 input and six scalar host checks pass; four tests requiring
+    an unavailable NVFP4 checkpoint skip. Host transfers are explicitly CPU
+    test fixtures, not PPU qualification. Actual box export remains open.
+
 [ ] Qualify the supplied Q2_0 MTP on PPU. Fifteen added device cases cover file
     packing, dense decoding, prepared projection catalog rebinding and graph
     replay; they are collected but not run locally. Run them with the 0.2.1 wheel
     and Q2_0 GGUF reader, then the partial target + complete MTP package and native
-    replay. Actual layer names, expert geometry and shared flags remain pending:
-    the user supplied only the header diagnostic's final two lines. Source and
+    replay. The reported architecture is qwen4exp-mtp; the new preflight checks
+    the actual file against that producer's complete tensor layout. Source and
     host ABI checks do not qualify device correctness or bubble-free execution.
     See ppu-box-resume.txt for the focused Q2_0 command.
 

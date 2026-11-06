@@ -192,8 +192,28 @@ Inspection reports actual tensor types, stored bytes, names and expert geometry.
 It reads raw tensor-info fields without constructing payload views, so the stock
 reader's unknown-type error no longer prevents this diagnostic. Q2_0 is labeled
 from the verified fork definition; other unknown IDs retain unknown byte counts.
-The user reports that this header diagnostic now passes. Its final two lines do
-not establish the actual shared-MTP layout or operator compatibility.
+The box now reports general.architecture=qwen4exp-mtp. This is Strata's
+standalone container, not the llama.cpp shared-Q8 blk.48 layout. Its producer is
+tools/mtp_pack.py in DrXuQian/Strata at 6780211b. The framework validates its
+complete 31-tensor HF-name inventory and shapes before allocating target weights:
+  mtp.fc_embedding.weight and mtp.fc_hidden.weight remain separate BF16 matrices;
+  norms contain raw zero-centered parameters in F32, without a stored +1;
+  mtp.layers.0.mlp.experts.gate_up_proj is already fused [512,1280,2560];
+  mtp.layers.0.mlp.experts.down_proj is [512,2560,640].
+Target embedding/head remain caller-supplied shared endpoints. The loader keeps
+dense precision and Q2_0 blocks, then uses the existing preparation-time packer.
+It does not rewrite the GGUF or alias its architecture to qwen4exp. The original
+shared-Q8 layout retains its existing metadata, tensor and norm-gain checks.
+
+Host validation passes 44 header/reader cases, eight standalone-loader cases,
+45 input-binding cases and six existing MTP scalar cases. Four tests needing
+the unavailable NVFP4 checkpoint are skipped. Real sparse GGUF files cover all
+31 tensor headers and exact stored bytes; host-copy mapping checks single-rank
+and two-rank slices, QKV order, norm values, fused expert halves and shared
+endpoints. These checks do not execute PPU kernels or the complete MTP graph.
+The standalone Q2_0 fixture's tensor payload is 889014272 bytes, including
+707788800 compressed expert bytes; resident-weight planning preserves that
+compressed expert budget. Rerun the export command below after pulling.
 
 The separate gguf-0.19.0+ppu.q2.1 wheel enables the normal GGUF reader to parse
 ID42 and expose unchanged packed byte views. It is built from gguf-py in
@@ -215,8 +235,9 @@ Q2_0 reader cases skipped. These tests do not load the actual box checkpoint
 or execute a device kernel. Existing platform Torch/operator packages remain
 installed because the command uses --no-deps.
 
-Export checks the existing shared-target/layer-48 boundary before loading target
-weights. Plain BF16/FP32 experts have no path in this fixture; their presence in
+Export checks either the shared-target/layer-48 boundary or the complete
+standalone HF-name layout before loading target weights. Plain BF16/FP32
+experts have no path in this fixture; their presence in
 norms or other small tensors alone does not identify the expert encoding. Actual
 operator format/shape admission still belongs to the installed QUactlize library.
 QUactlize feat/ppu-flash-next HEAD 82388b15 now admits Q2_0. Implementation
@@ -272,8 +293,8 @@ Expect 15 passed with no skips. This gate covers both expert geometries at
 M=1 and M=9 (direct and grouped routes), AOT catalog restoration with fresh handles, dense
 BF16/F16 decoding, inactive/invalid routes and allocation-stable replay. It
 does not establish complete MTP correctness or bubble-free native serving.
-The actual file's expert types/shapes and shared-MTP metadata must still satisfy
-the fixture; the export command rejects types missing from the reader before
+The actual file's complete tensor layout must still satisfy its declared
+architecture; the export command rejects types missing from the reader before
 downloading frontend assets or loading target weights.
 
 --fetch-frontend downloads only config.json, tokenizer.json,

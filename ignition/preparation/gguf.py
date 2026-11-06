@@ -90,6 +90,8 @@ def _split_paths(path, reader):
 
 
 def _component(name, metadata):
+    if name.startswith('mtp.'):
+        return 'mtp'
     architecture = metadata.get("general.architecture")
     layers = metadata.get(f"{architecture}.block_count")
     drafts = metadata.get(f"{architecture}.nextn_predict_layers", 0)

@@ -70,7 +70,9 @@ Required installed interfaces
 Geometry and verification
 -------------------------
 Current Qwen recipe: 512 experts, hidden 2560, intermediate 640, top-k 10.
-Gate/up stored separately: [512,640,2560]; fused: [512,1280,2560].
+The legacy shared GGUF stores gate/up separately as [512,640,2560]. The supplied
+qwen4exp-mtp container already stores fused gate_up_proj [512,1280,2560], in
+gate-then-up order for each expert; the framework now loads it directly.
 Down: [512,2560,640]. K=640 is valid for 64-element Q2_0 blocks.
 Exercise rows 1/2/4/6/7/8 and larger preparation batches; gate/up channels=1,
 down channels=top-k. Preserve row strides, changing routes and inactive IDs.
