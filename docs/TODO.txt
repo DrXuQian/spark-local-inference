@@ -219,6 +219,12 @@
     132 cases, including Q2_0 and existing formats. Production bindings already
     admit the new descriptor; no framework operator or runtime path was added.
 
+[x] Deliver the complete QUactlize 0.2.1 ppu10 / SDK2.2.1 wheel through the
+    existing external Git LFS endpoint. The box reported missing compat.formats;
+    updating a checkout does not update the installed package. Ship the same
+    host-verified wheel from 02a6fb10 and give an isolated import check plus
+    explicit --no-deps installation. Box installation/device results remain open.
+
 [ ] Qualify the supplied Q2_0 MTP on PPU. Fifteen added device cases cover file
     packing, dense decoding, prepared projection catalog rebinding and graph
     replay; they are collected but not run locally. Run them with the 0.2.1 wheel

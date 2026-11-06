@@ -7,6 +7,7 @@ artifacts/ppu/20261106/wheels/ on feat/qwen38-gguf:
   flashinfer_python-0.6.18+ppu.flare2-py3-none-any.whl
   flare_heliopause-0.1.0-cp312-cp312-linux_x86_64.whl
   gguf-0.19.0+ppu.q2.1-py3-none-any.whl
+  quactlize-0.2.1-py3-none-linux_x86_64.whl
 
 GitHub rejects new LFS objects in this public fork. The payloads are stored in
 DrXuQian/qwen4flash on branch artifacts/ppu-20261106; this repository's
@@ -24,13 +25,14 @@ From the already configured PPU environment:
     artifacts/ppu/20261106/wheels/actlize_la-0.2.1-1ppu10version221184ee6-py3-none-linux_x86_64.whl \
     artifacts/ppu/20261106/wheels/flashinfer_python-0.6.18+ppu.flare2-py3-none-any.whl \
     artifacts/ppu/20261106/wheels/flare_heliopause-0.1.0-cp312-cp312-linux_x86_64.whl \
-    artifacts/ppu/20261106/wheels/gguf-0.19.0+ppu.q2.1-py3-none-any.whl
+    artifacts/ppu/20261106/wheels/gguf-0.19.0+ppu.q2.1-py3-none-any.whl \
+    artifacts/ppu/20261106/wheels/quactlize-0.2.1-py3-none-linux_x86_64.whl
 
 The actlizeLA wheel is unchanged from the original handoff. FlashInfer flare2
 replaces flare1 for the reported sampling link failure; install the explicit
 filename above, not a wildcard that selects both versions. Git LFS checks
 content hashes during download. --no-deps keeps the platform Torch,
-Triton, TVM-FFI, FlashAttention and QUactlize packages. Installing the wheel
+Triton, TVM-FFI and FlashAttention packages. Installing the wheel
 does not rebuild FlashInfer. The sampling module is compiled during first
 preparation against the box's SDK and TVM-FFI, then reused from the JIT cache.
 Serving does not compile. No model download, RTX connection, b12x or cuTile
@@ -78,11 +80,12 @@ creates a fresh JIT cache without deleting unrelated caches.
 
 The operator sources are published on the Flare development branches:
   DrXuQian/actlizeLA: feat/flare-gdn-qsa-mtp, 2e107e2
-  DrXuQian/QUactlize: feat/ppu-flash-next, 653b46e
+  DrXuQian/QUactlize: feat/ppu-flash-next, 82388b15
   DrXuQian/flashinfer-for-sail: fix/flare-ppu-sampling, 762b396
-The QUactlize change only fixes installed-wheel test reporting; it changes no
-kernel or runtime and does not require a replacement QUactlize wheel. The two
-operator wheels above already match the published actlizeLA and FlashInfer commits.
+The QUactlize 0.2.1 wheel is built from 02a6fb10 and supplies Q2_0 operators;
+the three later commits at 82388b15 change test infrastructure only. Update the
+installed wheel as well as the source checkout. The actlizeLA and FlashInfer
+wheels above match their published commits.
 
 For a focused retry after installation:
 
@@ -223,6 +226,17 @@ native16 projections and serving gather_rows; existing framework bindings use
 these interfaces unchanged. Installing the reader alone is insufficient: the
 older 0.2.0 operator binary does not gain Q2_0 support from a source checkout.
 Install the matching 0.2.1 wheel with --no-deps, preserving platform Torch.
+If import fails with No module named 'quactlize.compat.formats', the installed
+or shadowing package is not the complete Q2_0 version. From this checkout:
+
+  GIT_LFS_SKIP_SMUDGE=1 git pull --ff-only
+  git lfs pull --include="artifacts/ppu/20261106/wheels/quactlize-0.2.1-py3-none-linux_x86_64.whl" --exclude=""
+  python -m pip install --no-deps --force-reinstall \
+    artifacts/ppu/20261106/wheels/quactlize-0.2.1-py3-none-linux_x86_64.whl
+  python -I -c "import quactlize; from quactlize.compat.formats import RAW_BLOCK_SIZES; assert RAW_BLOCK_SIZES[42] == (64, 18); print(quactlize.__version__, quactlize.__file__); print(quactlize.get_library_path('ppu10'))"
+
+The isolated import verifies the installed package without cwd/PYTHONPATH
+shadowing. Native ABI verification below additionally requires the matching SDK.
 
 Local review passes 82 QUactlize Q2_0 host tests, 64 installed native ABI queries
 and 132 framework host bridge/metadata/reader cases. The installed native check

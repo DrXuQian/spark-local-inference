@@ -866,7 +866,9 @@ python -m qualify.qwen38_gguf_http --url http://127.0.0.1:18081 \
 The complete QUactlize `0.2.1` wheel adds Q2_0 (GGUF ID42) in
 [`02a6fb10`](https://github.com/DrXuQian/QUactlize/tree/02a6fb10ce35e224d982b05fd86746811a57fd72),
 included in `feat/ppu-flash-next` HEAD `82388b15`.
-Install the built wheel with `python -m pip install --no-deps /path/to/quactlize-0.2.1-py3-none-linux_x86_64.whl`.
+Fetch this wheel through the repository's configured Git LFS endpoint:
+`git lfs pull --include="artifacts/ppu/20261106/wheels/quactlize-0.2.1-py3-none-linux_x86_64.whl" --exclude=""`.
+Install with `python -m pip install --no-deps --force-reinstall artifacts/ppu/20261106/wheels/quactlize-0.2.1-py3-none-linux_x86_64.whl`.
 When it is published in the configured PPU artifacts index, use
 `python -m pip install --only-binary=quactlize quactlize==0.2.1`.
 This artifact declares **ppu10**, built with SDK **2.2.1-184ee6**. It is not a

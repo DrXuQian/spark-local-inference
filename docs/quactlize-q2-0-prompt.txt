@@ -36,8 +36,10 @@ FP16 scale units, with no high plane. Use native16 Library without packed_route;
 the separate packed-route selector remains specific to Q5_1. Small M<=8 reads
 compressed weights directly; larger M uses bounded expansion and grouped TC.
 Serving gather_rows also admits ID42 for preparation-time dense expansion.
-The complete wheel exists locally; registry publication and PPU validation are
-separate steps. No performance result follows from host checks.
+The complete wheel is delivered through the framework's configured Git LFS
+endpoint at artifacts/ppu/20261106/wheels/quactlize-0.2.1-py3-none-linux_x86_64.whl.
+Registry publication and PPU validation are separate steps. No performance
+result follows from host checks.
 
 Required installed interfaces
 -----------------------------
