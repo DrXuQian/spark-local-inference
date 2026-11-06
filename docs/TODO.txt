@@ -223,7 +223,16 @@
     existing external Git LFS endpoint. The box reported missing compat.formats;
     updating a checkout does not update the installed package. Ship the same
     host-verified wheel from 02a6fb10 and give an isolated import check plus
-    explicit --no-deps installation. Box installation/device results remain open.
+    explicit --no-deps installation. The user now confirms installed version
+    0.2.1, its site-packages DSO path and Q2_0 import; device results remain open.
+
+[x] Admit Q2_0 in PreparedGgufEmbedding's external serving format check. The
+    five Q2_0 lookup graph cases failed before calling QUactlize because this
+    check still admitted only Q8_0/IQ4_NL. Reproduce the same exception locally
+    through PreparedEmbedding, then validate both 16-bit dtypes at widths 640
+    and 2560 through the installed 0.2.1 fake dispatcher. All 21 helper host
+    checks pass, including rejection of an unsupported row format. No operator
+    binary changes; the five PPU cases still need a device rerun.
 
 [ ] Qualify the supplied Q2_0 MTP on PPU. Fifteen added device cases cover file
     packing, dense decoding, prepared projection catalog rebinding and graph

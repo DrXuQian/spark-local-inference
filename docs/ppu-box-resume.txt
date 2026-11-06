@@ -237,6 +237,18 @@ or shadowing package is not the complete Q2_0 version. From this checkout:
 
 The isolated import verifies the installed package without cwd/PYTHONPATH
 shadowing. Native ABI verification below additionally requires the matching SDK.
+The user now confirms the installed 0.2.1 package and Q2_0 imports on the box.
+
+The five Q2_0 lookup graph cases subsequently reached PreparedGgufEmbedding but
+were rejected by its stale Q8_0/IQ4_NL format check. That framework check now
+also admits Q2_0. Pull the framework update; the operator wheel is unchanged.
+Twenty-one host helper checks pass after reproducing the failure locally,
+including Q2_0 BF16/F16 calls through the installed operator's fake dispatcher.
+This verifies preparation admission, not device numerical execution. Retry the
+five affected cases with the same SDK/helper-library environment:
+
+  python -m pytest -q --tb=short tests/components/test_quactlize_helpers_cuda.py \
+    -k '42 and file_lookup_routing_and_rounded_activation_share_one_graph'
 
 Local review passes 82 QUactlize Q2_0 host tests, 64 installed native ABI queries
 and 132 framework host bridge/metadata/reader cases. The installed native check

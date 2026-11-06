@@ -34,8 +34,8 @@ class PreparedGgufEmbedding:
         self.device_error = torch.zeros((), dtype=torch.int32, device=output.device)
         self.device_errors = (self.device_error,)
         self.helpers = getattr(session, 'quactlize_helpers', None)
-        if self.helpers is not None and self.qtype not in (8, 20):
-            raise ValueError('QUactlize serving row lookup requires Q8_0 or IQ4_NL')
+        if self.helpers is not None and self.qtype not in (8, 20, 42):
+            raise ValueError('QUactlize serving row lookup requires Q8_0, IQ4_NL or Q2_0')
         record_numeric_tensor(self.raw)
 
     def __call__(self):

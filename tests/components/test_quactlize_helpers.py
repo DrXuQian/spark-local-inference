@@ -86,17 +86,34 @@ def test_swiglu_retains_explicit_rounding_and_mutation(rounded):
     assert {position for position, mutable, index, view in calls[0].operands if mutable} == {2}
 
 
-@pytest.mark.parametrize('qtype,width,size', [(8, 2560, 34), (20, 160, 18)])
-def test_gguf_embedding_dispatch_keeps_raw_bytes_and_dynamic_ids(qtype, width, size):
+@pytest.mark.parametrize('qtype,width,block,size', [(8, 2560, 32, 34), (20, 160, 32, 18),
+                                                (42, 640, 64, 18), (42, 2560, 64, 18)])
+@pytest.mark.parametrize('dtype', [torch.bfloat16, torch.float16])
+def test_gguf_embedding_dispatch_keeps_raw_bytes_and_dynamic_ids(qtype, width, block, size, dtype):
+    import gguf
+
+    if qtype == 42 and not hasattr(gguf.GGMLQuantizationType, 'Q2_0'):
+        pytest.skip('requires the PPU GGUF reader with Q2_0 ID42')
     session = metadata_session()
     with FakeTensorMode():
-        raw = torch.empty(7 * width // 32 * size, dtype=torch.uint8, device='cuda:0')
-        weight = GgufWeight(raw, 'Q8_0' if qtype == 8 else 'IQ4_NL', qtype, (7, width))
+        raw = torch.empty(7 * width // block * size, dtype=torch.uint8, device='cuda:0')
+        weight = GgufWeight(raw, gguf.GGMLQuantizationType(qtype).name, qtype, (7, width))
         ids = torch.empty(4, dtype=torch.int64, device='cuda:0')
-        output = torch.empty(4, width, dtype=torch.bfloat16, device='cuda:0')
+        output = torch.empty(4, width, dtype=dtype, device='cuda:0')
         count = torch.empty(1, dtype=torch.int32, device='cuda:0')
         operation = PreparedEmbedding(weight, ids, output, num_rows=count, session=session, name='gguf.rows')
         assert operation.raw is raw and operation.ids is ids and operation.num_rows is count
         assert operation() is output
         assert operation.device_errors == (operation.device_error,)
+    assert not serving._libraries
+
+
+def test_gguf_embedding_rejects_formats_without_a_serving_row_decoder():
+    with FakeTensorMode():
+        raw = torch.empty(7 * 144, dtype=torch.uint8, device='cuda:0')
+        weight = GgufWeight(raw, 'Q4_K', 12, (7, 256))
+        ids = torch.empty(4, dtype=torch.int64, device='cuda:0')
+        output = torch.empty(4, 256, dtype=torch.bfloat16, device='cuda:0')
+        with pytest.raises(ValueError, match='QUactlize serving row lookup requires'):
+            PreparedEmbedding(weight, ids, output, session=metadata_session(), name='unsupported.rows')
     assert not serving._libraries
