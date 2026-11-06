@@ -598,14 +598,13 @@
     Four host lifecycle regressions fail on the old code and pass after the fix,
     including cyclic GC and scratch retaining the final storage reference.
     Storage checks pass on Torch 2.9 and 2.15 (15 passed, one platform case skipped
-    on each). The first box cleanup test hit a fixture bug: it re-entered the
-    already active primary pool, then aborted on the leaked use count. The
-    corrected fixture enters each pool once and checks balanced counts. Both
-    paths pass host scope validation through Torch's actual Python wrapper with
-    modeled device calls; the corrected device cleanup cases still need the box.
-    The box reached tiny package publication but crashed returning from prepare;
-    its native crash stack and clean exit/replay still need confirmation. Report
-    export success only after preparation returns. This is a Python-only update.
+    on each). Both corrected device cleanup cases now pass on the box: 2 passed,
+    13 deselected in 5.39s. They exercise primary/graph pool destruction and
+    scratch retaining the final storage owner, balanced pool counts, released
+    owners and empty pool snapshots. Full PPU export cleanup and independent
+    Rust replay remain pending; the earlier publication message preceded a
+    return-time crash. Report export success only after preparation returns.
+    This is a Python-only update.
 
 [x] Check required callback names before native recorder subscription and before
     compiling the standalone PPU export module. Report all missing/mismatched
