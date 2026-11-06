@@ -192,9 +192,25 @@
     PPU exporter. An explicit --mtp accepts the supplied mtp-q2_0.gguf candidate;
     --inspect-only reports actual types, byte counts and names without Torch or
     device execution. Check shared layer-48 geometry before target allocation.
-    Thirteen host tests pass using real GGUF headers and sparse full-shape files;
+    Seventeen host tests pass using real GGUF headers and sparse full-shape files;
     no model payloads were downloaded. See ppu-box-resume.txt. The candidate's
-    actual encoding, operator admission and complete graph execution are pending.
+    type ID 42 matches the local llama.cpp Q2_0 extension; its complete tensor
+    inventory, shared-MTP layout and device execution remain pending.
+
+[x] Keep header-only inspection usable when the installed GGUF enum omits a
+    tensor type. Reuse the reader's metadata parser without constructing tensor
+    payload views. Report raw type IDs, names and shapes; unknown layouts keep
+    unknown byte counts. Label the verified PPU Q2_0 header layout (42, 64/18)
+    without changing the installed reader, enabling a decoder or aliasing Q2_K.
+    Preserve offset/truncation checks. The 17 box tests and 15 GGUF tests pass.
+
+[ ] Enable the supplied Q2_0 MTP in the actual reader and operator packages.
+    DrXuQian/llama.cpp 356a231c1 defines ID42 with 64 values/18 bytes; the pinned
+    PyPI gguf reader lacks it. QUactlize feat/ppu-flash-next remote HEAD e7743104
+    also lacks Q2_0 in formats, producer/consumer and matmul admission. Extend
+    exact packing, raw/canonical indexed projections and preparation-time dense
+    expansion, then publish installed packages and qualify the complete graph.
+    See quactlize-q2-0-prompt.txt. Passing header inspection is not execution support.
 
 [x] Check the SDK 2.1.1 export ABI and native ELF data discovery. All 66
     runtime driver entry names have hg-prefixed header declarations; 70 host

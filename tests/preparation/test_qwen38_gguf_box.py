@@ -167,3 +167,74 @@ def test_inspect_only_needs_no_frontend_operators_or_patch_application(tmp_path,
     monkeypatch.setattr(patches, 'apply', forbidden)
     assert box.main(['--model-dir', str(directory), '--mtp', str(mtp), '--inspect-only']) == 0
     assert 'device execution are not qualified' in capsys.readouterr().out
+
+
+def raw_type_mtp(path, type_id=42, *, truncated=False):
+    import gguf
+    import numpy as np
+
+    # Use the writer's logical-shape input to preserve an arbitrary raw ID.
+    # Six Q2_0 rows of 640 values use 6 * (640/64) * 18 bytes.
+    nbytes = 1080
+    writer = gguf.GGUFWriter(path, 'qwen4exp')
+    writer.add_tensor_info('blk.48.ffn_down_exps.weight', (2, 3, 640), np.float32,
+                           nbytes, raw_dtype=type_id)
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_ti_data_to_file()
+    output = writer.fout[0]
+    writer.write_padding(output, output.tell())
+    output.truncate(output.tell() + nbytes - int(truncated))
+    writer.close()
+
+
+def test_q2_0_headers_report_the_extension_without_modifying_the_reader(tmp_path, capsys):
+    import gguf
+
+    path = tmp_path / 'mtp-q2_0.gguf'
+    raw_type_mtp(path)
+    with pytest.raises(ValueError, match='42.*GGMLQuantizationType'):
+        gguf.GGUFReader(path)
+    assert box.inspect_mtp(path) == frozenset({42})
+    output = capsys.readouterr().out
+    assert 'Q2_0: 1 tensors, 1080 stored bytes' in output
+    assert 'Q2_0 (2, 3, 640), type_id=42' in output
+    assert 'Q2_K is a different format (type_id=10' in output
+    with pytest.raises(ValueError, match='42.*GGMLQuantizationType'):
+        gguf.GGUFReader(path)
+
+
+def test_unknown_raw_ids_keep_their_number_without_inventing_a_block_size(tmp_path, capsys):
+    path = tmp_path / 'unknown.gguf'
+    raw_type_mtp(path, 4242)
+    assert box.inspect_mtp(path) == frozenset({4242})
+    output = capsys.readouterr().out
+    assert 'UNKNOWN_4242: 1 tensors, stored bytes unknown' in output
+    assert 'type_id=4242' in output
+
+
+def test_known_extension_rejects_truncated_payload_extent(tmp_path):
+    path = tmp_path / 'truncated.gguf'
+    raw_type_mtp(path, truncated=True)
+    with pytest.raises(ValueError, match='truncated GGUF tensor storage'):
+        box.inspect_mtp(path)
+
+
+def test_raw_type_inspection_succeeds_but_export_stops_before_preparation(tmp_path, monkeypatch, capsys):
+    directory, mtp = files(tmp_path)
+    raw_type_mtp(mtp)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('unknown GGUF types must not enter export preparation')
+
+    monkeypatch.setattr(box, 'validate_mtp', forbidden)
+    monkeypatch.setattr(box, 'frontend_files', forbidden)
+    monkeypatch.setattr(box, 'installed_attention', forbidden)
+    monkeypatch.setattr(box.subprocess, 'run', forbidden)
+    arguments = ['--model-dir', str(directory), '--mtp', str(mtp)]
+    assert box.main([*arguments, '--inspect-only']) == 0
+    with pytest.raises(SystemExit) as error:
+        box.main([*arguments, '--operator-target', 'ppu10', '--fetch-frontend',
+                  '--blas-library', str(tmp_path / 'unloaded.so'), '--output', str(tmp_path / 'output')])
+    assert error.value.code == 2
+    assert 'type IDs [42]; header inspection does not enable execution' in capsys.readouterr().err

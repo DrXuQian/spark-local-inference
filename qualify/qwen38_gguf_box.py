@@ -12,6 +12,7 @@ from collections import Counter
 import hashlib
 import importlib.machinery
 import importlib.util
+from math import prod
 from pathlib import Path
 import shlex
 import subprocess
@@ -73,24 +74,67 @@ def inspect_mtp(path):
     """Report stored types and layer names from headers, without decoding weights."""
     import gguf
 
-    reader = gguf.GGUFReader(path, mode='r')
+    class HeaderReader(gguf.GGUFReader):
+        def _build_tensors(self, start_offs, fields):
+            # The pinned reader parses raw type IDs before constructing payload
+            # views. Diagnostics need those fields even for an unknown encoding.
+            self.tensor_fields = fields
+
+    reader = HeaderReader(path, mode='r')
     print(f'MTP file: {path} ({path.stat().st_size} bytes)', flush=True)
     for key in ('general.architecture', 'general.file_type', 'qwen4exp.block_count',
                 'qwen4exp.nextn_predict_layers', 'qwen4exp.nextn_shared_target_tensors'):
         field = reader.get_field(key)
         print(f'  {key}: {None if field is None else field.contents()}', flush=True)
-    counts, sizes = Counter(), Counter()
-    for tensor in reader.tensors:
-        counts[tensor.tensor_type.name] += 1
-        sizes[tensor.tensor_type.name] += tensor.n_bytes
+    counts, sizes, headers, unreadable, names = Counter(), Counter(), [], set(), set()
+    for field in reader.tensor_fields:
+        shape = tuple(int(n) for n in reversed(field.parts[3]))
+        type_id, offset = int(field.parts[4][0]), reader.data_offset + int(field.parts[5][0])
+        if field.name in names or not shape or len(shape) > 4 or min(shape) <= 0:
+            raise ValueError(f'{field.name}: invalid or duplicate GGUF tensor header')
+        names.add(field.name)
+        try:
+            qtype = gguf.GGMLQuantizationType(type_id)
+            encoding = qtype.name
+            layout = gguf.GGML_QUANT_SIZES[qtype]
+        except (ValueError, KeyError):
+            unreadable.add(type_id)
+            encoding, layout = f'UNKNOWN_{type_id}', None
+            if type_id == 42:
+                # DrXuQian/llama.cpp 356a231c1: ggml-common.h block_q2_0
+                # and gguf-py/constants.py define 64 values in 18 bytes.
+                # This labels header storage only; it does not add a decoder.
+                encoding, layout = 'Q2_0', (64, 18)
+        nbytes = None
+        if layout is not None:
+            block, width = layout
+            if shape[-1] % block:
+                raise ValueError(f'{field.name}: incomplete {encoding} blocks in a row')
+            nbytes = prod(shape) // block * width
+            sizes[encoding] += nbytes
+        if offset < reader.data_offset or offset >= reader.data.size or offset % reader.alignment:
+            raise ValueError(f'{field.name}: invalid GGUF tensor offset')
+        counts[encoding] += 1
+        headers.append((field.name, encoding, shape, type_id, offset, nbytes))
+    ordered = sorted(headers, key=lambda header: header[4])
+    for index, (name, _, _, _, offset, nbytes) in enumerate(ordered):
+        end = ordered[index + 1][4] if index + 1 < len(ordered) else reader.data.size
+        if end <= offset or (nbytes is not None and offset + nbytes > end):
+            raise ValueError(f'{name}: overlapping or truncated GGUF tensor storage')
     for encoding in sorted(counts):
-        print(f'  {encoding}: {counts[encoding]} tensors, {sizes[encoding]} stored bytes', flush=True)
-    print(f'  total tensors: {len(reader.tensors)}', flush=True)
-    for tensor in reader.tensors[:64]:
-        shape = tuple(int(n) for n in reversed(tensor.shape))
-        print(f'  {tensor.name}: {tensor.tensor_type.name} {shape}', flush=True)
-    if len(reader.tensors) > 64:
-        print(f'  ... {len(reader.tensors) - 64} additional tensor names omitted', flush=True)
+        size = f'{sizes[encoding]} stored bytes' if encoding in sizes else 'stored bytes unknown'
+        print(f'  {encoding}: {counts[encoding]} tensors, {size}', flush=True)
+    print(f'  total tensors: {len(headers)}', flush=True)
+    for name, encoding, shape, type_id, offset, _ in headers[:64]:
+        print(f'  {name}: {encoding} {shape}, type_id={type_id}, data_offset={offset}', flush=True)
+    if len(headers) > 64:
+        print(f'  ... {len(headers) - 64} additional tensor names omitted', flush=True)
+    if unreadable:
+        print(f'  installed gguf cannot load type IDs: {sorted(unreadable)}; header inspection only', flush=True)
+    if 42 in unreadable:
+        print('  type_id=42 follows the llama.cpp PPU Q2_0 extension: 64 values/18 bytes; '
+              'Q2_K is a different format (type_id=10, 256 values/84 bytes).', flush=True)
+    return frozenset(unreadable)
 
 
 def validate_mtp(path):
@@ -154,10 +198,13 @@ def main(argv=None):
             parser.error('export requires ' + ', '.join(missing))
     try:
         target, metadata, mtp = model_files(args.model_dir, args.mtp)
-        inspect_mtp(mtp)
+        unreadable = inspect_mtp(mtp)
         if args.inspect_only:
             print('MTP headers inspected; operator compatibility and device execution are not qualified.', flush=True)
             return 0
+        if unreadable:
+            raise ValueError(f'export requires a GGUF reader and operator implementation for type IDs '
+                             f'{sorted(unreadable)}; header inspection does not enable execution')
         validate_mtp(mtp)
         blas = args.blas_library.resolve(strict=True)
         if not blas.is_file():

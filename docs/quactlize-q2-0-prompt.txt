@@ -1,0 +1,76 @@
+Add Q2_0 support for the installed QUactlize PPU package used by Flare
+=================================================================
+
+The actual box MTP is:
+/sim/eec/shared/AI_workspace/llm-models/MTP-GGUF-modelzoo/Qwen3.8-Flash-Next-MTP/mtp-q2_0.gguf
+Its tensor header reports type ID42. Complete tensor inventory and shared-MTP
+metadata still need the framework's header inspection; do not infer them from
+the filename. This task enables that encoding without changing its weight values.
+
+Source of truth
+---------------
+DrXuQian/llama.cpp commit 356a231c1:
+  ggml/include/ggml.h: GGML_TYPE_Q2_0 = 42
+  ggml/src/ggml-common.h: QK2_0 = 64, block_q2_0 = half d + uint8_t qs[16]
+  ggml/src/ggml-quants.c: dequantize_row_q2_0
+  gguf-py/gguf/constants.py: Q2_0 = 42, GGML_QUANT_SIZES = (64, 18)
+The local source checkout is /root/llama.cpp-ppu-backend.
+
+For element i in a block, q = (qs[i/4] >> (2*(i%4))) & 3; value = (q-1)*d.
+The four codes are -1, 0, +1, +2 times the stored FP16 scale. Preserve signed
+scales and the original scale/code bits. Q2_K (ID10, 256/84) is a different
+encoding. Do not alias ID42 to Q2_K or silently requantize it to Q8/Q4.
+
+Confirmed gap
+-------------
+The remote feat/ppu-flash-next HEAD e7743104 has no Q2_0 format entry.
+quactlize/compat/contract.hpp and api.h admit IDs7/8/10..14 only. The current
+canonical producer/consumer has no Q2_0 arrangement. Merely adding an enum or
+Python block-size entry will not make the model executable.
+
+Required installed interfaces
+-----------------------------
+1. Add ID42 to the format definitions and exact raw/canonical storage readers.
+   Preserve all existing numeric IDs and existing record layouts.
+2. Extend canonical_arrangement_v1, kpack_sizes_for_arrangement_v1 and
+   prepare_fully_quantized_dev_for_arrangement_v2 for Q2_0. The framework calls
+   these during preparation, then drops the raw input after the stream drains.
+   Low/high/unit plane sizes must sum to the original 18/64 bytes per value;
+   report the complete descriptor, alignment requirements and byte extents.
+3. Extend matmul_query_v1 / prepare_v1 / run_v1 / destroy_v1 and the canonical
+   consumer for dense and indexed BF16/F16 projections with FP32 accumulation.
+   Query remains the workspace authority; keep caller-owned scratch and sticky
+   device error semantics. Warm required kernels before graph capture. Replay
+   must perform no host routing readback, allocation, JIT or compilation.
+4. Extend the installed serving gather_rows preparation decoder for Q2_0 where
+   dense MTP tensors use it. Decode in FP32 and round once to the requested
+   BF16/F16 output. The framework retains these small dense weights after
+   preparation; routed experts remain compressed and resident.
+5. Publish a complete PPU wheel with matching Python declarations, native
+   libraries and resource manifest. NVIDIA compatibility remains a debugging
+   path and must not become a dependency of PPU execution. The GGUF Python
+   reader also needs the matching ID42 definition; that is a separate packaging
+   requirement, not something a successful matmul query automatically provides.
+
+Geometry and verification
+-------------------------
+Current Qwen recipe: 512 experts, hidden 2560, intermediate 640, top-k 10.
+Gate/up stored separately: [512,640,2560]; fused: [512,1280,2560].
+Down: [512,2560,640]. K=640 is valid for 64-element Q2_0 blocks.
+Exercise rows 1/2/4/6/7/8 and larger preparation batches; gate/up channels=1,
+down channels=top-k. Preserve row strides, changing routes and inactive IDs.
+Include code levels, positive/negative/zero scales, pack/decode byte parity,
+raw/canonical numerical parity, invalid IDs and error accumulation. Test real
+capture/replay with shared scratch and alternating shapes, without allocation.
+Run on the current ppu10 / SDK2.2.1 deployment; distinguish host/compile checks
+from actual PPU results. Compare against the exact llama.cpp Q2_0 decoder and
+native-16-bit matmul arithmetic, not a Q2_K or requantized approximation.
+
+Framework integration points:
+  ignition/preparation/gguf_packing.py
+  ignition/components/ppu_gguf_projection.py
+  ignition/components/gguf_moe.py
+  ignition/components/gguf_weights.py
+  qualify/qwen38_gguf_box.py
+Keep computation in the operator package. The framework retains preparation,
+GGUF mapping, graph capture/export and Rust-only replay.

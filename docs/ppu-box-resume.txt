@@ -174,8 +174,9 @@ downloaded; the existing loader reads the selected blocks and the complete MTP.
 
 The supplied MTP candidate is
 /sim/eec/shared/AI_workspace/llm-models/MTP-GGUF-modelzoo/Qwen3.8-Flash-Next-MTP/mtp-q2_0.gguf.
-Its reported size suggests low-bit experts, but the filename and size do not
-establish the encoding or shared-MTP layout. Inspect its headers first; this
+The box reports tensor type ID42. The local DrXuQian/llama.cpp fork (356a231c1)
+defines this as Q2_0, with 64 values in 18 bytes. Q2_K is ID10 with 256 values in
+84 bytes; these encodings are not interchangeable. Inspect the full header first; this
 command imports no Torch/operator package, downloads nothing, and uses no device:
 
   python -m qualify.qwen38_gguf_box --inspect-only \
@@ -183,10 +184,19 @@ command imports no Torch/operator package, downloads nothing, and uses no device
     --mtp /sim/eec/shared/AI_workspace/llm-models/MTP-GGUF-modelzoo/Qwen3.8-Flash-Next-MTP/mtp-q2_0.gguf
 
 Inspection reports actual tensor types, stored bytes, names and expert geometry.
+It reads raw tensor-info fields without constructing payload views, so the stock
+reader's unknown-type error no longer prevents this diagnostic. Q2_0 is labeled
+from the verified fork definition; other unknown IDs retain unknown byte counts.
+This does not modify the installed gguf package or enable execution of ID42.
 Export checks the existing shared-target/layer-48 boundary before loading target
 weights. Plain BF16/FP32 experts have no path in this fixture; their presence in
 norms or other small tensors alone does not identify the expert encoding. Actual
 operator format/shape admission still belongs to the installed QUactlize library.
+QUactlize feat/ppu-flash-next at remote HEAD e7743104 does not yet admit Q2_0;
+the operator work is specified in quactlize-q2-0-prompt.txt. The export command
+below will reject a type absent from the installed reader before downloading
+frontend assets, loading target weights or starting compilation. Complete the
+reader/operator package integration before using it for the ID42 candidate.
 
 --fetch-frontend downloads only config.json, tokenizer.json,
 tokenizer_config.json and chat_template.jinja at the recipe's pinned revision,
@@ -194,7 +204,7 @@ then checks their pinned hashes. Use --frontend /existing/directory instead to
 run without downloads. FA3 is located without importing its host extension before
 recording; QUactlize and actlizeLA use their installed PPU packages. The launcher
 applies the existing PPU preparation patch before starting the export subprocess.
-Thirteen host input-resolution/header tests pass; this does not qualify model execution.
+Seventeen host input-resolution/header tests pass; this does not qualify model execution.
 
 Run from the repository root. Use the same SDK that passed the tiny module gate:
 
