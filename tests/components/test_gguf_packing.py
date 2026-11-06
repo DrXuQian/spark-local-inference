@@ -29,7 +29,8 @@ def packed_weight(contract, raw):
 
 
 @pytest.mark.parametrize('qtype,n,k', [(7, 2560, 640), (8, 2560, 640), (8, 1280, 2560), (12, 1280, 2560),
-                                    (7, 256, 128), (8, 256, 128), (8, 256, 256), (12, 256, 256)])
+                                    (7, 256, 128), (8, 256, 128), (8, 256, 256), (12, 256, 256),
+                                    (42, 640, 2560), (42, 1280, 2560), (42, 2560, 640)])
 @pytest.mark.parametrize('m', [1, 8, 9, 128])
 def test_model_expert_layouts_use_exact_producer_descriptors_and_byte_budgets(contract, qtype, n, k, m):
     with FakeTensorMode():
@@ -45,14 +46,15 @@ def test_model_expert_layouts_use_exact_producer_descriptors_and_byte_budgets(co
         assert consumer.route == ((2 if m <= 8 else 3) if qtype == 7 else (0 if m <= 8 else 1))
         if qtype == 7:
             assert consumer.expanded_weight_bytes == consumer.grouped_input_bytes == consumer.grouped_output_bytes == 0
-        if qtype == 8:
+        if qtype in (8, 42):
             assert packed.packed.high is None
 
 
 @pytest.mark.parametrize('fault', ['identity', 'missing', 'short', 'qtype'])
-def test_packed_mismatches_fail_in_the_real_native_query(contract, fault):
+@pytest.mark.parametrize('qtype', [7, 42])
+def test_packed_mismatches_fail_in_the_real_native_query(contract, fault, qtype):
     with FakeTensorMode():
-        source, raw, output, ids = operands(9, qtype=7, n=2560, k=640)
+        source, raw, output, ids = operands(9, qtype=qtype, n=2560, k=640)
         packed, _ = packed_weight(contract, raw)
         if fault == 'identity':
             descriptor = (*packed.packed.arrangement[:-1], packed.packed.arrangement[-1] ^ 1)
@@ -68,12 +70,16 @@ def test_packed_mismatches_fail_in_the_real_native_query(contract, fault):
             projection_sizes(contract, source, packed, output, ids=ids)
 
 
-def test_packed_record_metadata_and_export_declare_planes_without_raw_copy(contract):
-    raw = GgufWeight(torch.empty(16 * 128 // 32 * 24, dtype=torch.uint8), 'Q5_1', 7, (16, 128))
+@pytest.mark.parametrize('qtype,encoding,block,size', [(7, 'Q5_1', 32, 24), (42, 'Q2_0', 64, 18)])
+def test_packed_record_metadata_and_export_declare_planes_without_raw_copy(contract, qtype, encoding, block, size):
+    raw = GgufWeight(torch.empty(16 * 128 // block * size, dtype=torch.uint8), encoding, qtype, (16, 128))
     packed, _ = packed_weight(contract, raw)
     declaration = declare_weights({'weights': packed}, components={'weights': 'expert'})
     views = list(declared_views(declaration))
-    assert {view[0] for view in views} == {'weights.packed.low', 'weights.packed.high', 'weights.packed.units'}
+    names = {'weights.packed.low', 'weights.packed.units'}
+    if qtype == 7:
+        names.add('weights.packed.high')
+    assert {view[0] for view in views} == names
     assert sum(view[2].nbytes for view in views) == raw.raw.nbytes
     restored = loads(dumps(packed))
     assert restored.raw is None and restored.packed.arrangement == packed.packed.arrangement
@@ -83,14 +89,17 @@ def test_packed_record_metadata_and_export_declare_planes_without_raw_copy(contr
         replace(packed, raw=raw.raw)
 
 
-@pytest.mark.parametrize('gate_type,down_type', [(12, 7), (8, 8)])
+@pytest.mark.parametrize('gate_type,down_type', [(12, 7), (8, 8), (42, 42)])
 def test_target_and_mtp_pack_each_expert_weight_before_loading_the_next(contract, gate_type, down_type):
     import gguf
     from ignition.components.parallel import TensorParallelShard
     from ignition.recipes.qwen38.gguf_weights import QwenGgufWeightLoader
 
+    if 42 in (gate_type, down_type) and not hasattr(gguf.GGMLQuantizationType, 'Q2_0'):
+        pytest.skip('requires the PPU GGUF reader with Q2_0 ID42')
+
     # Exercise the real recipe ordering with metadata-only sources. GPU packing
-    # and bytes are tested separately by test_gguf_packing_cuda.py.
+    # and bytes are tested separately by tests/preparation/test_gguf_packing_cuda.py.
     loader = QwenGgufWeightLoader.__new__(QwenGgufWeightLoader)
     loader.shard = TensorParallelShard(0, 1)
     loader.manifest = SimpleNamespace(quactlize=SimpleNamespace(target='ppu15'), tensors={

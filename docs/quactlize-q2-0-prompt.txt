@@ -1,5 +1,12 @@
-Add Q2_0 support for the installed QUactlize PPU package used by Flare
-=================================================================
+Q2_0 interface request and implementation status for Flare
+=======================================================
+
+Reviewed 2026-11-06: implemented in feat/ppu-flash-next 02a6fb10, included in
+branch HEAD 82388b15 and the quactlize 0.2.1 ppu10 / SDK2.2.1 wheel. The remaining
+three commits change test infrastructure, not operator code. The requirements
+below are retained as the integration contract, not an outstanding request to
+implement Q2_0. The 82 Q2_0 host tests, 64 installed native ABI queries and 132
+framework host checks pass. PPU device and actual MTP execution remain unrun here.
 
 The actual box MTP is:
 /sim/eec/shared/AI_workspace/llm-models/MTP-GGUF-modelzoo/Qwen3.8-Flash-Next-MTP/mtp-q2_0.gguf
@@ -21,12 +28,16 @@ The four codes are -1, 0, +1, +2 times the stored FP16 scale. Preserve signed
 scales and the original scale/code bits. Q2_K (ID10, 256/84) is a different
 encoding. Do not alias ID42 to Q2_K or silently requantize it to Q8/Q4.
 
-Confirmed gap
--------------
-The remote feat/ppu-flash-next HEAD e7743104 has no Q2_0 format entry.
-quactlize/compat/contract.hpp and api.h admit IDs7/8/10..14 only. The current
-canonical producer/consumer has no Q2_0 arrangement. Merely adding an enum or
-Python block-size entry will not make the model executable.
+Implemented interfaces
+----------------------
+The earlier gap at e7743104 is closed. ID42 now has an exact raw reader and
+canonical layout 6, mapping 0x5132304b50000001: low code words plus unchanged
+FP16 scale units, with no high plane. Use native16 Library without packed_route;
+the separate packed-route selector remains specific to Q5_1. Small M<=8 reads
+compressed weights directly; larger M uses bounded expansion and grouped TC.
+Serving gather_rows also admits ID42 for preparation-time dense expansion.
+The complete wheel exists locally; registry publication and PPU validation are
+separate steps. No performance result follows from host checks.
 
 Required installed interfaces
 -----------------------------
@@ -51,7 +62,8 @@ Required installed interfaces
    path and must not become a dependency of PPU execution. The framework now
    supplies the matching ID42 reader as gguf-0.19.0+ppu.q2.1-py3-none-any.whl,
    built from the source above. Installing that reader enables file parsing;
-   operator query, packing, execution and graph replay still need this work.
+   operator query and packing interfaces are now implemented, while actual
+   execution and graph replay still require PPU qualification.
 
 Geometry and verification
 -------------------------

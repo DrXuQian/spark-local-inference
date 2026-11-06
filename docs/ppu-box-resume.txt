@@ -216,13 +216,35 @@ Export checks the existing shared-target/layer-48 boundary before loading target
 weights. Plain BF16/FP32 experts have no path in this fixture; their presence in
 norms or other small tensors alone does not identify the expert encoding. Actual
 operator format/shape admission still belongs to the installed QUactlize library.
-QUactlize feat/ppu-flash-next at remote HEAD e7743104 does not yet admit Q2_0;
-the operator work is specified in quactlize-q2-0-prompt.txt. The export command
-below will reject a type absent from the installed reader before downloading
-frontend assets, loading target weights or starting compilation. Installing the
-reader wheel removes that parsing error; complete the QUactlize integration
-before exporting this ID42 candidate. Its expert types/shapes and shared-MTP
-metadata must also satisfy the current fixture.
+QUactlize feat/ppu-flash-next HEAD 82388b15 now admits Q2_0. Implementation
+02a6fb10 is included in the complete quactlize-0.2.1-py3-none-linux_x86_64.whl,
+targeting ppu10 / SDK2.2.1-184ee6. It supplies lossless packing, raw/canonical
+native16 projections and serving gather_rows; existing framework bindings use
+these interfaces unchanged. Installing the reader alone is insufficient: the
+older 0.2.0 operator binary does not gain Q2_0 support from a source checkout.
+Install the matching 0.2.1 wheel with --no-deps, preserving platform Torch.
+
+Local review passes 82 QUactlize Q2_0 host tests, 64 installed native ABI queries
+and 132 framework host bridge/metadata/reader cases. The installed native check
+uses the actual 0.2.1 DSO and matching SDK runtime; it does not initialize a GPU.
+The additional 15 framework device cases are collected but not run locally.
+After installing both packages, run from this checkout on the PPU box:
+
+  python -I /sim/eec/shared/junfu.qx/quactlize/tools/verify_installed_wheel.py \
+    --target ppu10 --require-gguf-q2
+  export FLARE_RUN_CUDA_TESTS=1
+  export FLARE_QUACTLIZE_HELPERS_LIBRARY="$(python -c "import quactlize; print(quactlize.get_library_path('ppu10'))")"
+  export FLARE_TEST_PPU_MATMUL_LIBRARY="$FLARE_QUACTLIZE_HELPERS_LIBRARY"
+  python -m pytest -q tests/preparation/test_gguf_packing_cuda.py \
+    tests/components/test_quactlize_helpers_cuda.py -k 42
+
+Expect 15 passed with no skips. This gate covers both expert geometries at
+M=1 and M=9 (direct and grouped routes), AOT catalog restoration with fresh handles, dense
+BF16/F16 decoding, inactive/invalid routes and allocation-stable replay. It
+does not establish complete MTP correctness or bubble-free native serving.
+The actual file's expert types/shapes and shared-MTP metadata must still satisfy
+the fixture; the export command rejects types missing from the reader before
+downloading frontend assets or loading target weights.
 
 --fetch-frontend downloads only config.json, tokenizer.json,
 tokenizer_config.json and chat_template.jinja at the recipe's pinned revision,

@@ -212,14 +212,21 @@
     stock reader passes 37 with two Q2_0 reader cases skipped. No decoder or
     device execution is added to the framework. Box installation remains pending.
 
-[ ] Enable the supplied Q2_0 MTP in the operator package and complete model.
-    The user reports header inspection passing, but has supplied only its final
-    two lines; actual layer names, expert geometry and shared flags are pending.
-    QUactlize feat/ppu-flash-next remote HEAD e7743104 lacks Q2_0 in formats,
-    producer/consumer and matmul admission. Extend
-    exact packing, raw/canonical indexed projections and preparation-time dense
-    expansion, then publish installed packages and qualify the complete graph.
-    See quactlize-q2-0-prompt.txt. Passing header inspection is not execution support.
+[x] Review QUactlize Q2_0 support at feat/ppu-flash-next 82388b15. Implementation
+    02a6fb10 and its 0.2.1 ppu10 wheel supply exact packing, raw/canonical native16
+    projections and serving gather_rows. Its 82 Q2_0 host tests and 64 installed
+    native ABI queries pass. Framework host bridge/metadata/reader checks pass
+    132 cases, including Q2_0 and existing formats. Production bindings already
+    admit the new descriptor; no framework operator or runtime path was added.
+
+[ ] Qualify the supplied Q2_0 MTP on PPU. Fifteen added device cases cover file
+    packing, dense decoding, prepared projection catalog rebinding and graph
+    replay; they are collected but not run locally. Run them with the 0.2.1 wheel
+    and Q2_0 GGUF reader, then the partial target + complete MTP package and native
+    replay. Actual layer names, expert geometry and shared flags remain pending:
+    the user supplied only the header diagnostic's final two lines. Source and
+    host ABI checks do not qualify device correctness or bubble-free execution.
+    See ppu-box-resume.txt for the focused Q2_0 command.
 
 [x] Check the SDK 2.1.1 export ABI and native ELF data discovery. All 66
     runtime driver entry names have hg-prefixed header declarations; 70 host

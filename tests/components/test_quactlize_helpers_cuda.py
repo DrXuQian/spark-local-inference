@@ -16,6 +16,7 @@ from ignition.components.embedding import PreparedEmbedding
 from ignition.components.gguf_weights import GgufWeight
 from ignition.components.moe import PreparedRouter, RouterScratch
 from ignition.preparation.quactlize import QuactlizeHelpersSpec
+from tests.components.gguf_reference import dequantize
 
 
 @pytest.fixture(scope='module')
@@ -42,12 +43,12 @@ def gguf_table(tmp_path, qtype, width):
     writer.write_header_to_file(); writer.write_kv_data_to_file(); writer.write_tensors_to_file(); writer.close()
     table = gguf.GGUFReader(path).tensors[0]
     assert tuple(reversed(table.shape)) == (7, width) and table.tensor_type == kind
-    expected = torch.from_numpy(gguf.dequantize(np.array(table.data).reshape(7, -1), kind)).bfloat16()
+    expected = torch.from_numpy(dequantize(np.array(table.data).reshape(7, -1), kind)).bfloat16()
     return GgufWeight(torch.from_numpy(np.array(table.data)).cuda(), kind.name, qtype, (7, width)), expected
 
 
 @pytest.mark.parametrize('dtype', [torch.bfloat16, torch.float16])
-@pytest.mark.parametrize('qtype', [8, 20])
+@pytest.mark.parametrize('qtype', [8, 20, 42])
 def test_gguf_dense_preparation_uses_selected_native_decoder(session, tmp_path, monkeypatch, dtype, qtype):
     import sys
     from ignition.components.gguf_weights import GgufWeightLoader
@@ -56,17 +57,19 @@ def test_gguf_dense_preparation_uses_selected_native_decoder(session, tmp_path, 
     gguf_table(tmp_path, qtype, 640)
     path = tmp_path / (gguf.GGMLQuantizationType(qtype).name + '.gguf')
     raw = np.array(gguf.GGUFReader(path).tensors[0].data)
-    expected = torch.from_numpy(gguf.dequantize(raw, gguf.GGMLQuantizationType(qtype))).to(dtype)
+    expected = torch.from_numpy(dequantize(raw, gguf.GGMLQuantizationType(qtype))).to(dtype)
+    block, _ = gguf.GGML_QUANT_SIZES[gguf.GGMLQuantizationType(qtype)]
+    columns = (block, 640 - block)
     # Loading must use the selected external library, even if no debug decoder exists.
     monkeypatch.setitem(sys.modules, 'quactlize.cuda_compat', None)
     with torch.cuda.stream(torch.cuda.default_stream()), GgufWeightLoader(inspect_gguf_checkpoint(path), 'cuda:0', read_mode='pread',
             quactlize_helpers=session.quactlize_helpers) as loader:
-        actual = loader.load_dequantized('token_embd.weight', rows=(1, 6), columns=(32, 608), dtype=dtype)
-    torch.testing.assert_close(actual.cpu(), expected[1:6, 32:608], rtol=0, atol=0)
+        actual = loader.load_dequantized('token_embd.weight', rows=(1, 6), columns=columns, dtype=dtype)
+    torch.testing.assert_close(actual.cpu(), expected[1:6, columns[0]:columns[1]], rtol=0, atol=0)
 
 
 @pytest.mark.parametrize('tokens', [1, 2, 4, 8, 17])
-@pytest.mark.parametrize('qtype,width', [(8, 2560), (20, 160)])
+@pytest.mark.parametrize('qtype,width', [(8, 2560), (20, 160), (42, 2560)])
 def test_file_lookup_routing_and_rounded_activation_share_one_graph(session, tmp_path, tokens, qtype, width):
     weight, table = gguf_table(tmp_path, qtype, width)
     ids = torch.zeros(tokens, dtype=torch.int64, device='cuda')

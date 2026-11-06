@@ -95,16 +95,17 @@ def operands(m, *, n=640, k=640, qtype=7, indexed=True, channels=1, padding=0):
     output_shape = (m, topk, n) if indexed else (m, n)
     output_strides = (topk * (n + padding), n + padding, 1) if indexed else (n + padding, 1)
     output = torch.empty_strided(output_shape, output_strides, dtype=source.dtype, device='cuda:0')
-    block, size = {7: (32, 24), 8: (32, 34), 12: (256, 144)}[qtype]
+    block, size = {7: (32, 24), 8: (32, 34), 12: (256, 144), 42: (64, 18)}[qtype]
     raw = torch.empty(e * n * k // block * size, dtype=torch.uint8, device='cuda:0')
-    weight = GgufWeight(raw, {7: 'Q5_1', 8: 'Q8_0', 12: 'Q4_K'}[qtype], qtype,
+    weight = GgufWeight(raw, {7: 'Q5_1', 8: 'Q8_0', 12: 'Q4_K', 42: 'Q2_0'}[qtype], qtype,
                         (e, n, k) if indexed else (n, k))
     return source, weight, output, ids
 
 
 @pytest.mark.parametrize('m', [1, 8, 9, 64])
 @pytest.mark.parametrize('channels,padding', [(1, 0), (1, 7), (10, 7)])
-@pytest.mark.parametrize('qtype,n,k', [(7, 2560, 640), (12, 1280, 2560)])
+@pytest.mark.parametrize('qtype,n,k', [(7, 2560, 640), (12, 1280, 2560),
+                                    (42, 1280, 2560), (42, 2560, 640)])
 def test_actual_expert_geometry_routes_and_strides(contract, m, channels, padding, qtype, n, k):
     with FakeTensorMode():
         source, weight, output, ids = operands(m, n=n, k=k, qtype=qtype, channels=channels, padding=padding)

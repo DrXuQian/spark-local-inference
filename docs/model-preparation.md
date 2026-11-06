@@ -863,11 +863,12 @@ python -m qualify.qwen38_gguf_http --url http://127.0.0.1:18081 \
 
 ### PPU port preparation
 
-The complete QUactlize wheel is available in the
-[`0.2.0` packaging change at a4207d6](https://github.com/DrXuQian/QUactlize/tree/a4207d6b74571235f741ffc0ab7a6bc16e9d2a28).
-Install the built wheel with `python -m pip install --no-deps /path/to/quactlize-0.2.0-py3-none-linux_x86_64.whl`.
+The complete QUactlize `0.2.1` wheel adds Q2_0 (GGUF ID42) in
+[`02a6fb10`](https://github.com/DrXuQian/QUactlize/tree/02a6fb10ce35e224d982b05fd86746811a57fd72),
+included in `feat/ppu-flash-next` HEAD `82388b15`.
+Install the built wheel with `python -m pip install --no-deps /path/to/quactlize-0.2.1-py3-none-linux_x86_64.whl`.
 When it is published in the configured PPU artifacts index, use
-`python -m pip install --only-binary=quactlize quactlize==0.2.0`.
+`python -m pip install --only-binary=quactlize quactlize==0.2.1`.
 This artifact declares **ppu10**, built with SDK **2.2.1-184ee6**. It is not a
 ppu15/ppu17 or NVIDIA binary; select a wheel built for the actual platform.
 Installation and library discovery do not build device code or replace Torch.
@@ -882,11 +883,15 @@ private runtime or Python binding update invalidates the old identity. Resources
 are checked again before native loading. A missing package, incompatible target
 or changed resource is an error, with no source/system-library fallback.
 
-The actual 0.2.0 wheel passes isolated installed imports/discovery and 40 native
-host ABI queries with its matching SDK runtime. Framework selection, changed
-private-resource identity and override checks pass on Torch2.9/Torch2.15. These
-are host checks. The user now reports the ten-case packed GGUF device gate
-passing on PPU; complete target/MTP and native package qualification remain open.
+The actual 0.2.1 wheel passes isolated installed imports/discovery and 64 native
+host ABI queries with its matching SDK runtime, including Q2_0 producer/consumer
+descriptors, both 16-bit dtypes and E512 gate/up/down geometry. The Q2_0 source
+suite passes 82 host cases; framework bridge/metadata/reader checks pass 132.
+Earlier package selection and identity checks pass on Torch2.9/Torch2.15. The
+user reported the original ten-case packed GGUF device gate passing with 0.2.0;
+that result does not qualify Q2_0. See [PPU box resume](ppu-box-resume.txt) for the
+matching GGUF reader and 15 added Q2_0 device cases. Complete target/MTP and
+native model package qualification remain open.
 
 The complete actlizeLA serving wheel is available in
 [`0.2.0` at 4ea342e](https://github.com/DrXuQian/actlizeLA/tree/4ea342e95c2b7fda14223f8b0997d308b94ab3f7).

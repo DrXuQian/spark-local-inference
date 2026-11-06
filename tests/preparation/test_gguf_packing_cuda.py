@@ -18,6 +18,7 @@ from ignition.components.ppu_gguf_projection import PreparedPpuGgufProjection, p
 from ignition.preparation.gguf import inspect_gguf_checkpoint
 from ignition.preparation.gguf_packing import GgufPacker
 from ignition.preparation import provenance
+from tests.components.gguf_reference import dequantize
 
 
 pytestmark = pytest.mark.skipif(
@@ -28,7 +29,7 @@ pytestmark = pytest.mark.skipif(
 class PackedForward:
     def __init__(self, library, weight, rows):
         k, n = weight.in_features, weight.out_features
-        shape = (rows, 2, k) if weight.qtype in (7, 8) else (rows, k)
+        shape = (rows, 2, k) if k == 640 else (rows, k)
         self.source = torch.randn(shape, dtype=torch.bfloat16, device=weight.device) * .2
         self.ids = torch.zeros((rows, 2), dtype=torch.int32, device=weight.device)
         self.output = torch.empty((rows, 2, n), dtype=torch.bfloat16, device=weight.device)
@@ -43,12 +44,16 @@ class PackedForward:
         return self.output
 
 
-CASES = [(q, m, 'none') for q in (7, 8, 12, 13) for m in (1, 9)] + [(7, m, 'catalog') for m in (1, 9)]
+CASES = [(q, m, 'none', *((2560, 640) if q in (7, 8) else (1280, 2560)))
+         for q in (7, 8, 12, 13) for m in (1, 9)]
+CASES += [(7, m, 'catalog', 2560, 640) for m in (1, 9)]
+CASES += [(42, m, mode, n, k) for m in (1, 9) for mode in ('none', 'catalog')
+          for n, k in ((1280, 2560), (2560, 640))]
 
 
-@pytest.mark.parametrize('qtype,rows,compilation', CASES)
+@pytest.mark.parametrize('qtype,rows,compilation,n,k', CASES)
 @torch.no_grad()
-def test_file_pack_and_prepared_projection_replay(tmp_path, monkeypatch, qtype, rows, compilation):
+def test_file_pack_and_prepared_projection_replay(tmp_path, monkeypatch, qtype, rows, compilation, n, k):
     from ignition.preparation.aot import ForwardCache
     from ignition.preparation.execution import GraphSignature
 
@@ -57,14 +62,13 @@ def test_file_pack_and_prepared_projection_replay(tmp_path, monkeypatch, qtype, 
     library.packed = native.Library(path, packed_route=0)
     packer = GgufPacker(library)
     kind = gguf.GGMLQuantizationType(qtype)
-    n, k = (2560, 640) if qtype in (7, 8) else (1280, 2560)
     block, size = gguf.GGML_QUANT_SIZES[kind]
     rng = np.random.default_rng(645 + qtype)
     raw = rng.integers(0, 256, (3, n, k // block, size), dtype=np.uint8)
-    for offset in ((0,) if qtype == 8 else (0, 2)):
+    for offset in ((0,) if qtype in (8, 42) else (0, 2)):
         values = rng.uniform(-.003, .003, raw.shape[:-1]).astype('<f2')
         raw[..., offset:offset + 2] = values[..., None].view(np.uint8)
-    reference = torch.from_numpy(gguf.dequantize(raw.reshape(3 * n, -1), kind)).reshape(3, n, k).bfloat16().double()
+    reference = torch.from_numpy(dequantize(raw.reshape(3 * n, -1), kind)).reshape(3, n, k).bfloat16().double()
     file = tmp_path / 'experts.gguf'
     writer = gguf.GGUFWriter(file, 'qwen4exp')
     writer.add_tensor('experts.weight', raw.reshape(3, n, -1), raw_dtype=kind)

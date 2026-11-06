@@ -12,6 +12,17 @@ from ignition.preparation.checkpoint import CheckpointError
 from ignition.preparation.gguf import inspect_gguf_checkpoint
 
 
+def test_q2_reference_preserves_code_order_and_signed_scales():
+    from tests.components.gguf_reference import dequantize
+
+    raw = np.full((6, 18), 0xe4, dtype=np.uint8)
+    scales = np.array([1., -2., 0., -0., 2**-24, -2**-24], dtype='<f2')
+    raw[:, :2] = scales[:, None].view(np.uint8)
+    expected = np.tile(np.array([-1., 0., 1., 2.], dtype=np.float32), 16) * scales.astype(np.float32)[:, None]
+    actual = dequantize(raw, 42)
+    np.testing.assert_array_equal(actual.view(np.uint32), expected.view(np.uint32))
+
+
 def write_checkpoint(path, tensors, *, split=False, metadata=None, endian=None):
     options = {"split_max_tensors": 1, "small_first_shard": True} if split else {}
     if endian is not None:
