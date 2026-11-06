@@ -530,8 +530,11 @@
     hgMem names and rejects an inactive observer instead of reporting zero
     allocations. Rebuild Heliopause with generic PCI identity naming before the
     complete gate; do not infer a product from CUDA-compatible SM values.
-    SDK2.2.1 resolves callback 742, unlike the previously checked SDK2.1.1, but
-    recorder startup and device export/replay still require the deployment box.
+    The box passes module compilation and ELF checks, but recorder startup
+    rejects callback 742 (cuFuncLoad). Its loaded HGPTI also rejects the name
+    query for 742 while 18/687/732 resolve. Local SDK2.2.1 resolves 742, unlike
+    SDK2.1.1; deploy a compatible HGPTI/driver with callback support and verify
+    event delivery before export/replay. Skipping the callback is not qualified.
 
 [x] Supply the standalone flare_heliopause wheel for the reported missing native
     module. CPython3.12/Linux x86_64 installation and isolated import pass with

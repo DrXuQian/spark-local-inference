@@ -184,6 +184,17 @@ both the CLI and exporter compile checks pass. The rebuilt local Heliopause
 extension preserves signed PCI identities through real cache conversion.
 The older SDK2.1.1 lacks the cuFuncLoad callback; local SDK2.2.1 resolves callback
 742 to hgFuncLoad, but real recorder startup must still succeed on the box.
+The deployment box now passes module compilation and ELF global checks, then
+fails recorder startup at cuptiEnableCallback(domain=1, id=742). Its actual
+CUDA_SDK/targets/x86_64-linux/lib/libcupti.so.2025.3.0 loads
+PPU_SDK/targets/x86_64-linux/lib/libhgpti.so. Callback-name queries for 18, 687
+and 732 succeed, while 742 returns INVALID_PARAMETER with no name. The reported
+CUPTI API version 22 does not establish support for this callback. Use a
+platform-compatible HGPTI/driver combination that both resolves and enables
+hgFuncLoad, then rerun the complete gate below. Do not skip the callback or
+treat a successful whole-domain subscription as proof of event delivery;
+module association and allocation recording must remain complete. The current
+wheel is installed successfully; rebuilding it alone does not add SDK callbacks.
 
 With the native flare_heliopause extension installed, the offline module stage is:
 
