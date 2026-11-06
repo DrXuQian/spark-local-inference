@@ -530,13 +530,16 @@
     hgMem names and rejects an inactive observer instead of reporting zero
     allocations. Rebuild Heliopause with generic PCI identity naming before the
     complete gate; do not infer a product from CUDA-compatible SM values.
-    The box passes module compilation and ELF checks, but recorder startup
-    rejects callback 742 (cuFuncLoad). Its loaded HGPTI also rejects the name
-    query for 742 while 18/687/732 resolve. Local SDK2.2.1 resolves 742, unlike
-    SDK2.1.1; deploy a compatible HGPTI/driver with callback support and verify
-    event delivery before export/replay. The box reports LAZY mode (2), so an
-    eager-loading condition does not apply. Skipping the callback is not qualified.
-    The SDK task/reproducer is in ppu-hgpti-callback-prompt.txt.
+    SDK2.2.1 on the box passes all three module_images tests, moving past the
+    SDK2.1.1 callback-742 startup failure. Export now crashes while copying a
+    module resource image inside cuModuleGetFunction. Actual SDK2.2.1 dispatcher
+    calls with synthetic host events reproduce bare ModuleResourceData for both
+    load/unload callbacks, instead of ResourceData containing context/descriptor.
+    Fix the HGPTI resource wrapper and qualify real delivery before export/replay.
+    qualify.ppu_hgpti_resource_abi reproduces that ABI failure without a device;
+    it does not qualify activation or real module loading. LAZY mode remains
+    required; no callbacks or context/image validation may be skipped. The SDK
+    task and reproduction details are in ppu-hgpti-callback-prompt.txt.
 
 [x] Check required callback names before native recorder subscription and before
     compiling the standalone PPU export module. Report all missing/mismatched

@@ -1,4 +1,62 @@
-任务：补齐 Flare 原生图导出所需的 PPU HGPTI 回调，保留 LAZY 加载。
+任务：修复 PPU HGPTI 模块资源回调 ABI，并补齐真实事件交付；保留 LAZY 加载。
+
+当前阻塞：SDK 2.2.1 的模块资源回调缺少外层结构
+-------------------------------------------------
+部署已从 2.1.1 切换到：
+  /sim/eec/shared/junfu.qx/ppu-sdk-2.2.1-184ee6/PPU_SDK/
+tests/preparation/test_module_images.py 在 box 上 3 passed：所需回调启用、
+真实分配/释放及 context 销毁检查通过。旧的 742 名称/启用阻塞已越过，
+但这不能证明每个 driver 回调都已经交付正确事件。
+
+qualify.ppu_export 的模块编译、ELF 检查通过，在 cuModuleGetFunction 触发
+延迟模块加载时 SIGSEGV。GDB 的关键调用链：
+  cuModuleGetFunction
+  libhggc.so -> hgpti::HgtoolResourceCallbackHandler
+  flare_heliopause::export::recorder::callback
+  Arc<[u8]>::copy_from_slice -> libc memcpy
+栈中的 libhggc.so、libhgpti.so 均来自上述 2.2.1 目录。
+
+已用本地真实 SDK 2.2.1 库和合成 HGtool 事件复现 ABI 差异，不需要设备：
+  python -m qualify.ppu_hgpti_resource_abi --sdk /path/to/PPU_SDK
+请先让 LD_LIBRARY_PATH 指向同一 SDK 的 CUDA_SDK/lib64 和 lib。
+脚本只依赖 Python 标准库，采用该版本导出的内部 dispatcher 与合成资源
+事件，并经过实际 CUDA facade 的 cuptiSubscribe；不导入 Torch/Flare 扩展。
+它不是生产依赖，也不能替代设备事件验收。无设备主机的 enable 返回 27，
+脚本原样报告；该库仍记录内部回调选择，合成 dispatcher 因此能交付事件。
+
+对合成 context=0x12340000、size=64 的资源事件，两个回调实际 cbdata 为：
+  domain=3, id=6: [moduleId=1, cubinSize=64, pCubin=<image address>]
+  domain=3, id=7: [moduleId=1, cubinSize=64, pCubin=<same image address>]
+这是裸 HGpti_ModuleResourceData，缺少 HGpti_ResourceData 外层及真实 context。
+recorder 按外层结构解释后，把 pCubin 当 resourceDescriptor，再把 ELF 头
+当模块描述，最终读出错误的镜像地址/长度。因此复制时崩溃。
+
+依据与具体修复位置
+------------------
+NVIDIA Toolkit 的 samples/sass_source_map/sass_source_map.cu：
+  HandleResource(..., const CUpti_ResourceData *pResourceData)
+  DumpCudaModule(callbackId, pResourceData->resourceDescriptor)
+随后 DumpCudaModule 才将 descriptor 转为 CUpti_ModuleResourceData。
+其 pc_sampling_continuous 示例在模块事件中同时使用 pResourceData->context。
+CUPTI Resource Callbacks 使用说明：
+  https://docs.nvidia.com/cupti/main/main.html#resource-callbacks
+注意 CUpti_ModuleResourceData 的简短类型说明对 cbdata 的措辞有歧义；应结合
+官方示例的实际调用方式及外层 context 要求，不要仅按这一段文字实现。
+
+SDK 2.2.1 的 HgtoolResourceCallbackHandler 在模块加载和卸载分支直接将
+HgptiModuleIdMapping::GetModuleInfo() 的返回值作为 cbdata，正是裸 descriptor。
+需要在两处分支构造完整 HGpti_ResourceData，并同步传入用户回调：
+  HGpti_ResourceData resource{};
+  resource.context = <原始 HGtool 事件的真实 context>;
+  resource.resourceDescriptor = <GetModuleInfo 返回的模块描述>;
+  callback(userdata, HGPTI_CB_DOMAIN_RESOURCE, cbid, &resource);
+context 不能用 moduleId 代替，也不能固定为 0；保留 moduleId、完整 image
+及长度。wrapper、descriptor、image 都必须在回调返回前有效。卸载完成才移除
+模块记录。CUDA facade 的 cuptiSubscribe 也须交付相同 ABI。
+不能在框架中猜测指针布局、跳过资源事件或关闭 context/image 完整性校验。
+
+旧 SDK 2.1.1 故障背景（已越过名称/启用检查）
+--------------------------------------------
 
 已确认的部署环境与故障
 ----------------------
@@ -19,7 +77,8 @@ cuptiGetCallbackName(domain=1) 的实测：
   742 -> status=1, NULL
 cuInit(0) 返回 0；cuModuleGetLoadingMode 返回 status=0、mode=2（LAZY）。
 本地 SDK2.1.1 的 HGPTI driver enum SIZE=733；SDK2.2.1 有 hgFuncLoad=742，
-且实际名称查询成功。SDK2.2.1 在部署驱动上的激活、事件交付尚未验证。
+且实际名称查询成功。部署 SDK2.2.1 已通过上述启动/分配测试；完整事件交付
+及图导出受前述模块资源 ABI 问题阻塞。
 
 最小复现：不依赖 Torch、Triton、模型或 Flare 扩展
 -----------------------------------------------
@@ -74,6 +133,8 @@ A. 名称表预检（更新框架及其 native wheel 后）：
    这一步不订阅、不主动初始化设备，不能单独作为 SDK 修复通过的依据。
 B. 上述最小复现中的 subscribe/enable/unsubscribe 均成功，并实际检查
    hgFuncLoad 的事件交付和参数；无效句柄的错误返回不能伪装成成功。
+   先通过 qualify.ppu_hgpti_resource_abi 的合成 ABI 检查，再在真实设备上
+   检查模块事件 6/7 的外层 context、descriptor 与 image 生命周期。
 C. 原生记录器的真实分配/context 生命周期测试：
      CUDA_VISIBLE_DEVICES=0 FLARE_RUN_CUDA_TESTS=1 python -m pytest -q \
        tests/preparation/test_module_images.py
