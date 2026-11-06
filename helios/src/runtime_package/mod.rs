@@ -23,6 +23,7 @@ mod format;
 #[cfg(any(windows, test))]
 mod host;
 mod limits;
+pub mod kernel_image;
 mod metadata;
 pub use metadata::{unverified_metadata, unverified_metadata_selected};
 mod memory;
@@ -673,10 +674,30 @@ impl NativeResources {
         unsafe {
             driver.check("cuCtxSetCurrent", (driver.context_set)(self.context))?;
             let mut modules = HashMap::new();
+            let mut ppu_functions = std::collections::HashSet::new();
+            let mut by_module: HashMap<_, Vec<_>> = HashMap::new();
+            for function in &package.functions {
+                by_module
+                    .entry(function.module.as_str())
+                    .or_default()
+                    .push(function);
+            }
             for module in &package.modules {
                 let image = files.read(package, &module.file)?;
                 if !image.starts_with(b"\x7fELF") {
                     return Err(invalid("module image is not a compiled cubin"));
+                }
+                if kernel_image::is_ppu(&image) {
+                    for function in by_module.get(module.name.as_str()).into_iter().flatten() {
+                        let sizes = kernel_image::ppu_parameter_sizes(&image, &function.symbol)?
+                            .ok_or_else(|| invalid("missing PPU parameter metadata"))?;
+                        if sizes != function.parameter_sizes {
+                            return Err(invalid(
+                                "compiled PPU kernel parameter layout differs from package",
+                            ));
+                        }
+                        ppu_functions.insert(function.id);
+                    }
                 }
                 let mut handle = null_mut();
                 driver.check(
@@ -716,30 +737,42 @@ impl NativeResources {
                     "cuModuleGetFunction",
                     (driver.function)(&mut handle, modules[&function.module], symbol.as_ptr()),
                 )?;
-                driver.check("cuFuncLoad", (driver.function_load)(handle))?;
-                for (index, expected) in function.parameter_sizes.iter().enumerate() {
-                    let (mut offset, mut size) = (0, 0);
+                if ppu_functions.contains(&function.id) {
+                    // PPU materializes the function in cuModuleGetFunction; its
+                    // cuFuncLoad/cuFuncGetParamInfo entrypoints are SDK stubs.
+                    // Check the live function before graph reconstruction. Widths
+                    // and count were checked against this module's compiled ELF.
+                    let mut registers = 0;
                     driver.check(
-                        "cuFuncGetParamInfo",
-                        (driver.parameter_info)(handle, index, &mut offset, &mut size),
+                        "cuFuncGetAttribute(NUM_REGS)",
+                        (driver.function_get_attribute)(&mut registers, 4, handle),
                     )?;
-                    if size != *expected {
+                } else {
+                    driver.check("cuFuncLoad", (driver.function_load)(handle))?;
+                    for (index, expected) in function.parameter_sizes.iter().enumerate() {
+                        let (mut offset, mut size) = (0, 0);
+                        driver.check(
+                            "cuFuncGetParamInfo",
+                            (driver.parameter_info)(handle, index, &mut offset, &mut size),
+                        )?;
+                        if size != *expected {
+                            return Err(invalid(
+                                "loaded kernel parameter layout differs from package",
+                            ));
+                        }
+                    }
+                    let (mut offset, mut size) = (0, 0);
+                    let status = (driver.parameter_info)(
+                        handle,
+                        function.parameter_sizes.len(),
+                        &mut offset,
+                        &mut size,
+                    );
+                    if status != 1 {
                         return Err(invalid(
-                            "loaded kernel parameter layout differs from package",
+                            "loaded kernel parameter count differs from package",
                         ));
                     }
-                }
-                let (mut offset, mut size) = (0, 0);
-                let status = (driver.parameter_info)(
-                    handle,
-                    function.parameter_sizes.len(),
-                    &mut offset,
-                    &mut size,
-                );
-                if status != 1 {
-                    return Err(invalid(
-                        "loaded kernel parameter count differs from package",
-                    ));
                 }
                 for [attribute, value] in &function.attributes {
                     driver.check(

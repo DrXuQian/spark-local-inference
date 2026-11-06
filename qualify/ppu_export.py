@@ -29,6 +29,8 @@ def parser():
 
 
 def compile_module(args):
+    from flare_heliopause import ppu_parameter_sizes
+
     from ignition.preparation.module_images import global_symbols, strip_debug
 
     args.output.mkdir(parents=True, exist_ok=True)
@@ -44,7 +46,11 @@ def compile_module(args):
     symbols = set(global_symbols(data))
     if not GLOBALS <= symbols or set(global_symbols(strip_debug(data))) != symbols:
         raise ValueError('PPU module globals must survive production debug stripping')
-    print(f'PPU module compiled and ELF globals checked: {module}', flush=True)
+    for image in (data, strip_debug(data)):
+        for symbol, expected in {'qwen_export_probe': [8], 'qwen_export_state_probe': [8, 8, 4]}.items():
+            if ppu_parameter_sizes(image, symbol) != expected:
+                raise ValueError(f'{symbol}: PPU compiled parameter metadata does not match the launch ABI')
+    print(f'PPU module compiled; ELF globals and parameter layouts checked: {module}', flush=True)
     return module
 
 

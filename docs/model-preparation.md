@@ -195,6 +195,37 @@ packages and Rust replay have no ABI selector or extra decode work. Qualificatio
 commands accept `--module-resource-abi hgpti-bare`. The raw SDK ABI diagnostic
 still reports the library defect; the workaround does not modify the SDK.
 
+SDK 2.2.1 also leaves `hgFuncGetParamInfo`, `hgKernelGetParamInfo` and
+`hgFuncLoad` unimplemented. For native PPU ELF images (machine 270, OSABI 96,
+ABI 4), export and Rust loading read the kernel's `.hg_info.<symbol>` argument
+records. Hidden driver parameters are excluded; parameter ordinals must be
+unique and contiguous. Pointer widths, 32/64-bit scalar widths and byte-sized
+by-value/global objects come from the compiled image. Typed compiler bindings
+and package parameter counts/sizes must still agree with those records.
+Untyped structs retain conservative pointer scanning. Debug stripping preserves
+the metadata, and no parameter metadata is synthesized from Python shapes.
+
+This workaround accepts graph `kernelParams` arrays. SREG and global KM
+locations are device delivery locations, not CUDA packed-buffer offsets: packed
+`extra` buffers and unqualified sub-word register arguments fail explicitly.
+Those cases need SDK parameter-query support before extending the accepted ABI.
+PPU `cuModuleGetFunction` materializes the kernel; native loading checks its live
+`NUM_REGS` attribute before graph construction, without calling the `cuFuncLoad`
+stub. NVIDIA images retain their driver parameter queries and explicit load.
+No SDK, Torch or Triton file is patched and no decode-time work is added.
+
+After updating, reinstall the Heliopause wheel and rebuild the Rust replay
+executable; both contain this reader. The tiny `qualify.ppu_export --compile-only`
+gate checks parameter layouts before and after debug stripping without a device.
+Broader compiler-only cases, including register spills and by-value structures:
+
+```sh
+FLARE_TEST_HGCC="$ppu_sdk/bin/hgcc" python -m pytest -q --confcutdir=tests/preparation \
+  tests/preparation/test_ppu_parameter_layout.py tests/preparation/test_cubin.py
+```
+
+These checks do not qualify actual PPU graph export or standalone replay.
+
 ## GPU selection
 
 Inspect GPU occupancy with `nvidia-smi` before preparation or loading. Select

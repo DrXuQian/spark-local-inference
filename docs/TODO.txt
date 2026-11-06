@@ -531,7 +531,7 @@
     allocations. Rebuild Heliopause with generic PCI identity naming before the
     complete gate; do not infer a product from CUDA-compatible SM values.
     SDK2.2.1 on the box passes all three module_images tests, moving past the
-    SDK2.1.1 callback-742 startup failure. Export now crashes while copying a
+    SDK2.1.1 callback-742 startup failure. Export then crashed while copying a
     module resource image inside cuModuleGetFunction. Actual SDK2.2.1 dispatcher
     calls with synthetic host events reproduce bare ModuleResourceData for both
     load/unload callbacks, instead of ResourceData containing context/descriptor.
@@ -558,6 +558,22 @@
     each pass nineteen host storage/inventory/export checks; sixteen device or
     platform-gated cases are skipped in each local environment. PPU export still
     requires the box; no native wheel or installed Torch patch is needed.
+
+[x] Read PPU ABI-4 compiled kernel parameter records during export and native
+    loading, replacing the SDK2.2.1 cuFuncGetParamInfo stub. Preserve exact
+    parameter counts/widths, hidden-parameter exclusion, typed bindings and
+    conservative aggregate pointer scanning. Share the existing ELF reader;
+    retain NVIDIA driver queries and load behavior. PPU module function lookup
+    materializes kernels; validate the live function attribute instead of the
+    cuFuncLoad stub. Packed extra buffers and sub-word SREG arguments fail
+    explicitly until their host ABI can be obtained. Twenty-three Rust capture/
+    ELF checks pass (three CUDA cases ignored); 62 Python/native checks pass
+    (one device case skipped), including real HGCC ppu10/15 builds, spills,
+    structures, malformed metadata, publication and debug stripping. The actual
+    Triton reduction image also preserves all seven parameter widths after
+    stripping. The standalone Rust replay tool passes cargo check; its PPU
+    execution and the complete tiny export/replay gate remain pending. Reinstall
+    the refreshed Heliopause wheel and rebuild the Rust replay executable.
 
 [x] Check required callback names before native recorder subscription and before
     compiling the standalone PPU export module. Report all missing/mismatched

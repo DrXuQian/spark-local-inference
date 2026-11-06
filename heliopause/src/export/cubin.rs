@@ -8,35 +8,8 @@
 use super::{ExportResult, invalid};
 use std::collections::BTreeSet;
 
-#[derive(Clone, Debug)]
-struct Section {
-    name: usize,
-    kind: u32,
-    flags: u64,
-    offset: usize,
-    size: usize,
-    link: usize,
-    stride: usize,
-}
-struct Elf<'a> {
-    image: &'a [u8],
-    offset: usize,
-    names: usize,
-    sections: Vec<Section>,
-}
-fn number(image: &[u8], offset: usize, size: usize) -> ExportResult<u64> {
-    let bytes = image
-        .get(
-            offset
-                ..offset
-                    .checked_add(size)
-                    .ok_or_else(|| invalid("invalid cubin extent"))?,
-        )
-        .ok_or_else(|| invalid("invalid cubin extent"))?;
-    let mut value = [0; 8];
-    value[..size].copy_from_slice(bytes);
-    Ok(u64::from_le_bytes(value))
-}
+use helios_core::runtime_package::kernel_image::{Elf, number};
+
 fn put(image: &mut [u8], offset: usize, value: u64, size: usize) {
     image[offset..offset + size].copy_from_slice(&value.to_le_bytes()[..size]);
 }
@@ -46,104 +19,6 @@ fn overlap(a: usize, size: usize, b: usize, length: usize) -> bool {
         && (a as u128) < b as u128 + length as u128
         && (b as u128) < a as u128 + size as u128
 }
-impl<'a> Elf<'a> {
-    fn parse(image: &'a [u8]) -> ExportResult<Self> {
-        if image.len() < 64 || &image[..6] != b"\x7fELF\x02\x01" {
-            return Err(invalid("expected an ELF64 little-endian cubin"));
-        }
-        let offset = number(image, 40, 8)? as usize;
-        let count = number(image, 60, 2)? as usize;
-        let names = number(image, 62, 2)? as usize;
-        if number(image, 58, 2)? != 64
-            || names == 0
-            || names >= count
-            || offset
-                .checked_add(count * 64)
-                .is_none_or(|end| end > image.len())
-        {
-            return Err(invalid("invalid cubin ELF section table"));
-        }
-        let mut sections = Vec::with_capacity(count);
-        for i in 0..count {
-            let p = offset + i * 64;
-            sections.push(Section {
-                name: number(image, p, 4)? as usize,
-                kind: number(image, p + 4, 4)? as u32,
-                flags: number(image, p + 8, 8)?,
-                offset: number(image, p + 24, 8)? as usize,
-                size: number(image, p + 32, 8)? as usize,
-                link: number(image, p + 40, 4)? as usize,
-                stride: number(image, p + 56, 8)? as usize,
-            });
-        }
-        Ok(Self {
-            image,
-            offset,
-            names,
-            sections,
-        })
-    }
-    fn contents(&self, index: usize) -> ExportResult<&'a [u8]> {
-        let s = self
-            .sections
-            .get(index)
-            .ok_or_else(|| invalid("invalid cubin section reference"))?;
-        if s.kind == 8 {
-            return Err(invalid("invalid cubin section extent"));
-        }
-        self.image
-            .get(
-                s.offset
-                    ..s.offset
-                        .checked_add(s.size)
-                        .ok_or_else(|| invalid("invalid cubin section extent"))?,
-            )
-            .ok_or_else(|| invalid("invalid cubin section extent"))
-    }
-    fn string(&self, table: usize, index: usize) -> ExportResult<&'a [u8]> {
-        if self.sections.get(table).is_none_or(|s| s.kind != 3) {
-            return Err(invalid("invalid cubin string reference"));
-        }
-        let data = self
-            .contents(table)?
-            .get(index..)
-            .ok_or_else(|| invalid("invalid cubin string reference"))?;
-        let end = data
-            .iter()
-            .position(|b| *b == 0)
-            .ok_or_else(|| invalid("unterminated cubin string"))?;
-        Ok(&data[..end])
-    }
-    fn symbols(
-        &self,
-        alternate: bool,
-    ) -> ExportResult<Vec<(usize, usize, &'a [u8], u8, usize, u64, usize)>> {
-        let mut result = Vec::new();
-        for (index, s) in self.sections.iter().enumerate() {
-            if s.kind != 2 && !(alternate && s.kind == 0x70000085) {
-                continue;
-            }
-            if s.link == 0 || s.link >= self.sections.len() || s.stride != 24 || s.size % 24 != 0 {
-                return Err(invalid("invalid cubin symbol table"));
-            }
-            self.contents(index)
-                .map_err(|_| invalid("invalid cubin symbol table extent"))?;
-            for p in (s.offset..s.offset + s.size).step_by(24) {
-                result.push((
-                    p,
-                    s.link,
-                    self.string(s.link, number(self.image, p, 4)? as usize)?,
-                    self.image[p + 4] & 15,
-                    number(self.image, p + 6, 2)? as usize,
-                    number(self.image, p + 8, 8)?,
-                    number(self.image, p + 16, 8)? as usize,
-                ));
-            }
-        }
-        Ok(result)
-    }
-}
-
 pub(crate) fn strip_global_source(symbol: &str, data: &[u8]) -> ExportResult<Vec<u8>> {
     if !symbol.starts_with("assertFile_") {
         return Ok(data.to_vec());

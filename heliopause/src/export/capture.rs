@@ -360,7 +360,7 @@ fn check_bindings(
 
 unsafe fn argument_data(
     params: &KernelParams,
-    layout: &[(usize, usize)],
+    layout: &[(Option<usize>, usize)],
 ) -> ExportResult<Vec<Vec<u8>>> {
     if !params.params.is_null() {
         if !params.extra.is_null() {
@@ -421,6 +421,9 @@ unsafe fn argument_data(
     layout
         .iter()
         .map(|&(offset, size)| {
+            let offset = offset.ok_or_else(|| invalid(
+                "PPU metadata has no packed-buffer offsets; require kernelParams or implemented cuFuncGetParamInfo",
+            ))?;
             if offset.checked_add(size).is_none_or(|end| end > nbytes) {
                 return Err(invalid(
                     "kernel parameter extends beyond its packed argument buffer",
@@ -434,7 +437,22 @@ unsafe fn argument_data(
         .collect()
 }
 
-fn function_layout(cuda: &Cuda, function: usize) -> ExportResult<Vec<(usize, usize)>> {
+fn function_name(cuda: &Cuda, function: usize) -> ExportResult<String> {
+    let mut name = std::ptr::null();
+    cu!(cuda, "cuFuncGetName", (*mut *const c_char, Handle), &mut name, function as Handle)?;
+    if name.is_null() {
+        return Err(invalid("CUDA function has no symbol name"));
+    }
+    Ok(unsafe { CStr::from_ptr(name) }.to_str()?.to_owned())
+}
+
+fn function_layout(cuda: &Cuda, function: usize, image: &[u8]) -> ExportResult<Vec<(Option<usize>, usize)>> {
+    use helios_core::runtime_package::kernel_image::{is_ppu, ppu_parameter_sizes};
+    if is_ppu(image) {
+        let symbol = function_name(cuda, function)?;
+        let sizes = ppu_parameter_sizes(image, &symbol)?.ok_or_else(|| invalid("missing PPU parameter metadata"))?;
+        return Ok(sizes.into_iter().map(|size| (None, size)).collect());
+    }
     let mut layout = Vec::new();
     for index in 0..4096usize {
         let (mut offset, mut size) = (0usize, 0usize);
@@ -454,7 +472,7 @@ fn function_layout(cuda: &Cuda, function: usize) -> ExportResult<Vec<(usize, usi
         if size == 0 {
             return Err(invalid("kernel arguments must have positive sizes"));
         }
-        layout.push((offset, size));
+        layout.push((Some(offset), size));
     }
     Err(invalid("kernel exceeds supported parameter count"))
 }
@@ -464,7 +482,7 @@ fn kernel_node(
     node: Handle,
     allocations: &[Allocation],
     kernels: &[Kernel],
-    layouts: &[Vec<(usize, usize)>],
+    layouts: &[Vec<(Option<usize>, usize)>],
     indices: &HashMap<usize, usize>,
 ) -> ExportResult<wire::Kernel> {
     let (params, function) = kernel_params(cuda, node)?;
@@ -548,7 +566,7 @@ fn capture_graph(
     cupti: Option<&Library>,
     allocations: &[Allocation],
     kernels: &[Kernel],
-    layouts: &[Vec<(usize, usize)>],
+    layouts: &[Vec<(Option<usize>, usize)>],
     indices: &HashMap<usize, usize>,
     events: &BTreeMap<String, usize>,
 ) -> ExportResult<(Vec<wire::Node>, Vec<wire::Edge>, u64)> {
@@ -2639,7 +2657,7 @@ pub(crate) fn capture_rank(
             if !modules.contains_key(&name) {
                 modules.insert(name.clone(), recorder.image_for(function)?);
             }
-            let arguments = function_layout(&cuda, function)?
+            let arguments = function_layout(&cuda, function, &modules[&name])?
                 .iter()
                 .map(|&(_, size)| Argument {
                     size,
@@ -2670,7 +2688,7 @@ pub(crate) fn capture_rank(
                 "kernel requires a live function and registered module image",
             ));
         }
-        let layout = function_layout(&cuda, kernel.function)?;
+        let layout = function_layout(&cuda, kernel.function, &modules[&kernel.module])?;
         if layout
             .iter()
             .map(|&(_, size)| size)
@@ -2714,18 +2732,7 @@ pub(crate) fn capture_rank(
                 end = stop;
             }
         }
-        let mut name = std::ptr::null();
-        cu!(
-            &cuda,
-            "cuFuncGetName",
-            (*mut *const c_char, Handle),
-            &mut name,
-            kernel.function as Handle
-        )?;
-        if name.is_null() {
-            return Err(invalid("CUDA function has no symbol name"));
-        }
-        let symbol = unsafe { CStr::from_ptr(name) }.to_str()?.to_owned();
+        let symbol = function_name(&cuda, kernel.function)?;
         let mut attributes = Vec::new();
         for id in [8, 9, 14, 15] {
             let mut value = 0;
@@ -3959,6 +3966,29 @@ mod tests {
     }
 
     #[test]
+    fn ppu_argument_arrays_preserve_scalars_and_opaque_structs_without_packed_offsets() {
+        let mut pointer = 0x1020304050607080u64;
+        let mut tag = 37u32;
+        let mut object = [1u8, 3, 9];
+        let mut arguments = [
+            (&mut pointer as *mut u64).cast(),
+            (&mut tag as *mut u32).cast(),
+            object.as_mut_ptr().cast(),
+        ];
+        let layout = [(None, 8), (None, 4), (None, 3)];
+        let mut params = KernelParams { params: arguments.as_mut_ptr(), ..Default::default() };
+        assert_eq!(unsafe { argument_data(&params, &layout) }.unwrap(),
+            vec![pointer.to_le_bytes().to_vec(), tag.to_le_bytes().to_vec(), object.to_vec()]);
+        let mut packed = [0u8; 32];
+        let mut size = packed.len();
+        let mut extra = [1usize as Handle, packed.as_mut_ptr().cast(), 2usize as Handle,
+            (&mut size as *mut usize).cast(), std::ptr::null_mut()];
+        params.params = std::ptr::null_mut();
+        params.extra = extra.as_mut_ptr();
+        assert!(unsafe { argument_data(&params, &layout) }.unwrap_err().to_string()
+            .contains("no packed-buffer offsets"));
+    }
+    #[test]
     fn packed_arguments_honor_abi_offsets_and_parameterless_launches() {
         let mut bytes = [0u8; 24];
         bytes[0..4].copy_from_slice(&17u32.to_le_bytes());
@@ -3976,7 +4006,7 @@ mod tests {
             extra: options.as_mut_ptr(),
             ..Default::default()
         };
-        let data = unsafe { argument_data(&params, &[(0, 4), (8, 8), (16, 1)]) }.unwrap();
+        let data = unsafe { argument_data(&params, &[(Some(0), 4), (Some(8), 8), (Some(16), 1)]) }.unwrap();
         assert_eq!(
             data,
             vec![
@@ -3990,7 +4020,7 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        assert!(unsafe { argument_data(&KernelParams::default(), &[(0, 4)]) }.is_err());
+        assert!(unsafe { argument_data(&KernelParams::default(), &[(Some(0), 4)]) }.is_err());
     }
     #[test]
     fn argument_options_reject_duplicate_unknown_missing_and_out_of_bounds_fields() {
@@ -4026,14 +4056,14 @@ mod tests {
             std::ptr::null_mut(),
         ];
         params.extra = good.as_mut_ptr();
-        assert!(unsafe { argument_data(&params, &[(12, 8)]) }.is_err());
+        assert!(unsafe { argument_data(&params, &[(Some(12), 8)]) }.is_err());
         let mut pointers = [bytes.as_mut_ptr().cast()];
         params.params = pointers.as_mut_ptr();
-        assert!(unsafe { argument_data(&params, &[(0, 4)]) }.is_err());
+        assert!(unsafe { argument_data(&params, &[(Some(0), 4)]) }.is_err());
         params.extra = std::ptr::null_mut();
         let mut null_pointers = [std::ptr::null_mut()];
         params.params = null_pointers.as_mut_ptr();
-        assert!(unsafe { argument_data(&params, &[(0, 4)]) }.is_err());
+        assert!(unsafe { argument_data(&params, &[(Some(0), 4)]) }.is_err());
     }
     #[test]
     fn external_pages_preserve_only_live_byte_spans() {

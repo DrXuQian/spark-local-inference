@@ -1054,11 +1054,17 @@ fn cubin_strip_global_source<'py>(
 fn cubin_global_symbols(image: &[u8]) -> PyResult<Vec<String>> {
     super::cubin::global_symbols(image).map_err(|e| PyValueError::new_err(e.to_string()))
 }
+#[pyfunction]
+fn ppu_parameter_sizes(image: &[u8], symbol: &str) -> PyResult<Option<Vec<usize>>> {
+    helios_core::runtime_package::kernel_image::ppu_parameter_sizes(image, symbol)
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeModuleRecorder>()?;
     module.add_function(wrap_pyfunction!(cubin_strip_debug, module)?)?;
     module.add_function(wrap_pyfunction!(cubin_strip_global_source, module)?)?;
     module.add_function(wrap_pyfunction!(cubin_global_symbols, module)?)?;
+    module.add_function(wrap_pyfunction!(ppu_parameter_sizes, module)?)?;
     Ok(())
 }
 
