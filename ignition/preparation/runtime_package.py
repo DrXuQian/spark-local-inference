@@ -173,6 +173,7 @@ def export_model(prepared, images, storage, path, *, options, progress=None, pub
     from .package_snapshot import _OPTIONS
     from .rebuild_manifest import rebuild_weights_metadata, weight_payload_request
     from .memory_inventory import collect_inventory, print_inventory
+    from .package_storage import pool_snapshot
 
     if storage.error is not None:
         raise RuntimeError("native package allocator failed") from storage.error
@@ -184,7 +185,7 @@ def export_model(prepared, images, storage, path, *, options, progress=None, pub
     zero_ranges = [(address, size) for address, size in prepared.export_zero_ranges
         if not any(region.address <= address < region.address + region.extent for region in dynamic)]
     zero_ranges.extend((segment["address"], segment["total_size"])
-                       for segment in storage.graph_pool.snapshot(include_traces=False))
+                       for segment in pool_snapshot(storage.graph_pool.id))
     inactive = storage.unused_ranges()
     zero_ranges.extend((start, end - start) for start, end in inactive)
     transports = [runtime.native_description() for runtime in storage.transports]

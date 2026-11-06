@@ -6,13 +6,83 @@
 allocations above the addresses a serving context occupies."""
 
 import ctypes
+import inspect
 import os
 import struct
+from types import SimpleNamespace
 
 import pytest
 import torch
 
-from ignition.preparation.package_storage import PackageStorage
+from ignition.preparation.package_storage import PackageStorage, ScratchPool, pool_snapshot
+
+
+@pytest.mark.parametrize('pool_id', [(0, 7), (3, 0)])
+def test_pool_snapshot_uses_real_torch_wrapper_without_changing_metadata(monkeypatch, pool_id):
+    segments = [dict(address=0x80000000000, total_size=512, segment_pool_id=pool_id,
+                     blocks=[dict(address=0x80000000000, size=256, requested_size=193,
+                                  state='active_awaiting_free')])]
+    calls = []
+
+    def native_snapshot(argument):
+        calls.append(argument)
+        return {'segments': segments}
+
+    # Keep the installed Torch Python wrapper, replacing only its native device
+    # boundary. Run this test with both Torch 2.9 and the newer preparation Torch.
+    monkeypatch.setattr(torch._C, '_cuda_memorySnapshot', native_snapshot, raising=False)
+    assert pool_snapshot(pool_id) is segments
+    traces_supported = 'include_traces' in inspect.signature(torch.cuda.memory_snapshot).parameters
+    assert calls == [(*pool_id, False) if traces_supported else pool_id]
+
+
+def test_pool_snapshot_does_not_retry_allocator_type_errors(monkeypatch):
+    calls = []
+
+    def native_snapshot(argument):
+        calls.append(argument)
+        raise TypeError('allocator failure')
+
+    monkeypatch.setattr(torch._C, '_cuda_memorySnapshot', native_snapshot, raising=False)
+    with pytest.raises(TypeError, match='allocator failure'):
+        pool_snapshot((0, 7))
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('fail_second_unmap', [False, True])
+def test_scratch_snapshot_keeps_pool_scope_and_restores_partial_unmaps(monkeypatch, fail_second_unmap):
+    from ignition.preparation import package_storage
+
+    addresses = (0x80000000000, 0x80000010000)
+    pool_id = (0, 7)
+    calls, restored = [], []
+    traces_supported = 'include_traces' in inspect.signature(torch.cuda.memory_snapshot).parameters
+
+    def native_snapshot(argument):
+        assert argument == ((*pool_id, False) if traces_supported else pool_id)
+        return {'segments': [dict(address=address, total_size=65536) for address in addresses]}
+
+    def cuda_call(name, address, size):
+        calls.append((name, address.value, size.value))
+        if fail_second_unmap and address.value == addresses[1]:
+            raise RuntimeError('unmap failed')
+
+    monkeypatch.setattr(torch._C, '_cuda_memorySnapshot', native_snapshot, raising=False)
+    monkeypatch.setattr(torch.cuda, 'synchronize', lambda device: calls.append(('synchronize', device)))
+    monkeypatch.setattr(package_storage, 'DeviceRegion',
+                        lambda cuda, address, size, device: restored.append((address, size, device)))
+    pool = ScratchPool.__new__(ScratchPool)
+    pool.pool_id, pool.unbacked = pool_id, []
+    pool.storage = SimpleNamespace(device=2, cuda=SimpleNamespace(call=cuda_call),
+                                   mappings={a: SimpleNamespace(nbytes=65536) for a in addresses})
+    if fail_second_unmap:
+        with pytest.raises(RuntimeError, match='unmap failed'):
+            pool.release_backing()
+        assert restored == [(addresses[0], 65536, 2)] and pool.unbacked == []
+    else:
+        pool.release_backing()
+        assert pool.unbacked == [(a, 65536) for a in addresses] and restored == []
+    assert calls == [('synchronize', 2), *(('cuMemUnmap', a, 65536) for a in addresses)]
 
 
 @pytest.mark.parametrize("local_ranks", [0, 4, True])

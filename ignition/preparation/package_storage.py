@@ -15,6 +15,17 @@ import os
 from .runtime_package import _Cuda
 
 
+def pool_snapshot(pool_id):
+    """Read one pool's allocator metadata, omitting traces when Torch supports it."""
+    from inspect import signature
+
+    import torch
+
+    snapshot = torch.cuda.memory_snapshot
+    options = {'include_traces': False} if 'include_traces' in signature(snapshot).parameters else {}
+    return snapshot(pool_id, **options)
+
+
 @dataclass
 class Mapping:
     address: int
@@ -455,7 +466,7 @@ class ScratchPool:
         torch.cuda.synchronize(self.storage.device)
         mappings = self.storage.mappings
         try:
-            for segment in torch.cuda.memory_snapshot(self.pool_id, include_traces=False):
+            for segment in pool_snapshot(self.pool_id):
                 address = segment["address"]
                 size = mappings[address].nbytes
                 self.storage.cuda.call("cuMemUnmap", C.c_uint64(address), C.c_size_t(size))

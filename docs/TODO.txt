@@ -551,6 +551,14 @@
     locally. Export configuration and qualification flags carry the selection;
     179 CLI/configuration and twelve rank cleanup/selection checks pass.
 
+[x] Support Torch2.9 allocator snapshots during graph export and scratch backing
+    release. Query the same pool ID through memory_snapshot and pass the optional
+    include_traces flag only when supported; preserve all segment/block metadata
+    and propagate allocator errors. Real Torch2.9 and Torch2.15 Python wrappers
+    each pass nineteen host storage/inventory/export checks; sixteen device or
+    platform-gated cases are skipped in each local environment. PPU export still
+    requires the box; no native wheel or installed Torch patch is needed.
+
 [x] Check required callback names before native recorder subscription and before
     compiling the standalone PPU export module. Report all missing/mismatched
     APIs, retaining fatal activation errors. Also enable the omitted FatBinary
