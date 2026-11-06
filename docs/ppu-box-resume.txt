@@ -5,6 +5,7 @@ The current wheels are available directly in Git LFS under
 artifacts/ppu/20261106/wheels/ on feat/qwen38-gguf:
   actlize_la-0.2.1-1ppu10version221184ee6-py3-none-linux_x86_64.whl
   flashinfer_python-0.6.18+ppu.flare2-py3-none-any.whl
+  flare_heliopause-0.1.0-cp312-cp312-linux_x86_64.whl
 
 GitHub rejects new LFS objects in this public fork. The payloads are stored in
 DrXuQian/qwen4flash on branch artifacts/ppu-20261106; this repository's
@@ -20,7 +21,8 @@ From the already configured PPU environment:
   git lfs pull --include="artifacts/ppu/20261106/wheels/*.whl" --exclude=""
   python -m pip install --no-deps --force-reinstall \
     artifacts/ppu/20261106/wheels/actlize_la-0.2.1-1ppu10version221184ee6-py3-none-linux_x86_64.whl \
-    artifacts/ppu/20261106/wheels/flashinfer_python-0.6.18+ppu.flare2-py3-none-any.whl
+    artifacts/ppu/20261106/wheels/flashinfer_python-0.6.18+ppu.flare2-py3-none-any.whl \
+    artifacts/ppu/20261106/wheels/flare_heliopause-0.1.0-cp312-cp312-linux_x86_64.whl
 
 The actlizeLA wheel is unchanged from the original handoff. FlashInfer flare2
 replaces flare1 for the reported sampling link failure; install the explicit
@@ -78,7 +80,7 @@ The operator sources are published on the Flare development branches:
   DrXuQian/flashinfer-for-sail: fix/flare-ppu-sampling, 762b396
 The QUactlize change only fixes installed-wheel test reporting; it changes no
 kernel or runtime and does not require a replacement QUactlize wheel. The two
-LFS wheels above already match the published actlizeLA and FlashInfer commits.
+operator wheels above already match the published actlizeLA and FlashInfer commits.
 
 For a focused retry after installation:
 
@@ -188,16 +190,32 @@ With the native flare_heliopause extension installed, the offline module stage i
   python -m qualify.ppu_export --target ppu10 \
     --output /tmp/ppu-export-module-1 --compile-only
 
-Rebuild the changed native extension on the box, then run the complete gate on
-one card in a fresh directory. Cargo and the normal native build prerequisites
-are required:
+Install the native extension in the same Python used for qualification, then
+run the complete gate on one card in a fresh directory. Installing the framework
+root with pip does not install this separate package. The supplied wheel is
+CPython3.12/Linux x86_64; it needs glibc >=2.34, OpenSSL3 and libstdc++. It includes
+the PCI identity/export changes and imports successfully in a fresh environment
+without Torch or GPU libraries loaded. Fourteen native publication/conversion
+cases pass. Driver/CUPTI loading and PPU graph export still require the box.
 
   git pull --ff-only
-  python -m pip install --no-deps --force-reinstall ./heliopause
+  git lfs pull --include="artifacts/ppu/20261106/wheels/flare_heliopause*.whl" --exclude=""
+  python -m pip install 'cryptography>=46,<52' 'safetensors==0.8.0'
+  python -m pip install --no-deps --force-reinstall \
+    artifacts/ppu/20261106/wheels/flare_heliopause-0.1.0-cp312-cp312-linux_x86_64.whl
+  python -c "import sys, flare_heliopause; print(sys.executable); print(flare_heliopause.__file__)"
   CUDA_VISIBLE_DEVICES=0 python -m qualify.ppu_export --target ppu10 --output /tmp/ppu-export-replay-1
   cargo build --release --manifest-path helios/Cargo.toml \
     --features runtime-package,test-tools --bin test_actlize_runtime_package
   CUDA_VISIBLE_DEVICES=0 helios/target/release/test_actlize_runtime_package /tmp/ppu-export-replay-1
+
+The wheel avoids building the Python extension on the box; the replay executable
+above still needs Cargo and native build prerequisites. For another Python/host
+ABI, build the extension with `python -m pip install --no-deps --force-reinstall
+./heliopause` instead. If installation fails, stop before qualification and
+inspect that installation error; a later ModuleNotFoundError is not its cause.
+The two small Python packages above supply signing and package-inspection helpers;
+they do not replace platform Torch, Triton, FlashInfer or the operator libraries.
 
 Use --compiler /path/to/hgcc if the native SDK compiler is not at
 /usr/local/PPU_SDK/bin/hgcc. The compile-only stage does not load device kernels

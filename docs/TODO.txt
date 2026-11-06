@@ -533,6 +533,12 @@
     SDK2.2.1 resolves callback 742, unlike the previously checked SDK2.1.1, but
     recorder startup and device export/replay still require the deployment box.
 
+[x] Supply the standalone flare_heliopause wheel for the reported missing native
+    module. CPython3.12/Linux x86_64 installation and isolated import pass with
+    no Python dependencies; fourteen native package tests pass. The LFS wheel
+    contains the current generic PCI identity handling. Use the same interpreter
+    for pip and qualification; root-only framework installation does not include it.
+
 [x] Publish the QUactlize installed-wheel reporting fix as 653b46e on feat/ppu-flash-next:
     tools/verify_installed_wheel.py previously omitted FLARE_RUN_CUDA_TESTS for its
     Flare subprocess and accepted pytest exit zero without checking skipped
