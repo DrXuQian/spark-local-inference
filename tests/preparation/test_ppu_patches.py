@@ -3,6 +3,7 @@
 """Apply the PPU patch set to actual Torch 2.9 sources without touching the installation."""
 
 import ast
+import importlib.util
 from importlib.metadata import distribution
 from importlib.resources import files
 import os
@@ -81,3 +82,77 @@ def test_platform_source_mismatch_never_partially_patches_the_installation(insta
     with pytest.raises(PreparationError, match='preserve the installed artifacts'):
         patches.apply(operator_target='ppu15')
     assert all((root / path).read_bytes() == value for path, value in original.items())
+
+
+def test_platform_patch_cli_selects_the_ppu_environment(installation, capsys):
+    from ignition.patches.__main__ import main
+
+    assert main(['--operator-target', 'ppu10']) == 0
+    assert capsys.readouterr().out.count('Patched ') == 2
+    assert main(['--operator-target', 'ppu10']) == 0
+    assert 'already applied' in capsys.readouterr().out
+
+
+def test_actual_long_kernel_can_be_saved_and_reloaded_statically(installation, tmp_path, monkeypatch):
+    """Compile offline, then exercise both real Inductor filename consumers."""
+    root, _, original = installation
+    patches.apply(operator_target='ppu10')
+    import torch
+    import triton
+    from torch._inductor.runtime import triton_heuristics as runtime
+    from triton.backends.compiler import GPUTarget
+    from triton.compiler import ASTSource
+
+    relative = 'torch/_inductor/runtime/triton_heuristics.py'
+    name = ('triton_poi_fused___rshift____to_copy_bitwise_and_bitwise_not_bitwise_or_clamp_div_'
+            'floor_divide_gt_index_mul_remainder_scalar_tensor_slice_sub_unsqueeze_view_where_2')
+    source = tmp_path / 'long_kernel.py'
+    source.write_text(f'''import triton
+import triton.language as tl
+
+@triton.jit
+def {name}(source, output, N: tl.constexpr):
+    indices = tl.arange(0, N)
+    tl.store(output + indices, tl.load(source + indices))
+''')
+    spec = importlib.util.spec_from_file_location('offline_long_kernel', source)
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+
+    def no_device(*args, **kwargs):
+        pytest.fail('static cache filename regression must not initialize CUDA')
+
+    monkeypatch.setattr(torch.cuda, '_lazy_init', no_device)
+
+    def result_class(source):
+        tree = ast.parse(source)
+        definition, = [node for node in tree.body if isinstance(node, ast.ClassDef)
+                       and node.name == 'StaticTritonCompileResult']
+        imports = [node for node in tree.body if isinstance(node, ast.ImportFrom) and node.module == '__future__']
+        namespace = vars(runtime).copy()
+        exec(compile(ast.Module(body=[*imports, definition], type_ignores=[]), '<installed-inductor>', 'exec'), namespace)
+        return namespace['StaticTritonCompileResult']
+
+    with triton.knobs.cache.scope(), torch._inductor.config.patch(
+            use_static_cuda_launcher=True, strict_static_cuda_launcher=True, cpp_wrapper=False):
+        triton.knobs.cache.dir = str(tmp_path / 'triton-cache')
+        compiled = triton.compile(
+            ASTSource(getattr(module, name), signature={'source': '*fp32', 'output': '*fp32', 'N': 'constexpr'},
+                      constexprs={'N': 32}),
+            target=GPUTarget('cuda', 80, 32), options={'num_warps': 4, 'num_stages': 1})
+        metadata = {'device_type': 'cuda', 'device': 0}
+        with pytest.raises(runtime.CannotStaticallyLaunchKernel, match='Cubin path not found'):
+            result_class(original[relative]).can_statically_launch(
+                compiled, {}, metadata, runtime.HeuristicType.POINTWISE)
+
+        fixed = result_class((root / relative).read_text())
+        owner = fixed.can_statically_launch(compiled, {}, metadata, runtime.HeuristicType.POINTWISE)
+        assert owner.name == name and len(name) == 164
+        assert Path(owner.cubin_path).name == name[:150] + '.cubin'
+        assert Path(owner.cubin_path).read_bytes() == compiled.asm['cubin']
+        saved = fixed(owner, triton.Config({}), metadata, {})
+        owner.cubin_path = None
+        saved.reload_cubin_path()
+        assert Path(owner.cubin_path).name == name[:150] + '.cubin'
+        assert Path(owner.cubin_path).read_bytes() == compiled.asm['cubin']

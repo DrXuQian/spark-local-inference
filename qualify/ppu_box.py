@@ -3,8 +3,9 @@
 """Check installed PPU interfaces and run operator/graph gates without b12x.
 
 This qualifies the port's dependencies and prepared components. It does not
-claim complete Qwen model export or Rust replay on PPU. No models are downloaded,
-no packages are installed, and supplied source trees/libraries are not modified.
+claim complete Qwen model export or Rust replay on PPU. It applies the bundled
+Torch/Triton preparation patches before imports. No models are downloaded, no
+packages are installed, and supplied operator trees/native libraries are not modified.
 """
 
 import argparse
@@ -318,6 +319,15 @@ def main(argv=None):
         sources = resolve_sources(args)
     except ValueError as exc:
         options.error(str(exc))
+    from ignition.errors import PreparationError
+    from ignition.patches import apply
+
+    try:
+        changed = apply(operator_target=args.actlize_target)
+    except PreparationError as exc:
+        print(f'FAIL preparation-patches: {exc}', flush=True)
+        return 1
+    print(f'PASS preparation-patches: {len(changed)} files updated; required contexts verified', flush=True)
     # Only explicitly selected development declarations override installed packages.
     sys.path[:0] = [str(p) for p in sources]
     from ignition.preparation.actlize import ActlizeLibrarySpec

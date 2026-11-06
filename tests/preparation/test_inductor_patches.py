@@ -233,12 +233,12 @@ def test_simultaneous_startup_produces_the_same_patched_files(installation):
 
 
 def test_explicit_entry_point_reports_errors_and_repeated_application(installation, capsys):
-    assert main() == 0
+    assert main([]) == 0
     assert capsys.readouterr().out.count("Patched ") == 3
-    assert main() == 0
-    assert capsys.readouterr().out == ""
+    assert main([]) == 0
+    assert 'already applied' in capsys.readouterr().out
     next(installation.root.glob("triton-*.dist-info/METADATA")).write_text("Name: triton\nVersion: 3.7.0\n")
-    assert main() == PreparationError.exit_code
+    assert main([]) == PreparationError.exit_code
     assert "require triton==3.8.0" in capsys.readouterr().err
 
 

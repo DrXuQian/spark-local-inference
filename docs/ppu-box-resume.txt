@@ -39,6 +39,11 @@ new output directory:
     --blas-library /usr/local/PPU_SDK/CUDA_SDK/targets/x86_64-linux/lib/libcublas.so \
     --run-device-tests --output /tmp/ppu-box-20261106-lfs
 
+The box runner applies and verifies the bundled Torch2.9/Triton3.5 source
+patches before importing operators. It rejects mismatched versions or source
+contexts before starting tests. This changes installed Python source files;
+it does not rebuild or reinstall the platform packages.
+
 The separate handoff archive retains the operator source patches, host logs,
 nine additional FlashInfer RNG device cases and run-ppu10-box.sh. Downloading
 that archive is optional for installing these wheels or running framework gates.
@@ -63,8 +68,9 @@ inline stub under permissive compilation. Sampling requires no such stubs;
 missing APIs now fail compilation, and implemented SDK APIs are not shadowed.
 Eighteen host tracing/linkage checks pass on Torch2.9, and all three real PPU
 sampling translation units compile and link with SDK2.2.1. The box's actual
-header provenance and successful device replay still need verification. The
-version change creates a fresh JIT cache without deleting unrelated caches.
+header provenance was not collected. The user now reports both sampling
+device cases passing after the framework fixes below. The version change
+creates a fresh JIT cache without deleting unrelated caches.
 
 The operator sources are published on the Flare development branches:
   DrXuQian/actlizeLA: feat/flare-gdn-qsa-mtp, 2e107e2
@@ -76,6 +82,7 @@ LFS wheels above already match the published actlizeLA and FlashInfer commits.
 
 For a focused retry after installation:
 
+  python -m ignition.patches --operator-target ppu10
   FLARE_RUN_CUDA_TESTS=1 FLARE_ACTLIZE_TARGET=ppu10 python -m pytest -q \
     tests/components/test_actlize_qsa_cuda.py \
     tests/components/test_external_sampling_cuda.py
@@ -97,8 +104,16 @@ Sampling now classifies FP32 bit patterns using integer operations for finite
 and nonnegative checks. Both zero signs, negative subnormals, infinities and all
 NaN payloads retain the original rejection rules. Probability sums and the mass
 tolerance are unchanged. The corrected reduction compiles with 4, 8 and 16 warps
-in the real PPU compiler; full catalog replay still needs the box. Pull the
-framework change and re-run test_external_sampling_cuda.py, with both cases.
+in the real PPU compiler.
+
+The subsequent missing static-autotuner binding was caused by an unapplied
+Torch2.9 filename patch: Triton writes a 150-character cache filename, while
+Inductor looked up the complete 164-character name. Both initial lookup and
+disk reload must use the truncated filename; the CUDA symbol stays complete.
+The command above applies that Torch patch and the separate Triton helper-cache
+pointer-width patch. It is safe to repeat after a dependency reinstall.
+The user reports both direct/catalog sampling cases passing in 204.13s with
+these fixes. That duration includes preparation and is not a replay latency.
 
 If a compiler failure remains, select the generated Python file and
 async_compile.triton line from the new traceback to preserve its diagnostics:
@@ -116,7 +131,7 @@ The file/line must match the current traceback if the generated code changes.
 Compilation success alone does not qualify catalog replay.
 
 Still requiring the PPU box:
-  1. QSA / sampling numerics and catalog replay after these package fixes.
+  1. Confirm the six QSA cases after these package fixes (sampling is passed).
   2. Complete target + shared-MTP graph, including acceptance and state rollback.
   3. Export on PPU, then Rust-only replay of the prepared package.
   4. Complete-round timeline and allocation checks before a no-bubble claim.

@@ -104,6 +104,19 @@ patches before starting their process:
 uv run --locked --extra prepare python -m ignition.patches
 ```
 
+For the platform Torch 2.9.0/Triton 3.5.0 environment, keep the PPU artifacts
+and select their patch set explicitly before standalone tools or pytest:
+
+```sh
+python -m ignition.patches --operator-target ppu10
+```
+
+Use `ppu15` for that target. This edits two installed Python source files:
+Torch Inductor's static-kernel cache lookup/reload and Triton's helper cache
+key. It does not rebuild either package. `qualify.ppu_box` applies and checks
+this same set before importing operators, including when inspecting interfaces
+without device tests.
+
 `python scripts/setup_preparation.py` resolves the FlashInfer revision declared
 in `pyproject.toml`, syncs preparation/test dependencies, rebuilds FlashInfer and
 Heliopause, and applies the bundled patches before exiting. It updates `uv.lock`
@@ -1103,7 +1116,10 @@ check replay allocation stability and have direct/catalog variants. Initial
 catalog compilation takes longer than subsequent replay.
 Torch2.9's skipped `torch.library.wrap_triton` call in probability normalization
 now goes through the existing Dynamo-aware launch helper; four host tracing
-cases pass on Torch2.9 and Torch2.15. The eight device cases remain unrun.
+cases pass on Torch2.9 and Torch2.15. After the FP32 classification correction
+and bundled Inductor cache filename patch, the user reports both sampling
+cases passing on PPU (204.13s including preparation). The six QSA cases still
+need confirmation on the box.
 These are component graph gates, not complete target/MTP state commit,
 native export/Rust replay or whole-round bubble measurements.
 

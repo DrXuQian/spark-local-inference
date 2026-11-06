@@ -74,3 +74,42 @@ def test_both_installed_packages_keep_framework_gates_without_operator_sources(t
     args.actlize_library = library
     assert resolve_sources(args) == (tmp_path,)
     assert {'actlize', 'actlize-aux'} <= {s[0] for s in device_suites(args, Path.cwd(), tmp_path / 'results')}
+
+
+@pytest.mark.parametrize('patch_fails', [False, True])
+def test_box_applies_patches_before_importing_operator_dependencies(tmp_path, monkeypatch, patch_fails):
+    import builtins
+    from ignition import patches
+    from ignition.errors import PreparationError
+    from qualify.ppu_box import main
+
+    library = tmp_path / 'blas.so'
+    library.touch()
+    arguments = ['--actlize-target', 'ppu15', '--blas-library', str(library)]
+    patched = []
+
+    def apply(*, operator_target):
+        patched.append(operator_target)
+        if patch_fails:
+            raise PreparationError('incompatible source context')
+        return ()
+
+    class DependenciesReached(Exception):
+        pass
+
+    original_import = builtins.__import__
+
+    def import_dependency(name, *args, **kwargs):
+        if name == 'ignition.preparation.actlize':
+            assert patched == ['ppu15'] and not patch_fails
+            raise DependenciesReached
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(patches, 'apply', apply)
+    monkeypatch.setattr(builtins, '__import__', import_dependency)
+    if patch_fails:
+        assert main(arguments) == 1
+    else:
+        with pytest.raises(DependenciesReached):
+            main(arguments)
+    assert patched == ['ppu15']

@@ -450,9 +450,9 @@
     compile and link for ppu_10 with SDK2.2.1-184ee6; the 0.6.18+ppu.flare1 wheel
     includes PPU JIT sources, not a host-linked sampling binary. See
     docs/ppu-box-resume.txt for installation, published Flare source branches and
-    gates. Publication does not establish PPU execution. Rerun the six
-    QSA and two sampling cases on the box; full target/MTP and bubble measurements
-    remain unqualified.
+    gates. Publication does not establish PPU execution. The user subsequently
+    reports both sampling cases passing; six QSA cases, full target/MTP and
+    bubble measurements remain unqualified.
 
 [x] Remove unsupported-API stub definitions from FlashInfer sampling preparation
     in 762b396 (ppu.flare2). The host regression reproduces duplicate acsparse
@@ -461,8 +461,8 @@
     Eighteen tracing/linkage tests pass on Torch2.9; real sampling/renorm/FFI
     sources compile and link with SDK2.2.1, with no conflicting sparse symbols.
     The replacement wheel is in Git LFS; use its explicit filename in
-    docs/ppu-box-resume.txt. Actual box headers and the two sampling device
-    cases still require verification; this is not a device-pass claim.
+    docs/ppu-box-resume.txt. Actual box header provenance was not collected;
+    both sampling device cases subsequently passed after the framework fixes.
 
 [x] Bind keyword/default kernel operands before direct prepared Triton launches.
     Probability-mask warmup supplied five pointers plus six constexpr keywords,
@@ -471,9 +471,9 @@
     compiled source signature, while Dynamo/make_fx retain their existing path.
     Host regressions execute the real Triton Python launch wrappers for empty,
     limited and unlimited probability masks; 51 related tracing/serialization/
-    FA3 checks pass on Torch2.9 and Torch2.15. Catalog sampling replay remains open.
+    FA3 checks pass on Torch2.9 and Torch2.15. Sampling device replay is now passed.
 
-[ ] Re-run the sampling catalog after the FP32 classification fix. The supplied
+[x] Re-run the sampling catalog after the FP32 classification fix. The supplied
     128x1940 reduction reproduces an LLVM13 codegen abort with vector
     llvm.is.fpclass.v4f32 in the actual SDK2.2.1 compiler, without a PPU device;
     its ptxas wrapper loses signal failures and returns zero with no artifact.
@@ -481,9 +481,17 @@
     classification for FP32 probability entries, maxima, masses and confidence,
     retaining negative-zero handling, FP32 sums and the original tolerance.
     Corresponding bitwise reductions compile with 4/8/16 warps in the real PPU
-    compiler. Host parity/compilation and scratch checks pass; complete catalog
-    replay, numerical state checks and performance still require the box.
+    compiler. Host parity/compilation and scratch checks pass; the user reports
+    both sampling device cases passing in 204.13s after also applying the
+    bundled Torch filename patch. Complete target/MTP and performance remain open.
     qualify.triton_compile also retains the formatter's .ptx.trans inputs.
+
+[x] Apply the bundled PPU preparation patches before qualify.ppu_box imports
+    operators; expose --operator-target on python -m ignition.patches for direct
+    pytest/tool runs. The reported 164-character kernel lacked its static owner
+    because Torch2.9 looked up full names while Triton3.5 truncated cache files
+    to 150 characters. Check both static construction and reload offline with
+    a real compiled kernel. Keep version/context checks and static-only binding.
 
 [x] Carry the validated external operator target into prepared graph admission
     for both normal Qwen bootstrap and the partial-GGUF qualifier. PPU capability
