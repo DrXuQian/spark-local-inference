@@ -598,7 +598,11 @@
     Four host lifecycle regressions fail on the old code and pass after the fix,
     including cyclic GC and scratch retaining the final storage reference.
     Storage checks pass on Torch 2.9 and 2.15 (15 passed, one platform case skipped
-    on each). Two new isolated device cleanup cases remain unrun locally.
+    on each). The first box cleanup test hit a fixture bug: it re-entered the
+    already active primary pool, then aborted on the leaked use count. The
+    corrected fixture enters each pool once and checks balanced counts. Both
+    paths pass host scope validation through Torch's actual Python wrapper with
+    modeled device calls; the corrected device cleanup cases still need the box.
     The box reached tiny package publication but crashed returning from prepare;
     its native crash stack and clean exit/replay still need confirmation. Report
     export success only after preparation returns. This is a Python-only update.

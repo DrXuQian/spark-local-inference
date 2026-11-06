@@ -26,26 +26,28 @@ from ignition.preparation.package_storage import PackageStorage, pool_snapshot
 
 torch.cuda.set_device(0)
 
+def check_allocation(expected):
+    value = torch.full((4096,), expected, dtype=torch.int32, device='cuda:0')
+    assert value.cpu().tolist() == [expected] * 4096
+
 def prepare():
     with PackageStorage(device=0) as storage:
         identifiers = [storage.pool.id, storage.graph_pool.id]
-        for pool in (storage.pool, storage.graph_pool):
-            with torch.cuda.use_mem_pool(pool, device=0):
-                value = torch.full((4096,), 37, dtype=torch.int32, device='cuda:0')
-                assert value.cpu().tolist() == [37] * 4096
-                del value
-        del pool
+        # PackageStorage already entered its primary pool.
+        check_allocation(37)
+        with torch.cuda.use_mem_pool(storage.graph_pool, device=0):
+            check_allocation(41)
         scratch = None
         if sys.argv[1] == 'True':
             scratch = storage.scratch_pool()
             identifiers.append(scratch.pool.id)
             with scratch:
-                value = torch.ones(4096, device='cuda:0')
-                assert value.sum().item() == 4096
-                del value
+                check_allocation(43)
         torch.cuda.synchronize()
-        # Retain only the native library for the error check, not the allocator.
-        return scratch, identifiers, weakref.ref(storage), weakref.ref(storage._allocator), storage.library
+    assert storage.pool.use_count() == storage.graph_pool.use_count() == 1
+    assert scratch is None or scratch.pool.use_count() == 1
+    # Retain only the native library for the error check, not the allocator.
+    return scratch, identifiers, weakref.ref(storage), weakref.ref(storage._allocator), storage.library
 
 scratch, identifiers, storage, allocator, library = prepare()
 del scratch
