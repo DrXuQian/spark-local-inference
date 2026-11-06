@@ -78,8 +78,8 @@ independently of the prepared model.
 reserved before model loading: 1 TiB per rank from `0x0800_0000_0000` on Linux or
 `0x0400_0000_0000` on Windows, backed on
 demand with `cuMemCreate` and `cuMemMap` at allocation granularity. Packages
-reserve GiB-aligned ranges covering stored allocations and the declared maximum
-extents of dynamic caches; unused gaps in the preparation arena are omitted. PyTorch
+reserve GiB-aligned arena ranges covering stored allocations and the declared
+maximum extents of dynamic caches; unused gaps in the preparation arena are omitted. PyTorch
 allocates through a `MemPool` whose pluggable allocator is the Rust arena in
 `heliopause/src/allocator.rs`, so weights, state, pages, and the
 graph pool all live inside the range. Ordinary preparation and capture use
@@ -468,10 +468,15 @@ that is done.
   fit. Four 16 MiB fixed requests in a fresh process are all moved and the
   fifth is honored; a first request of 64 MiB is moved and a first request of
   128 MiB, 1 GiB, 64 GiB, or 1 TiB is honored anywhere from 8 TiB to 127 TiB.
-  A package therefore uses large enclosing reservations and maps allocations
-  at their recorded offsets inside them; it never relies on small fixed
+  NVIDIA packages therefore use large enclosing reservations and map allocations
+  at their recorded offsets inside them; they never rely on small fixed
   reservations. Preparation reserves a 1 TiB arena; runtime packages use
-  GiB-aligned enclosing ranges for retained arena storage and external spans.
+  GiB-aligned enclosing ranges for retained arena storage and NVIDIA external spans.
+  PPU external spans use the SDK allocation granularity: on SDK2.2.1 the
+  GiB-rounded `0x40000000` request returns `0x55800000`, while reserving the
+  actual external page at `0x55800000` succeeds exactly. The exporter selects
+  this policy from validated PPU ELF modules and discovered external ownership;
+  it does not relocate storage or relax the loader's equality check.
 - Host memory mapped with `MAP_FIXED_NOREPLACE` and registered with the driver
   receives the same device address in every process.
 - Tensor-map parameters embed a global address and are 128 opaque bytes;

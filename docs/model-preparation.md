@@ -242,6 +242,17 @@ Install the refreshed Heliopause wheel and keep the recorder active through expo
 The SDK implementation and device acceptance task is in
 [ppu-graph-attributes-prompt.txt](ppu-graph-attributes-prompt.txt).
 
+PPU export reserves discovered external allocations at the SDK allocation
+granularity. Rounding an external page at `0x55800000` down to a 1 GiB range
+starting at `0x40000000` prevents exact restoration on SDK2.2.1; the SDK returns
+a different base. The box's separate-process probes honor the external
+page and the high arena's 1 GiB range exactly. Export selects the external-page
+policy from validated PPU ELF modules and recorded allocation ownership; arena
+reservations retain their larger ranges. NVIDIA exports retain GiB enclosing
+ranges. Native loading still rejects any changed address. Install the refreshed
+Heliopause wheel and re-export to replace a package with the expanded external
+range; this changes preparation metadata only, not the native package format.
+
 ## GPU selection
 
 Inspect GPU occupancy with `nvidia-smi` before preparation or loading. Select

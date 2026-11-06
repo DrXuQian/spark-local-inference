@@ -1117,6 +1117,38 @@ fn external_allocations(mut spans: Vec<(u64, u64)>, granule: u64) -> ExportResul
         .collect()
 }
 
+fn automatic_reservations(
+    allocations: &[Allocation],
+    external: &[(u64, u64)],
+    granularity: u64,
+    ppu_modules: bool,
+) -> ExportResult<Vec<(u64, u64)>> {
+    if !granularity.is_power_of_two() {
+        return Err(invalid("reservation granularity must be a power of two"));
+    }
+    let external_pages: BTreeSet<_> = external
+        .iter()
+        .map(|&(address, _)| address & !(granularity - 1))
+        .collect();
+    let mut ranges = Vec::new();
+    for allocation in allocations.iter().filter(|a| a.memory == "device") {
+        // NVIDIA needs large enclosing reservations to avoid its small-request
+        // VA pool. PPU can reserve external pages exactly; rounding those pages
+        // down to a GiB can instead overlap the fresh context's own mappings.
+        let granule = if ppu_modules && external_pages.contains(&allocation.address) {
+            granularity
+        } else {
+            granularity.max(1 << 30)
+        };
+        let end = allocation.address.checked_add(allocation.nbytes)
+            .and_then(|end| end.checked_add(granule - 1))
+            .ok_or_else(|| invalid("reservation address overflow"))?
+            & !(granule - 1);
+        ranges.push((allocation.address & !(granule - 1), end));
+    }
+    Ok(merge_ranges(ranges))
+}
+
 fn storage_ranges(ranges: &[(u64, u64)]) -> ExportResult<Vec<(u64, u64)>> {
     let intervals = ranges
         .iter()
@@ -2770,6 +2802,8 @@ pub(crate) fn capture_rank(
         kernels.len(),
         modules.len()
     ));
+    let ppu_modules = modules.values()
+        .all(|image| helios_core::runtime_package::kernel_image::is_ppu(image));
     let mut device = 0;
     cu!(&cuda, "cuCtxGetDevice", (*mut c_int), &mut device)?;
     let mut architecture = Vec::new();
@@ -3163,21 +3197,9 @@ pub(crate) fn capture_rank(
     }
     output.hardware = current_platform(&cuda)?;
     drop(store);
-    let granule = request.granularity.max(1 << 30);
     let reservations = if request.reservations.is_empty() {
-        merge_ranges(
-            output
-                .allocations
-                .iter()
-                .filter(|a| a.memory == "device")
-                .map(|a| {
-                    (
-                        a.address & !(granule - 1),
-                        (a.address + a.nbytes).div_ceil(granule) * granule,
-                    )
-                })
-                .collect(),
-        )
+        automatic_reservations(&output.allocations, &output.external,
+                               request.granularity, ppu_modules)?
     } else {
         request
             .reservations
@@ -3256,6 +3278,55 @@ mod tests {
             snapshot_spans: None,
             sizing: None,
         }
+    }
+
+    #[test]
+    fn ppu_external_reservations_keep_pages_without_the_nvidia_gib_halo() -> ExportResult<()> {
+        let page = 8 << 20;
+        let arena = 0x80000000000;
+        let external = [(0x55801234, 65536), (0x70800000, 32)];
+        let mut retained = external_allocations(external.to_vec(), page)?;
+        retained.pop(); // A recorded but unreachable allocation must not reserve VA.
+        retained[0].name = "library-owned".into(); // Ownership is not a name prefix.
+        retained.extend([
+            allocation("device-0", arena, page),
+            allocation("device-1", arena + page, page),
+        ]);
+        assert_eq!(automatic_reservations(&retained, &external, page, true)?,
+                   vec![(0x55800000, 0x56000000), (arena, arena + (1 << 30))]);
+        assert_eq!(automatic_reservations(&retained, &external, page, false)?,
+                   vec![(0x40000000, 0x80000000), (arena, arena + (1 << 30))]);
+        Ok(())
+    }
+
+    #[test]
+    fn reservations_preserve_cache_maximum_and_omit_host_and_peer_storage() -> ExportResult<()> {
+        let page = 8 << 20;
+        let arena = 0x80000000000;
+        let external = [(0x55800000, 65536), (0x56000000, 65536)];
+        let mut retained = external_allocations(external.to_vec(), page)?;
+        let mut cache = allocation("cache", arena, (1 << 30) + page);
+        cache.sizing = Some(serde_json::json!({"capacity": 0, "unit_bytes": page, "maximum": 129}));
+        let mut host = allocation("host", 0xc0000000000, page);
+        host.memory = "mapped_host".into();
+        let mut peer = allocation("peer", arena + (1 << 40), page);
+        peer.memory = "peer".into();
+        retained.extend([cache, host, peer]);
+        assert_eq!(automatic_reservations(&retained, &external, page, true)?,
+                   vec![(0x55800000, 0x56800000), (arena, arena + (2 << 30))]);
+        Ok(())
+    }
+
+    #[test]
+    fn reservations_reject_invalid_granularity_and_rounded_address_overflow() {
+        let valid = allocation("device", 0x55800000, 65536);
+        for granularity in [0, 3] {
+            assert!(automatic_reservations(std::slice::from_ref(&valid), &[], granularity, true).is_err());
+        }
+        let last_page = allocation("device", u64::MAX - 65535, 65535);
+        assert!(automatic_reservations(&[last_page], &[], 65536, false).is_err());
+        let wrapped = allocation("device", u64::MAX - 1, 8);
+        assert!(automatic_reservations(&[wrapped], &[], 65536, true).is_err());
     }
 
     #[test]

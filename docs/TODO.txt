@@ -606,6 +606,19 @@
     return-time crash. Report export success only after preparation returns.
     This is a Python-only update.
 
+[x] Keep PPU external allocation reservations at their actual page granularity.
+    The first Rust replay reached loading but its GiB-rounded external range
+    requested 0x40000000 and received 0x55800000. Separate box probes reproduce
+    that mismatch and exactly reserve both 0x55800000+8MiB and the high arena's
+    1GiB range. Export now selects page reservations for discovered external
+    storage when all validated modules use PPU ELF, retaining coarse arena and
+    NVIDIA ranges. Allocation addresses, contents and strict native address
+    checks remain unchanged. Twenty-three Rust capture tests pass (three device
+    cases ignored), including external ownership, unused pages, dynamic maximum
+    extents, host/peer exclusion and overflow. Sixteen Python/native package
+    checks pass (12 device cases skipped). Reinstall the Heliopause wheel and
+    re-export; complete PPU native loading and replay remain pending.
+
 [x] Check required callback names before native recorder subscription and before
     compiling the standalone PPU export module. Report all missing/mismatched
     APIs, retaining fatal activation errors. Also enable the omitted FatBinary
