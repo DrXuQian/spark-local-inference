@@ -674,6 +674,14 @@ preparation process exits. Use `--kv-cache-limit memory` to retain enough backin
 for hybrid prefix snapshots in this fixture. A successfully exported package
 alone does not qualify request behavior or absence of GPU idle intervals.
 
+On the PPU box, `qualify.qwen38_gguf_box` resolves the first/fourth shards from
+`--model-dir`, accepts an explicit `--mtp`, and uses the installed operator
+packages with the same fixture. `--inspect-only` reports the MTP's actual GGUF
+types and layer names without Torch, downloads or device execution. Export also
+checks the shared layer-48 boundary before target allocation; filenames and file
+sizes never select an encoding. See [box commands](ppu-box-resume.txt) for the
+supplied checkpoint paths, SDK selection and optional pinned frontend download.
+
 Native RTX qualification uses batch one, context 1024, prefill 64, RAM table
 delivery and the exported package after Python exits. Eighteen fixed-MTP request
 cases and 50 ordinary/teacher-prefix cases pass, including cancellation, drained

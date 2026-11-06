@@ -161,6 +161,72 @@ for the next gates. A full model download or meaningful generated text is not
 required. Local host tests and SDK compilation do not establish these three
 device-level outcomes.
 
+Partial GGUF + shared-MTP export using the box checkpoint
+-------------------------------------------------------
+
+The box checkpoint is /sim/eec/shared/AI_workspace/llm-models/Qwen3.8-Flash-Next-GGUF/UD-Q4_K_XL.
+qualify.qwen38_gguf_box resolves shard four for blocks 44/47 and shard one for
+metadata. It checks for mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf in that directory,
+its MTP subdirectory, its parent, and its parent's MTP subdirectory. Missing or
+ambiguous MTP locations require --mtp /actual/path/to/file.gguf. Shards two and
+three are not needed by this fixture. Source weights are neither copied nor
+downloaded; the existing loader reads the selected blocks and the complete MTP.
+
+The supplied MTP candidate is
+/sim/eec/shared/AI_workspace/llm-models/MTP-GGUF-modelzoo/Qwen3.8-Flash-Next-MTP/mtp-q2_0.gguf.
+Its reported size suggests low-bit experts, but the filename and size do not
+establish the encoding or shared-MTP layout. Inspect its headers first; this
+command imports no Torch/operator package, downloads nothing, and uses no device:
+
+  python -m qualify.qwen38_gguf_box --inspect-only \
+    --model-dir /sim/eec/shared/AI_workspace/llm-models/Qwen3.8-Flash-Next-GGUF/UD-Q4_K_XL \
+    --mtp /sim/eec/shared/AI_workspace/llm-models/MTP-GGUF-modelzoo/Qwen3.8-Flash-Next-MTP/mtp-q2_0.gguf
+
+Inspection reports actual tensor types, stored bytes, names and expert geometry.
+Export checks the existing shared-target/layer-48 boundary before loading target
+weights. Plain BF16/FP32 experts have no path in this fixture; their presence in
+norms or other small tensors alone does not identify the expert encoding. Actual
+operator format/shape admission still belongs to the installed QUactlize library.
+
+--fetch-frontend downloads only config.json, tokenizer.json,
+tokenizer_config.json and chat_template.jinja at the recipe's pinned revision,
+then checks their pinned hashes. Use --frontend /existing/directory instead to
+run without downloads. FA3 is located without importing its host extension before
+recording; QUactlize and actlizeLA use their installed PPU packages. The launcher
+applies the existing PPU preparation patch before starting the export subprocess.
+Thirteen host input-resolution/header tests pass; this does not qualify model execution.
+
+Run from the repository root. Use the same SDK that passed the tiny module gate:
+
+  (
+  set -euo pipefail
+  cd /sim/eec/shared/junfu.qx/spark-local-inference
+  GIT_LFS_SKIP_SMUDGE=1 git pull --ff-only
+  ppu_sdk=/sim/eec/shared/junfu.qx/ppu-sdk-2.2.1-184ee6/PPU_SDK
+  export CUDA_HOME="$ppu_sdk/CUDA_SDK" CUDA_PATH="$ppu_sdk/CUDA_SDK"
+  export PATH="$HOME/.cargo/bin:$ppu_sdk/bin:$CUDA_HOME/bin:$PATH"
+  export LD_LIBRARY_PATH="$CUDA_HOME/lib64:$ppu_sdk/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  export CUDA_VISIBLE_DEVICES=0
+  ulimit -c 0
+  out=$(mktemp -d /sim/eec/shared/junfu.qx/qwen38-ppu-44-47.XXXXXX)
+  mkdir -p "$out/tmp"
+  export TMPDIR="$out/tmp"
+  printf 'Qualification directory: %s\n' "$out"
+  python -X faulthandler -u -m qualify.qwen38_gguf_box \
+    --model-dir /sim/eec/shared/AI_workspace/llm-models/Qwen3.8-Flash-Next-GGUF/UD-Q4_K_XL \
+    --mtp /sim/eec/shared/AI_workspace/llm-models/MTP-GGUF-modelzoo/Qwen3.8-Flash-Next-MTP/mtp-q2_0.gguf \
+    --operator-target ppu10 --blas-library "$CUDA_HOME/lib64/libcublas.so" \
+    --fetch-frontend --output "$out" 2>&1 | tee "$out/export.log"
+  )
+
+The output directory is on shared storage for fixture weights, compilation and
+package staging. Keep roughly three times the final package size free for export.
+This command keeps the existing batch-one, prefill-64, context-1024 and MTP
+widths 1/2/4/6 fixture. It prints successful export only after the Python child
+exits cleanly. The next gates are native request/state checks and full-round
+timing; the tiny-module replay executable is not a model-serving test. The supplied
+MTP candidate's actual headers and device execution remain to be checked on box.
+
 Independent native-export qualification (no model or sampling dependency)
 -----------------------------------------------------------------------
 

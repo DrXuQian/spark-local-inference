@@ -313,7 +313,7 @@ def prepare(args):
         mtp = MTPWeights.load_gguf(inspect_gguf_checkpoint(args.mtp), structure, 'cuda:0',
             embedding_weight=embedding, lm_head_weight=head, read_mode='pread',
             quactlize_helpers=quactlize_helpers, quactlize_packing=quactlize_packing)
-        print('Loaded shared-Q8 MTP', flush=True)
+        print('Loaded shared GGUF MTP', flush=True)
         frame = torch.zeros(1, dtype=torch.int32, device='cuda')
         sequence = torch.zeros(1, dtype=torch.int64, device='cuda')
         table, ple_caps = fixture_table(output, 64, storage, sequence, frame,
@@ -451,7 +451,7 @@ def prepare(args):
                            completion, admission, transfer, functions, compiled, owners, speculation, stream, storage))
             print('Exporting native qualification package', flush=True)
             export_model(prepared, images, storage, output / 'package', options={}, publisher=publisher())
-            print(f'Exported {output / "package"}; target blocks={args.layers}, shared-Q8 MTP, synthetic endpoints', flush=True)
+            print(f'Exported {output / "package"}; target blocks={args.layers}, shared GGUF MTP, synthetic endpoints', flush=True)
             prepared.close(); table.close()
 
 

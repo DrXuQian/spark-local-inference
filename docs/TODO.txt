@@ -185,6 +185,17 @@
     modules and full-round timelines remain separate gates. See
     model-preparation.md#ppu-port-preparation for the concrete operator table.
 
+[x] Add a box launcher for the supplied UD-Q4_K_XL directory. Resolve only
+    shards one/four and shared-Q8 MTP; reject ambiguous/missing MTP paths. Fetch
+    only four pinned frontend assets when explicitly requested, validate their
+    bytes, locate FA3 without importing it, and reuse the existing partial-layer
+    PPU exporter. An explicit --mtp accepts the supplied mtp-q2_0.gguf candidate;
+    --inspect-only reports actual types, byte counts and names without Torch or
+    device execution. Check shared layer-48 geometry before target allocation.
+    Thirteen host tests pass using real GGUF headers and sparse full-shape files;
+    no model payloads were downloaded. See ppu-box-resume.txt. The candidate's
+    actual encoding, operator admission and complete graph execution are pending.
+
 [x] Check the SDK 2.1.1 export ABI and native ELF data discovery. All 66
     runtime driver entry names have hg-prefixed header declarations; 70 host
     structure sizes/alignments/offsets match CUDA. Fix missing globals in actual machine-270 ELF .data,
