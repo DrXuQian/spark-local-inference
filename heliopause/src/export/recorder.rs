@@ -15,6 +15,56 @@ use std::ffi::{CStr, c_char, c_void};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::ThreadId;
 
+const DRIVER_CALLBACKS: &[(u32, &str)] = &[
+    (18, "cuModuleLoad"),
+    (19, "cuModuleLoadData"),
+    (20, "cuModuleLoadDataEx"),
+    (21, "cuModuleLoadFatBinary"),
+    (22, "cuModuleUnload"),
+    (23, "cuModuleGetFunction"),
+    (678, "cuLibraryLoadData"),
+    (679, "cuLibraryLoadFromFile"),
+    (680, "cuLibraryUnload"),
+    (681, "cuLibraryGetKernel"),
+    (682, "cuLibraryGetModule"),
+    (683, "cuKernelGetFunction"),
+    (687, "cuKernelSetAttribute"),
+    (742, "cuFuncLoad"),
+    (85, "cuFuncGetAttribute"),
+    (686, "cuKernelGetAttribute"),
+    (374, "cuOccupancyMaxActiveBlocksPerMultiprocessor"),
+    (384, "cuOccupancyMaxPotentialBlockSize"),
+    (451, "cuOccupancyMaxActiveBlocksPerMultiprocessorWithFlags"),
+    (452, "cuOccupancyMaxPotentialBlockSizeWithFlags"),
+    (543, "cuOccupancyAvailableDynamicSMemPerBlock"),
+    (675, "cuOccupancyMaxPotentialClusterSize"),
+    (676, "cuOccupancyMaxActiveClusters"),
+    (307, "cuLaunchKernel"),
+    (442, "cuLaunchKernel_ptsz"),
+    (477, "cuLaunchCooperativeKernel"),
+    (478, "cuLaunchCooperativeKernel_ptsz"),
+    (481, "cuFuncSetAttribute"),
+    (652, "cuLaunchKernelEx"),
+    (653, "cuLaunchKernelEx_ptsz"),
+    (243, "cuMemAlloc_v2"),
+    (245, "cuMemFree_v2"),
+    (38, "cuMemFreeHost"),
+    (39, "cuMemHostAlloc"),
+    (271, "cuMemHostAlloc_v2"),
+    (294, "cuMemAllocHost_v2"),
+    (301, "cuMemHostRegister"),
+    (302, "cuMemHostUnregister"),
+    (379, "cuMemHostRegister_v2"),
+    (551, "cuMemMap"),
+    (552, "cuMemUnmap"),
+    (598, "cuMemAllocAsync"),
+    (599, "cuMemAllocAsync_ptsz"),
+    (600, "cuMemFreeAsync"),
+    (601, "cuMemFreeAsync_ptsz"),
+    (611, "cuMemAllocFromPoolAsync"),
+    (612, "cuMemAllocFromPoolAsync_ptsz"),
+];
+
 #[repr(C)]
 struct Resource {
     context: usize,
@@ -350,6 +400,12 @@ impl State {
             }
         }
         match name {
+            "cuModuleLoadFatBinary" => {
+                // Bind the selected native image, not the multi-architecture container.
+                if images.len() == 1 {
+                    self.bind_module(output(0)?, &images[0]);
+                }
+            }
             "cuModuleLoadData"
             | "cuModuleLoadDataEx"
             | "cuLibraryLoadData"
@@ -537,6 +593,7 @@ type Subscribe = unsafe extern "C" fn(
 type Enable = unsafe extern "C" fn(u32, usize, i32, u32) -> i32;
 type Unsubscribe = unsafe extern "C" fn(usize) -> i32;
 pub(crate) struct Recorder {
+    path: String,
     library: Option<Library>,
     state: Option<Box<CallbackState>>,
     subscriber: usize,
@@ -544,6 +601,7 @@ pub(crate) struct Recorder {
 impl Recorder {
     pub(crate) fn new(path: &str) -> ExportResult<Self> {
         Ok(Self {
+            path: path.into(),
             library: Some(unsafe { Library::new(path) }?),
             state: Some(Box::new(CallbackState::new())),
             subscriber: 0,
@@ -577,10 +635,49 @@ impl Recorder {
             description.unwrap_or_default()
         )))
     }
+    fn check_callback_names(&self) -> ExportResult<()> {
+        type GetName = unsafe extern "C" fn(i32, u32, *mut *const c_char) -> i32;
+        let get_name = unsafe {
+            *self
+                .library
+                .as_ref()
+                .unwrap()
+                .get::<GetName>(b"cuptiGetCallbackName\0")?
+        };
+        let mut failures = Vec::new();
+        for &(id, expected) in DRIVER_CALLBACKS {
+            let mut name = std::ptr::null();
+            let status = unsafe { get_name(1, id, &mut name) };
+            if status != 0 || name.is_null() {
+                failures.push(format!(
+                    "{expected} (domain=1, id={id}): CUPTI {status}, no callback name"
+                ));
+                continue;
+            }
+            let actual = unsafe { CStr::from_ptr(name) }.to_string_lossy();
+            if actual != expected && actual.strip_prefix("hg") != expected.strip_prefix("cu") {
+                failures.push(format!(
+                    "{expected} (domain=1, id={id}): unexpected callback name {actual:?}"
+                ));
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(invalid(format!(
+                "CUPTI callback table in {} cannot record the required driver APIs:\n{}\n\
+                 Use a compatible CUPTI/HGPTI and driver; no callbacks were omitted. \
+                 Name lookup alone does not verify callback activation or delivery.",
+                self.path,
+                failures.join("\n")
+            )))
+        }
+    }
     pub(crate) fn start(&mut self) -> ExportResult<()> {
         if self.subscriber != 0 {
             return Err(invalid("module image recorder is already active"));
         }
+        self.check_callback_names()?;
         let library = self.library.as_ref().unwrap();
         let subscribe = unsafe { *library.get::<Subscribe>(b"cuptiSubscribe\0")? };
         let enable = unsafe { *library.get::<Enable>(b"cuptiEnableCallback\0")? };
@@ -593,14 +690,11 @@ impl Recorder {
                     enable(1, self.subscriber, 3, id)
                 })?;
             }
-            for id in [
-                18, 19, 20, 22, 23, 678, 679, 680, 681, 682, 683, 687, 742, 85, 686, 374, 384, 451,
-                452, 543, 675, 676, 307, 442, 477, 478, 481, 652, 653, 243, 245, 38, 39, 271, 294,
-                301, 302, 379, 551, 552, 598, 599, 600, 601, 611, 612,
-            ] {
-                self.check(&format!("cuptiEnableCallback(domain=1, id={id})"), unsafe {
-                    enable(1, self.subscriber, 1, id)
-                })?;
+            for &(id, name) in DRIVER_CALLBACKS {
+                self.check(
+                    &format!("cuptiEnableCallback(domain=1, id={id}, name={name})"),
+                    unsafe { enable(1, self.subscriber, 1, id) },
+                )?;
             }
             Ok(())
         })();
@@ -817,6 +911,12 @@ impl NativeModuleRecorder {
     }
     fn start(&self, py: Python<'_>) -> PyResult<()> {
         py.detach(|| self.recorder.lock().unwrap().start())
+            .map_err(py_error)
+    }
+    /// Check the callback-name table without subscribing or initializing a device.
+    /// Successful activation and event delivery still require device qualification.
+    fn check_callback_names(&self, py: Python<'_>) -> PyResult<()> {
+        py.detach(|| self.recorder.lock().unwrap().check_callback_names())
             .map_err(py_error)
     }
     fn stop(&self, py: Python<'_>) -> PyResult<()> {
@@ -1206,6 +1306,60 @@ mod tests {
         image[60..62].copy_from_slice(&1u16.to_le_bytes());
         image[68..72].copy_from_slice(&8u32.to_le_bytes());
         image
+    }
+    #[test]
+    fn fatbinary_load_binds_only_one_selected_image_and_replaces_unloaded_handles() {
+        for (load, unload) in [
+            ("cuModuleLoadFatBinary", "cuModuleUnload"),
+            ("hgModuleLoadFatBinary", "hgModuleUnload"),
+        ] {
+            let owner = CallbackState::new();
+            let module = 0x100usize;
+            for (generation, image_count) in [0, 2, 1, 1].into_iter().enumerate() {
+                let tag = (generation * 4) as u8;
+                call(&owner, load, 0, &[], 0, 0x1000);
+                for id in 0..image_count {
+                    resource(&owner, 0x1000, id, 6, &library_image(tag + id as u8));
+                }
+                // A fatbinary container is not parsed as an ELF image.
+                call(
+                    &owner,
+                    load,
+                    1,
+                    &[&module as *const _ as usize, 0],
+                    0,
+                    0x1000,
+                );
+                {
+                    let state = owner.state.lock().unwrap();
+                    assert!(state.error.is_none(), "{:?}", state.error);
+                    assert!(state.pending.is_empty());
+                    assert_eq!(state.modules.contains_key(&module), image_count == 1);
+                    if image_count == 1 {
+                        assert_eq!(&*state.modules[&module].cubin, library_image(tag));
+                    }
+                }
+                for id in 0..image_count {
+                    resource(&owner, 0x1000, id, 7, &[]);
+                }
+                assert!(owner.state.lock().unwrap().modules.is_empty());
+                call(&owner, unload, 1, &[module], 0, 0x1000);
+            }
+            call(&owner, load, 0, &[], 0, 0x1000);
+            resource(&owner, 0x1000, 7, 6, &library_image(19));
+            resource(&owner, 0x1000, 7, 7, &[]);
+            call(
+                &owner,
+                load,
+                1,
+                &[&module as *const _ as usize, 0],
+                0,
+                0x1000,
+            );
+            let state = owner.state.lock().unwrap();
+            assert!(state.error.is_none(), "{:?}", state.error);
+            assert!(state.modules.is_empty());
+        }
     }
     fn load_library(owner: &CallbackState, library: usize, image: &[u8], context: usize) {
         call(owner, "cuLibraryLoadData", 0, &[], 0, context);

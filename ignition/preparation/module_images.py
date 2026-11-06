@@ -13,6 +13,13 @@ def cupti_library(library=None):
     return library
 
 
+def check_callback_names(library=None):
+    """Check required API names only; this does not enable or exercise callbacks."""
+    from flare_heliopause import NativeModuleRecorder
+
+    NativeModuleRecorder(str(cupti_library(library))).check_callback_names()
+
+
 def strip_debug(image):
     from flare_heliopause import cubin_strip_debug
 

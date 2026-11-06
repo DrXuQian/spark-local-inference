@@ -1,0 +1,96 @@
+任务：补齐 Flare 原生图导出所需的 PPU HGPTI 回调，保留 LAZY 加载。
+
+已确认的部署环境与故障
+----------------------
+框架分支：DrXuQian/spark-local-inference，feat/qwen38-gguf。
+box 路径：/sim/eec/shared/junfu.qx/spark-local-inference。
+Python 3.12、Torch 2.9.0、Triton 3.5.0；算子测试已推进到图导出阶段。
+PPU 小模块编译及 ELF globals 检查通过，NativeModuleRecorder.start 失败：
+  cuptiEnableCallback(domain=1, id=742): CUPTI 1 INVALID_PARAMETER
+
+加载的库：
+  /usr/local/PPU_SDK/CUDA_SDK/targets/x86_64-linux/lib/libcupti.so.2025.3.0
+  /usr/local/PPU_SDK/targets/x86_64-linux/lib/libhgpti.so
+cuptiGetVersion 返回 status=0、version=22；这是 API 版本，不能证明回调覆盖。
+cuptiGetCallbackName(domain=1) 的实测：
+  18  -> status=0, hgModuleLoad
+  687 -> status=0, hgKernelSetAttribute
+  732 -> status=0, hgStreamUpdateCaptureDependencies_v2_ptsz
+  742 -> status=1, NULL
+cuInit(0) 返回 0；cuModuleGetLoadingMode 返回 status=0、mode=2（LAZY）。
+本地 SDK2.1.1 的 HGPTI driver enum SIZE=733；SDK2.2.1 有 hgFuncLoad=742，
+且实际名称查询成功。SDK2.2.1 在部署驱动上的激活、事件交付尚未验证。
+
+最小复现：不依赖 Torch、Triton、模型或 Flare 扩展
+-----------------------------------------------
+在 box 运行以下 Python；保留输出，不修改安装目录中的库：
+
+python - <<'PY'
+import ctypes as C
+cuda = C.CDLL('libcuda.so.1')
+print('cuInit:', cuda.cuInit(0))
+lib = C.CDLL('/usr/local/PPU_SDK/CUDA_SDK/lib64/libcupti.so.13')
+callback_type = C.CFUNCTYPE(None, C.c_void_p, C.c_int, C.c_uint32, C.c_void_p)
+callback = callback_type(lambda *args: None)
+subscriber = C.c_void_p()
+lib.cuptiGetCallbackName.argtypes = [C.c_int, C.c_uint32, C.POINTER(C.c_char_p)]
+lib.cuptiSubscribe.argtypes = [C.POINTER(C.c_void_p), callback_type, C.c_void_p]
+lib.cuptiEnableCallback.argtypes = [C.c_uint32, C.c_void_p, C.c_int, C.c_uint32]
+lib.cuptiUnsubscribe.argtypes = [C.c_void_p]
+for cbid in (21, 742):
+    name = C.c_char_p()
+    print('name:', cbid, lib.cuptiGetCallbackName(1, cbid, C.byref(name)), name.value)
+status = lib.cuptiSubscribe(C.byref(subscriber), callback, None)
+print('subscribe:', status)
+if status == 0:
+    try:
+        for cbid in (21, 742):
+            print('enable:', cbid, lib.cuptiEnableCallback(1, subscriber, 1, cbid))
+    finally:
+        print('unsubscribe:', lib.cuptiUnsubscribe(subscriber))
+PY
+
+需要完成的 SDK 工作
+------------------
+1. 在相互兼容的 HGPTI、Driver、CUDA facade 版本上，提供回调 742 的名称、
+   启用及真实 ENTER/EXIT 事件；不能仅增加 enum 或让接口固定返回 success。
+   驱动必须在 hgFuncLoad/cuFuncLoad 调用前后交付事件，包含真实函数句柄、
+   参数、返回码和 context。失败调用也应保持 ENTER/EXIT 配对。
+2. 回调数据 ABI 与平台提供的 CUPTI 接口保持一致；Flare 已接受 hg* 名称。
+   模块资源事件 6/7 必须交付正确 context、moduleId、完整 native ELF 字节及
+   有效长度，字节至少在回调执行期间可读。context 销毁事件 2 必须可靠交付。
+3. 验证延迟加载、嵌套调用、多线程、模块卸载及句柄复用，不能把另一个模块的
+   image 绑定到当前函数。记录器不在回调内调用 CUDA API，只复制和更新记录。
+4. 完整所需 driver 回调以 heliopause/src/export/recorder.rs 的 DRIVER_CALLBACKS
+   为准；当前共 47 项，另有 resource 域 2/6/7。检查每一项的启用结果。
+   cuModuleLoadFatBinary=21 也在所需集合中，用于记录实际选中的 native image。
+5. 不以 cuptiEnableDomain 返回 success 代替逐项检查。已检查的实现会忽略
+   内部逐项 enable 的失败；整域 success 本身不能证明某个事件可用。
+
+分层验收
+--------
+A. 名称表预检（更新框架及其 native wheel 后）：
+     python -c "from ignition.preparation.module_images import check_callback_names; check_callback_names(); print('callback names OK; activation and delivery still untested')"
+   这一步不订阅、不主动初始化设备，不能单独作为 SDK 修复通过的依据。
+B. 上述最小复现中的 subscribe/enable/unsubscribe 均成功，并实际检查
+   hgFuncLoad 的事件交付和参数；无效句柄的错误返回不能伪装成成功。
+C. 原生记录器的真实分配/context 生命周期测试：
+     CUDA_VISIBLE_DEVICES=0 FLARE_RUN_CUDA_TESTS=1 python -m pytest -q \
+       tests/preparation/test_module_images.py
+D. 生产导出及独立 Rust 回放：
+     CUDA_VISIBLE_DEVICES=0 python -m qualify.ppu_export --target ppu10 \
+       --output /tmp/ppu-export-replay-2
+     cargo build --release --manifest-path helios/Cargo.toml \
+       --features runtime-package,test-tools --bin test_actlize_runtime_package
+     CUDA_VISIBLE_DEVICES=0 helios/target/release/test_actlize_runtime_package \
+       /tmp/ppu-export-replay-2
+   Python 的四个 graph case 必须通过，导出须保留四个 globals 以及仅由 global
+   pointer 引用的分配；Python 退出后 Rust 两轮回放须逐字节一致并检查地址及分配。
+   此小模块测试仍不能替代完整 GGUF target+MTP 的正确性与无 bubble 验证。
+
+限制与交付
+----------
+不能跳过 742、关闭模块/分配完整性校验、改为 eager serving，或把 NVIDIA cubin
+当成 PPU 模块。LAZY 模式保持现状；不通过修改加载模式掩盖缺失事件。
+交付匹配部署驱动的 HGPTI/driver 修复或正式兼容升级包，说明版本配套要求，
+给出名称、激活、事件交付及上述导出/回放结果。无需修改 Torch 或 Triton。

@@ -189,12 +189,25 @@ fails recorder startup at cuptiEnableCallback(domain=1, id=742). Its actual
 CUDA_SDK/targets/x86_64-linux/lib/libcupti.so.2025.3.0 loads
 PPU_SDK/targets/x86_64-linux/lib/libhgpti.so. Callback-name queries for 18, 687
 and 732 succeed, while 742 returns INVALID_PARAMETER with no name. The reported
-CUPTI API version 22 does not establish support for this callback. Use a
-platform-compatible HGPTI/driver combination that both resolves and enables
-hgFuncLoad, then rerun the complete gate below. Do not skip the callback or
+CUPTI API version 22 does not establish support for this callback. The box
+reports module-loading mode 2 (LAZY), so an eager-loading condition does not
+apply. Use a platform-compatible HGPTI/driver combination that both resolves
+and enables hgFuncLoad, then rerun the complete gate below. Do not skip the callback or
 treat a successful whole-domain subscription as proof of event delivery;
-module association and allocation recording must remain complete. The current
-wheel is installed successfully; rebuilding it alone does not add SDK callbacks.
+module association and allocation recording must remain complete. The previously
+supplied wheel installed successfully; rebuilding it does not add SDK callbacks.
+The SDK task and standalone reproducer are in ppu-hgpti-callback-prompt.txt.
+
+The updated wheel checks all 47 required driver callback names before subscribing
+and reports missing or mismatched entries together. cu*/hg* aliases are accepted;
+activation errors remain fatal. qualify.ppu_export performs this check before
+compiling its module. --compile-only still performs only the offline ELF stage.
+The recorder also enables the previously omitted cuModuleLoadFatBinary callback
+21 and binds its single selected native image, retaining unload/lifetime checks.
+Fifteen Rust recorder tests and thirteen Python/native ABI tests pass locally;
+the real allocation/context test is skipped without a device. Actual SDK2.1.1
+name queries fail only at 742, while all 47 resolve in local SDK2.2.1. Neither
+name-query result establishes device event delivery or export/replay support.
 
 With the native flare_heliopause extension installed, the offline module stage is:
 
@@ -215,6 +228,7 @@ cases pass. Driver/CUPTI loading and PPU graph export still require the box.
   python -m pip install --no-deps --force-reinstall \
     artifacts/ppu/20261106/wheels/flare_heliopause-0.1.0-cp312-cp312-linux_x86_64.whl
   python -c "import sys, flare_heliopause; print(sys.executable); print(flare_heliopause.__file__)"
+  python -c "from ignition.preparation.module_images import check_callback_names; check_callback_names(); print('Callback names OK; device delivery still untested')"
   CUDA_VISIBLE_DEVICES=0 python -m qualify.ppu_export --target ppu10 --output /tmp/ppu-export-replay-1
   cargo build --release --manifest-path helios/Cargo.toml \
     --features runtime-package,test-tools --bin test_actlize_runtime_package

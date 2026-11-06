@@ -534,7 +534,17 @@
     rejects callback 742 (cuFuncLoad). Its loaded HGPTI also rejects the name
     query for 742 while 18/687/732 resolve. Local SDK2.2.1 resolves 742, unlike
     SDK2.1.1; deploy a compatible HGPTI/driver with callback support and verify
-    event delivery before export/replay. Skipping the callback is not qualified.
+    event delivery before export/replay. The box reports LAZY mode (2), so an
+    eager-loading condition does not apply. Skipping the callback is not qualified.
+    The SDK task/reproducer is in ppu-hgpti-callback-prompt.txt.
+
+[x] Check required callback names before native recorder subscription and before
+    compiling the standalone PPU export module. Report all missing/mismatched
+    APIs, retaining fatal activation errors. Also enable the omitted FatBinary
+    callback 21 and bind only its single live native image. Fifteen Rust recorder
+    tests and thirteen Python/native ABI tests pass; one GPU test is skipped.
+    Actual SDK2.1.1 rejects 742; SDK2.2.1 resolves all 47 driver API names. This
+    establishes name-table compatibility only, not device delivery or export.
 
 [x] Supply the standalone flare_heliopause wheel for the reported missing native
     module. CPython3.12/Linux x86_64 installation and isolated import pass with

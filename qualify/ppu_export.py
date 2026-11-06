@@ -150,6 +150,10 @@ def prepare(args, module_path):
 def main(argv=None):
     args = parser().parse_args(argv)
     args.output = args.output.resolve()
+    if not args.compile_only:
+        from ignition.preparation.module_images import check_callback_names
+
+        check_callback_names()
     module = compile_module(args)
     if args.compile_only:
         print('Compile-only: device recording, export and Rust replay remain untested', flush=True)
