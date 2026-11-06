@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Apply the PPU patch set to actual Torch 2.9 sources without touching the installation."""
+"""PPU setup and unmodified Torch 2.9 static caching with short kernel symbols."""
 
 import ast
 import importlib.util
 from importlib.metadata import distribution
 from importlib.resources import files
-import os
 from pathlib import Path
+import pickle
 import sys
 from types import SimpleNamespace
 
@@ -28,7 +28,9 @@ def installation(tmp_path, monkeypatch):
         source = Path(installed[relative.split('/')[0]].locate_file(relative)).read_bytes()
         # A box may already have applied these fixes. Normalize only the test
         # copy so both first application and idempotence still execute here.
-        for patch in patches._PPU_PATCHES:
+        # Also undo the old Torch workaround in the fixture, so boxes that
+        # already applied it still exercise unmodified static-loader behavior.
+        for patch in (*patches._PPU_PATCHES, 'torch29-inductor-triton-cache-filenames.patch'):
             for target, before, after in patches._hunks(files(patches).joinpath(patch).read_text()):
                 if target == relative and source.count(after.encode()) == 1:
                     source = source.replace(after.encode(), before.encode(), 1)
@@ -44,25 +46,15 @@ def installation(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize('target', ['ppu10', 'ppu15'])
-def test_platform_patch_set_handles_long_triton_cache_names(installation, target):
-    root, _, _ = installation
+def test_platform_patch_set_leaves_torch_unchanged(installation, target):
+    root, _, original = installation
+    torch_path = root / 'torch/_inductor/runtime/triton_heuristics.py'
+    before = torch_path.stat()
     changed = patches.apply(operator_target=target)
-    assert {path.relative_to(root).as_posix() for path in changed} == {
-        'torch/_inductor/runtime/triton_heuristics.py', 'triton/runtime/build.py'}
+    assert {path.relative_to(root).as_posix() for path in changed} == {'triton/runtime/build.py'}
     assert patches.apply(operator_target=target) == ()
-    # Execute the patched real reload method against Triton's 150-character filename.
-    tree = ast.parse((root / 'torch/_inductor/runtime/triton_heuristics.py').read_text())
-    definition, = [node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'StaticTritonCompileResult']
-    method, = [node for node in definition.body if isinstance(node, ast.FunctionDef) and node.name == 'reload_cubin_path']
-    namespace = dict(os=os, triton_cache_dir=lambda device: str(root), triton_hash_to_path_key=lambda value: value)
-    exec(compile(ast.Module(body=[method], type_ignores=[]), '<patched-reload>', 'exec'), namespace)
-    name = 'triton_' + 'long_fused_operation_' * 16
-    binary = root / 'hash' / (name[:150] + '.cubin')
-    binary.parent.mkdir()
-    binary.write_bytes(b'opaque device executable fixture')
-    kernel = SimpleNamespace(name=name, hash='hash', cubin_raw=None, cubin_path=None)
-    namespace['reload_cubin_path'](SimpleNamespace(kernel=kernel, compile_meta={'device': 0}))
-    assert kernel.cubin_path == str(binary)
+    assert torch_path.read_bytes() == original[torch_path.relative_to(root).as_posix()]
+    assert (torch_path.stat().st_ino, torch_path.stat().st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
 
 
 @pytest.mark.parametrize('name,version', [('torch', '2.8.0'), ('torch', '2.9.1'), ('triton', '3.6.0')])
@@ -88,37 +80,42 @@ def test_platform_patch_cli_selects_the_ppu_environment(installation, capsys):
     from ignition.patches.__main__ import main
 
     assert main(['--operator-target', 'ppu10']) == 0
-    assert capsys.readouterr().out.count('Patched ') == 2
+    assert capsys.readouterr().out.count('Patched ') == 1
     assert main(['--operator-target', 'ppu10']) == 0
     assert 'already applied' in capsys.readouterr().out
 
 
-def test_actual_long_kernel_can_be_saved_and_reloaded_statically(installation, tmp_path, monkeypatch):
-    """Compile offline, then exercise both real Inductor filename consumers."""
-    root, _, original = installation
-    patches.apply(operator_target='ppu10')
+def test_short_symbols_compile_and_reload_statically_without_patching_torch(installation, tmp_path, monkeypatch):
+    """Real Inductor naming and offline compilation, including a cold disk reload."""
+    _, _, original = installation
     import torch
     import triton
+    from torch._inductor.codegen.triton import TritonScheduling
     from torch._inductor.runtime import triton_heuristics as runtime
+    from torch._inductor.utils import Placeholder
+    from torch._inductor.virtualized import V
+    from torch.utils._ordered_set import OrderedSet
     from triton.backends.compiler import GPUTarget
     from triton.compiler import ASTSource
+    from ignition.preparation.compilation import _OPTIONS
 
-    relative = 'torch/_inductor/runtime/triton_heuristics.py'
-    name = ('triton_poi_fused___rshift____to_copy_bitwise_and_bitwise_not_bitwise_or_clamp_div_'
-            'floor_divide_gt_index_mul_remainder_scalar_tensor_slice_sub_unsqueeze_view_where_2')
-    source = tmp_path / 'long_kernel.py'
-    source.write_text(f'''import triton
+    graph, origins = torch.fx.Graph(), []
+    for op in ('__rshift__', '_to_copy', 'bitwise_and', 'bitwise_not', 'bitwise_or', 'clamp', 'div',
+               'floor_divide', 'gt', 'index', 'mul', 'remainder', 'scalar_tensor', 'slice', 'sub',
+               'unsqueeze', 'view', 'where'):
+        node = graph.call_function(torch.neg, (graph.placeholder(op),))
+        node.meta['original_aten'] = SimpleNamespace(_overloadpacket=SimpleNamespace(__name__=op))
+        origins.append(node)
+    schedule = [SimpleNamespace(node=SimpleNamespace(origins=OrderedSet(origins)))]
+    source = f'''import triton
 import triton.language as tl
-
+# @triton_heuristics.pointwise
+# {Placeholder.DESCRIPTIVE_NAME}
 @triton.jit
-def {name}(source, output, N: tl.constexpr):
+def {Placeholder.KERNEL_NAME}(source, output, N: tl.constexpr):
     indices = tl.arange(0, N)
     tl.store(output + indices, tl.load(source + indices))
-''')
-    spec = importlib.util.spec_from_file_location('offline_long_kernel', source)
-    module = importlib.util.module_from_spec(spec)
-    monkeypatch.setitem(sys.modules, spec.name, module)
-    spec.loader.exec_module(module)
+'''
 
     def no_device(*args, **kwargs):
         pytest.fail('static cache filename regression must not initialize CUDA')
@@ -134,25 +131,55 @@ def {name}(source, output, N: tl.constexpr):
         exec(compile(ast.Module(body=[*imports, definition], type_ignores=[]), '<installed-inductor>', 'exec'), namespace)
         return namespace['StaticTritonCompileResult']
 
-    with triton.knobs.cache.scope(), torch._inductor.config.patch(
-            use_static_cuda_launcher=True, strict_static_cuda_launcher=True, cpp_wrapper=False):
-        triton.knobs.cache.dir = str(tmp_path / 'triton-cache')
-        compiled = triton.compile(
-            ASTSource(getattr(module, name), signature={'source': '*fp32', 'output': '*fp32', 'N': 'constexpr'},
-                      constexprs={'N': 32}),
-            target=GPUTarget('cuda', 80, 32), options={'num_warps': 4, 'num_stages': 1})
-        metadata = {'device_type': 'cuda', 'device': 0}
-        with pytest.raises(runtime.CannotStaticallyLaunchKernel, match='Cubin path not found'):
-            result_class(original[relative]).can_statically_launch(
-                compiled, {}, metadata, runtime.HeuristicType.POINTWISE)
-
-        fixed = result_class((root / relative).read_text())
-        owner = fixed.can_statically_launch(compiled, {}, metadata, runtime.HeuristicType.POINTWISE)
-        assert owner.name == name and len(name) == 164
-        assert Path(owner.cubin_path).name == name[:150] + '.cubin'
-        assert Path(owner.cubin_path).read_bytes() == compiled.asm['cubin']
-        saved = fixed(owner, triton.Config({}), metadata, {})
-        owner.cubin_path = None
-        saved.reload_cubin_path()
-        assert Path(owner.cubin_path).name == name[:150] + '.cubin'
-        assert Path(owner.cubin_path).read_bytes() == compiled.asm['cubin']
+    unpatched = result_class(original['torch/_inductor/runtime/triton_heuristics.py'])
+    options = dict(_OPTIONS, compile_threads=1, use_static_cuda_launcher=True,
+                   strict_static_cuda_launcher=True, cpp_wrapper=False)
+    restored_paths = []
+    with triton.knobs.cache.scope(), torch._inductor.config.patch(options):
+        for unique in (True, _OPTIONS['triton.unique_kernel_names']):
+            definitions = []
+            wrapper = SimpleNamespace(src_to_kernel={}, next_kernel_suffix=lambda: '2', comment='#',
+                                      define_kernel=lambda *args: definitions.append(args))
+            context = SimpleNamespace(wrapper_code=wrapper,
+                                      get_current_device_or_throw=lambda: torch.device('cuda:0'))
+            with V.set_graph_handler(context), torch._inductor.config.patch({'triton.unique_kernel_names': unique}):
+                descriptive = TritonScheduling.define_kernel(None, source, schedule, None)
+            call = ast.parse(definitions[0][1]).body[0].value
+            symbol, generated = (ast.literal_eval(arg) for arg in call.args)
+            path = tmp_path / ('unique.py' if unique else 'short.py')
+            path.write_text(generated)
+            spec = importlib.util.spec_from_file_location(path.stem, path)
+            module = importlib.util.module_from_spec(spec)
+            monkeypatch.setitem(sys.modules, spec.name, module)
+            spec.loader.exec_module(module)
+            triton.knobs.cache.dir = str(tmp_path / ('unique-cache' if unique else 'short-cache'))
+            compiled = triton.compile(
+                ASTSource(getattr(module, symbol), signature={'source': '*fp32', 'output': '*fp32', 'N': 'constexpr'},
+                          constexprs={'N': 32}),
+                target=GPUTarget('cuda', 80, 32), options={'num_warps': 4, 'num_stages': 1})
+            metadata = {'device_type': 'cuda', 'device': 0}
+            if unique:
+                assert len(symbol) == 164
+                with pytest.raises(runtime.CannotStaticallyLaunchKernel, match='Cubin path not found'):
+                    unpatched.can_statically_launch(compiled, {}, metadata, runtime.HeuristicType.POINTWISE)
+                continue
+            assert symbol == 'triton_' and len(descriptive) == 164
+            owner = unpatched.can_statically_launch(compiled, {}, metadata, runtime.HeuristicType.POINTWISE)
+            assert Path(owner.cubin_path).read_bytes() == compiled.asm['cubin']
+            other = triton.compile(
+                ASTSource(getattr(module, symbol), signature={'source': '*fp32', 'output': '*fp32', 'N': 'constexpr'},
+                          constexprs={'N': 64}),
+                target=GPUTarget('cuda', 80, 32), options={'num_warps': 4, 'num_stages': 1})
+            other_owner = unpatched.can_statically_launch(other, {}, metadata, runtime.HeuristicType.POINTWISE)
+            assert owner.name == other_owner.name == 'triton_'
+            assert owner.hash != other_owner.hash and owner.cubin_path != other_owner.cubin_path
+            assert Path(other_owner.cubin_path).read_bytes() == other.asm['cubin']
+            owner.cubin_raw = compiled.asm['cubin']
+            saved = unpatched(pickle.loads(pickle.dumps(owner)), triton.Config({}), metadata, {})
+            saved.kernel.cubin_path = None
+            triton.knobs.cache.dir = str(tmp_path / 'restored-cache')
+            saved.reload_cubin_path()
+            assert Path(saved.kernel.cubin_path).name == 'triton_.cubin'
+            assert Path(saved.kernel.cubin_path).read_bytes() == compiled.asm['cubin']
+            restored_paths.append(saved.kernel.cubin_path)
+    assert len(restored_paths) == 1

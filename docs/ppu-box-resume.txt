@@ -39,10 +39,10 @@ new output directory:
     --blas-library /usr/local/PPU_SDK/CUDA_SDK/targets/x86_64-linux/lib/libcublas.so \
     --run-device-tests --output /tmp/ppu-box-20261106-lfs
 
-The box runner applies and verifies the bundled Torch2.9/Triton3.5 source
-patches before importing operators. It rejects mismatched versions or source
-contexts before starting tests. This changes installed Python source files;
-it does not rebuild or reinstall the platform packages.
+The box runner verifies Torch2.9/Triton3.5 versions and applies the bundled
+Triton runtime/build.py helper-cache fix before importing operators. It rejects
+mismatched versions or patch contexts before starting tests. Installed Torch
+files are unchanged; no platform package is rebuilt or reinstalled.
 
 The separate handoff archive retains the operator source patches, host logs,
 nine additional FlashInfer RNG device cases and run-ppu10-box.sh. Downloading
@@ -108,12 +108,29 @@ in the real PPU compiler.
 
 The subsequent missing static-autotuner binding was caused by an unapplied
 Torch2.9 filename patch: Triton writes a 150-character cache filename, while
-Inductor looked up the complete 164-character name. Both initial lookup and
-disk reload must use the truncated filename; the CUDA symbol stays complete.
-The command above applies that Torch patch and the separate Triton helper-cache
-pointer-width patch. It is safe to repeat after a dependency reinstall.
-The user reports both direct/catalog sampling cases passing in 204.13s with
-these fixes. That duration includes preparation and is not a replay latency.
+Inductor looked up the complete 164-character name. The previous workaround
+patched both initial lookup and disk reload in Torch. With that fix, the user
+reports both sampling cases passing in 204.13s and all six QSA cases passing
+in 98.58s. These durations include preparation and are not replay latencies.
+
+PPU setup now leaves Torch unchanged. Framework compilation instead sets
+triton.unique_kernel_names=False, using short actual symbols while preserving
+descriptive names in generated wrappers. Content-addressed cache directories
+separate kernels that share the same symbol. Offline regression covers the
+original failure, static construction, distinct cache contents and cold disk
+reload with unmodified Torch2.9. The new option changes preparation cache
+identity automatically. Existing Torch patches can stay installed; no operator
+wheel reinstall or cache deletion is needed.
+
+To qualify the short-symbol policy on the box, only repeat the catalog cases:
+
+  FLARE_RUN_CUDA_TESTS=1 FLARE_ACTLIZE_TARGET=ppu10 python -m pytest -q \
+    tests/components/test_actlize_qsa_cuda.py \
+    tests/components/test_external_sampling_cuda.py -k catalog --tb=short
+
+Expected: four passed, four deselected. This repeat validates the changed
+compiler policy; the prior eight passes remain evidence for the patched setup.
+The explicit patch command above now changes only Triton's helper cache key.
 
 If a compiler failure remains, select the generated Python file and
 async_compile.triton line from the new traceback to preserve its diagnostics:
@@ -131,7 +148,7 @@ The file/line must match the current traceback if the generated code changes.
 Compilation success alone does not qualify catalog replay.
 
 Still requiring the PPU box:
-  1. Confirm the six QSA cases after these package fixes (sampling is passed).
+  1. Confirm the four catalog cases with the new short-symbol compiler policy.
   2. Complete target + shared-MTP graph, including acceptance and state rollback.
   3. Export on PPU, then Rust-only replay of the prepared package.
   4. Complete-round timeline and allocation checks before a no-bubble claim.

@@ -4,8 +4,9 @@
 
 This qualifies the port's dependencies and prepared components. It does not
 claim complete Qwen model export or Rust replay on PPU. It applies the bundled
-Torch/Triton preparation patches before imports. No models are downloaded, no
-packages are installed, and supplied operator trees/native libraries are not modified.
+Triton helper-cache patch before imports, leaving Torch files unchanged.
+No models are downloaded, no packages are installed, and supplied operator
+trees/native libraries are not modified.
 """
 
 import argparse

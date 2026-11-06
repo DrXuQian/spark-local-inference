@@ -21,11 +21,17 @@ from torch._higher_order_ops.triton_kernel_wrap import get_mutated_tensors, kern
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch.utils._pytree import tree_flatten, tree_unflatten
 
+from .torch_aot_api import TORCH29
+
 _INVOCATIONS = ContextVar('flare_storage_invocations')
 _OPTIONS = {'max_autotune': True, 'emulate_precision_casts': True,
             'triton.cudagraphs': False, 'triton.autotune_at_compile_time': False,
             'triton.cooperative_reductions': True,
             'compile_threads': min(16, os.cpu_count() or 1)}
+if TORCH29:
+    # Triton truncates long cache filenames; Torch 2.9's static loader does not.
+    # Short symbols avoid that mismatch while content hashes distinguish kernels.
+    _OPTIONS['triton.unique_kernel_names'] = False
 if os.name == 'nt':
     _OPTIONS['worker_start_method'] = 'spawn'
 # Compiled forwards and their guards persist beside b12x kernels and tuning selections.

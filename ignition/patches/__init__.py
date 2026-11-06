@@ -21,7 +21,6 @@ _PATCHES = (
 )
 _PPU_VERSIONS = {"torch": "2.9.0", "triton": "3.5.0"}
 _PPU_PATCHES = (
-    "torch29-inductor-triton-cache-filenames.patch",
     "triton-platform-key-pointer-width.patch",
 )
 

@@ -111,11 +111,20 @@ and select their patch set explicitly before standalone tools or pytest:
 python -m ignition.patches --operator-target ppu10
 ```
 
-Use `ppu15` for that target. This edits two installed Python source files:
-Torch Inductor's static-kernel cache lookup/reload and Triton's helper cache
-key. It does not rebuild either package. `qualify.ppu_box` applies and checks
-this same set before importing operators, including when inspecting interfaces
-without device tests.
+Use `ppu15` for that target. This edits only Triton's `runtime/build.py` helper
+cache key and leaves installed Torch files unchanged. It does not rebuild
+either package. `qualify.ppu_box` applies and checks this same fix before
+importing operators, including when inspecting interfaces without device tests.
+
+For Torch 2.9, framework compilation sets `triton.unique_kernel_names=False`:
+actual symbols stay short (`triton_`), so static lookup and reload agree with
+Triton's cache filenames without a Torch patch. Content hashes keep different
+kernels separate; generated wrapper names retain operation descriptions. Raw
+profiler symbol names are less informative. The option reaches compiler workers
+and participates in forward-cache identity, so new preparation cache entries
+are built on demand without deleting old ones. Exported runtime packages remain
+loadable. An already applied Torch filename patch can stay in place, but new
+PPU setup no longer applies or requires it.
 
 `python scripts/setup_preparation.py` resolves the FlashInfer revision declared
 in `pyproject.toml`, syncs preparation/test dependencies, rebuilds FlashInfer and
@@ -1118,8 +1127,11 @@ Torch2.9's skipped `torch.library.wrap_triton` call in probability normalization
 now goes through the existing Dynamo-aware launch helper; four host tracing
 cases pass on Torch2.9 and Torch2.15. After the FP32 classification correction
 and bundled Inductor cache filename patch, the user reports both sampling
-cases passing on PPU (204.13s including preparation). The six QSA cases still
-need confirmation on the box.
+cases passing on PPU (204.13s including preparation) and all six QSA cases
+passing (98.58s). The later short-symbol workaround is checked with offline
+compilation, static construction and cold reload on unpatched Torch; rerun the
+four catalog cases to qualify it on PPU, as described in
+[the box resume instructions](ppu-box-resume.txt).
 These are component graph gates, not complete target/MTP state commit,
 native export/Rust replay or whole-round bubble measurements.
 
@@ -1198,9 +1210,10 @@ The ordinary `ignition export`/`debug-serve` entry now selects platform CUDA
 discovery in a child process for a complete explicit PPU operator set. This
 preserves the caller's visibility mask without initializing the parent's context
 before final selection. Planning and weight admission retain single-device and
-memory checks. CLI patch setup applies exact-context fixes to the platform
-Torch2.9.0/Triton3.5.0 sources, accepting vendor version suffixes; keep those
-platform wheels. Host checks cover admission, visibility and patch application.
+memory checks. CLI patch setup verifies the platform Torch2.9.0/Triton3.5.0
+versions, accepting vendor suffixes, and applies the Triton helper-cache fix.
+Keep those platform wheels; short compiled symbols avoid changing Torch files.
+Host checks cover admission, visibility and patch application.
 GGUF pread and dense decoding are now connected without b12x on the external
 path. Operator numerics, device discovery and native export require box validation;
 full PPU export remains unqualified.

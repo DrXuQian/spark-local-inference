@@ -418,7 +418,7 @@
     manual operator paths. The user reports all fourteen passing on PPU in
     8.67s. Full target/MTP and native PPU export/replay remain unrun.
 
-[ ] Run the remaining QSA and sampling component gates on PPU. The box runner
+[x] Run the remaining QSA and sampling component gates on PPU. The box runner
     includes six QSA cases (widths 1/7/128, direct/catalog, fresh-handle disk
     reload, page boundaries, top-k ties, consumed-prefix replacement and inactive
     state) and two draft/filter/verification graph cases (Qwen vocabulary,
@@ -428,8 +428,9 @@
     Flare reference on nine history lengths and paged attention. Fix the proven
     Torch2.9 probability-normalization Dynamo graph break through the existing
     shared Triton tracing helper. Four real Dynamo tracing cases pass on
-    Torch2.9/Torch2.15; arithmetic, complete target/MTP and native replay still
-    require device qualification. These gates require no model downloads.
+    Torch2.9/Torch2.15. The user reports two sampling passes in 204.13s and six
+    QSA passes in 98.58s with the original Torch filename patch. Complete
+    target/MTP and native replay still require device qualification.
 
 [x] Fix the reported QSA width-one fixture: request capacity is min(rows, 2),
     with matching workspace, interval metadata and graph signature. Six host
@@ -451,8 +452,8 @@
     includes PPU JIT sources, not a host-linked sampling binary. See
     docs/ppu-box-resume.txt for installation, published Flare source branches and
     gates. Publication does not establish PPU execution. The user subsequently
-    reports both sampling cases passing; six QSA cases, full target/MTP and
-    bubble measurements remain unqualified.
+    reports all eight QSA/sampling cases passing; full target/MTP and bubble
+    measurements remain unqualified.
 
 [x] Remove unsupported-API stub definitions from FlashInfer sampling preparation
     in 762b396 (ppu.flare2). The host regression reproduces duplicate acsparse
@@ -492,6 +493,17 @@
     because Torch2.9 looked up full names while Triton3.5 truncated cache files
     to 150 characters. Check both static construction and reload offline with
     a real compiled kernel. Keep version/context checks and static-only binding.
+
+[x] Remove the PPU dependency on modifying Torch installation files. Torch2.9
+    forwards now use triton.unique_kernel_names=False through existing compiler
+    options and cache identity. Offline real codegen/compilation reproduces the
+    long-name failure and verifies short-symbol static binding, distinct kernel
+    cache paths and cold reload without the Torch patch. Keep the independent
+    Triton helper-cache fix; previously patched Torch installations remain usable.
+
+[ ] Confirm QSA/sampling catalog replay with the short-symbol compiler policy:
+    four catalog cases in docs/ppu-box-resume.txt. The earlier eight device
+    passes used the Torch filename patch and do not validate this new policy.
 
 [x] Carry the validated external operator target into prepared graph admission
     for both normal Qwen bootstrap and the partial-GGUF qualifier. PPU capability
