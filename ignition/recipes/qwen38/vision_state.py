@@ -16,7 +16,6 @@ from ignition.components.sampling import _completion_fields, _write_completion
 from ignition.preparation.triton import prepare_triton
 
 from .sampling import DeviceRequestState
-from .vision import VisionMetadata
 
 FEATURES = 16384
 WIDTH = 2560
@@ -362,6 +361,8 @@ class PreparedVisionHandoff:
             requests,
             output,
         )
+        from .vision import VisionMetadata
+
         self.metadata = VisionMetadata.allocate(capacity, 1, device, buffers=buffers)
         def zeros(shape, dtype):
             return (torch.zeros(shape, dtype=dtype, device=device) if buffers is None

@@ -14,7 +14,7 @@ from ignition.preparation.scratch import GraphBufferPool
 
 from .decoder import PreparedDecoder
 from .draft_state import DRAFT_RAW_FIELDS, DraftMetadata
-from ignition.components.gdn_recovery import GDNLayerRecords
+from ignition.components.gdn_records import GDNLayerRecords
 from .mtp import MTPScratch, PreparedMTP
 from ignition.components.speculation import (
     DRAFT_RNG_DOMAIN, PreparedSpeculativeCommit,

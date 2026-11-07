@@ -215,6 +215,16 @@ The standalone Q2_0 fixture's tensor payload is 889014272 bytes, including
 707788800 compressed expert bytes; resident-weight planning preserves that
 compressed expert budget. Rerun the export command below after pulling.
 
+The subsequent b12x import failure in gdn_recovery came from importing GDN
+record storage through the NVIDIA kernel module. Records now live in
+ignition.components.gdn_records, shared by MTP and both recurrence implementations.
+Mixed text preparation also defers the vision encoder's metadata import until
+a vision handoff is constructed. Pull the framework fix and rerun the export;
+the selected external operator packages require no reinstall. Seventeen host
+checks pass with unused b12x/CuTe/cuTile imports forbidden, including MTP/mixed
+entry imports and compiler metadata serialization preserving record aliases.
+These checks do not execute PPU kernels or qualify native model replay.
+
 The separate gguf-0.19.0+ppu.q2.1 wheel enables the normal GGUF reader to parse
 ID42 and expose unchanged packed byte views. It is built from gguf-py in
 DrXuQian/llama.cpp 356a231c12910c545bfff0f781ed3be779b1ba5a, with only the package

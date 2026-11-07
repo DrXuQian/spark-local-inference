@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import torch
 
 from ignition.components.dflash2 import DraftScratch, PreparedContext, PreparedDraft
-from ignition.components.gdn_recovery import GDNLayerRecords
+from ignition.components.gdn_records import GDNLayerRecords
 from ignition.components.speculation import SpeculativeRngState
 
 from .config import PAGE_TOKENS

@@ -114,7 +114,7 @@ def test_explicit_ppu_selection_requires_the_complete_external_operator_set():
     assert external_operators(None) is False
 
 
-def test_text_bootstrap_and_single_rank_copies_do_not_import_unused_operator_packages():
+def test_text_mtp_preparation_and_single_rank_copies_do_not_import_unused_operator_packages():
     script = '''
 import importlib.abc, sys, torch
 class RejectUnused(importlib.abc.MetaPathFinder):
@@ -124,8 +124,27 @@ class RejectUnused(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, RejectUnused())
 from ignition.recipes.qwen38 import bootstrap
 from ignition.recipes.qwen38 import mixed_state
+from ignition.recipes.qwen38 import mixed_model, speculative_model, mtp_weights
 from qualify import qwen38_gguf
 from ignition.components.collectives import PreparedAllGather, PreparedAllReduce, PreparedBroadcast
+from ignition.preparation.forward_metadata import dumps, loads
+records = speculative_model.GDNLayerRecords.allocate((0, 44), 3, 'cpu', key_heads=2, value_heads=6, width=6)
+layer = records[44]
+assert layer.delta.shape == (3, 6, 6, 128)
+assert layer.keys.shape == (3, 2, 6, 128)
+assert layer.decay.shape == (3, 6, 6)
+for name in ('delta', 'keys', 'decay'):
+    getattr(layer, name).fill_(7)
+    backing = getattr(records, name)
+    assert backing.dtype == torch.float32
+    assert torch.all(backing[0] == 0) and torch.all(backing[1] == 7)
+restored, restored_layer = loads(dumps((records, layer)))
+assert type(restored) is type(records) and type(restored_layer) is type(layer)
+for name in ('delta', 'keys', 'decay'):
+    backing, view = getattr(restored, name), getattr(restored_layer, name)
+    assert view.shape == getattr(layer, name).shape
+    assert view.untyped_storage()._cdata == backing.untyped_storage()._cdata
+    assert view.storage_offset() == backing[1].storage_offset()
 source = torch.arange(24, dtype=torch.float32).reshape(3, 8)
 for kind in (PreparedAllGather, PreparedAllReduce):
     output = torch.empty_like(source)
@@ -133,5 +152,7 @@ for kind in (PreparedAllGather, PreparedAllReduce):
     operation(source)
     torch.testing.assert_close(source, output, rtol=0, atol=0)
 PreparedBroadcast((source,), runtime=None, session=None, coordinator=None, name='single')
+assert not torch.cuda.is_initialized()
 '''
-    subprocess.run([sys.executable, '-c', script], check=True, capture_output=True, text=True)
+    result = subprocess.run([sys.executable, '-c', script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr

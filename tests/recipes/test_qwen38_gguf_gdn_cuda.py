@@ -165,7 +165,7 @@ def test_target_gdn_prefill_graph(checkpoint, tokens, tmp_path, recurrence_libra
 @pytest.mark.parametrize('convolution_slot', [0, 1])
 def test_actlize_retains_each_layers_records_through_shared_scratch(checkpoint, recurrence_library, tmp_path, convolution_slot):
     from ignition.components.actlize_gdn import prepare_layer_commits
-    from ignition.components.gdn_recovery import GDNLayerRecords
+    from ignition.components.gdn_records import GDNLayerRecords
     from tests.recipes.test_qwen38_gdn_recovery_cuda import _reference
 
     module, weights, _ = checkpoint
@@ -240,7 +240,7 @@ def test_actlize_retains_each_layers_records_through_shared_scratch(checkpoint, 
 
 @pytest.mark.parametrize('width', [1, 6])
 def test_actual_gguf_decode_commit_matches_flare_checkpoints(checkpoint, width, tmp_path, recurrence_library):
-    from ignition.components.gdn_recovery import GDNLayerRecords
+    from ignition.components.gdn_records import GDNLayerRecords
     from ignition.components.actlize_gdn import prepare_layer_commits
     from tests.recipes.test_qwen38_gdn_recovery_cuda import _reference
 

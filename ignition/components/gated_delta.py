@@ -21,7 +21,7 @@ from ignition.components import sm103
 if TYPE_CHECKING:
     from b12x.gemm.blockscaled import Weight
     from b12x.preparation import PreparationSession
-    from .gdn_recovery import GDNRecords
+    from .gdn_records import GDNRecords
 
 
 @dataclass(frozen=True)

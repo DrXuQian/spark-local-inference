@@ -244,6 +244,14 @@
     an unavailable NVFP4 checkpoint skip. Host transfers are explicitly CPU
     test fixtures, not PPU qualification. Actual box export remains open.
 
+[x] Remove eager b12x imports from text MTP preparation. Share GDN record
+    storage independently of the NVIDIA recovery kernels, and load vision
+    metadata only when constructing a vision handoff. Reproduce the reported
+    speculative-model import failure and the adjacent mixed-text import failure
+    locally. All 17 external-session/PPU-entry checks pass, including compiler
+    metadata round-trip aliasing with unused operator imports forbidden. Device
+    execution is unchanged and the actual PPU package export remains open.
+
 [ ] Qualify the supplied Q2_0 MTP on PPU. Fifteen added device cases cover file
     packing, dense decoding, prepared projection catalog rebinding and graph
     replay; they are collected but not run locally. Run them with the 0.2.1 wheel
