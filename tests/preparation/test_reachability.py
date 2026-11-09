@@ -141,6 +141,13 @@ def test_triton_launch_metadata_distinguishes_scalar_values_from_pointers():
     layout = _triton_parameters(kernel)
     assert layout == ((8, False), (8, False), (4, True), (4, True),
                       (8, False), (8, False))
+    image = kernel.asm["cubin"]
+    if image[:4] == b"\x7fELF" and int.from_bytes(image[18:20], "little") == 270:
+        from flare_heliopause import ppu_parameter_sizes
+
+        # PPU SDK 2.2.1 lacks the parameter query; its ELF records define the launch ABI.
+        assert ppu_parameter_sizes(image, kernel.name) == [size for size, _ in layout]
+        return
     for index, (size, _) in enumerate(layout):
         status, _, actual_size = cu.cuFuncGetParamInfo(cu.CUfunction(kernel.function), index)
         assert status == cu.CUresult.CUDA_SUCCESS

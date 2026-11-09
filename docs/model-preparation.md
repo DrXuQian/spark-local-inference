@@ -1108,7 +1108,13 @@ library. Keep the platform's Torch and FlashInfer packages.
 `ignition.components.blas_projection` binds the C API directly. It supports
 unbiased BF16-by-BF16 projections with BF16 or FP32 output, and FP32-by-FP32
 projections with FP32 output. Inputs and outputs can have padded row strides;
-columns must be contiguous and write spans disjoint. FP32 accumulation is
+columns must be contiguous and write spans disjoint. GGUF stores some BF16
+checkpoint matrices, such as GDN B/A, router and shared-expert gate weights, as
+F32. With BF16 inputs, such a weight is bound as one shared BF16 copy only when
+every value is exactly representable; any other F32 weight is rejected. A
+single row's leading dimension is its dense width, because eager and traced
+views of a padded row report different strides for that size-one dimension.
+FP32 accumulation is
 requested without reduced-precision reduction or TF32 conversion. Preparation
 owns one handle and workspace for serialized dense projections; concurrent
 branches require separate resources. Output and workspace mutations are explicit

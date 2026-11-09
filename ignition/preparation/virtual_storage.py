@@ -6,7 +6,7 @@
 import ctypes as C
 import math
 
-from .package_storage import DeviceRegion, _Location, _Properties
+from .package_storage import DeviceRegion, _Location, _Properties, tensor_from_pointer
 from .runtime_package import _Cuda
 
 
@@ -38,7 +38,6 @@ class VirtualStorage:
     def device_allocate(self, name, shape, dtype, *, group, maximum, units=None):
         """Reserve `maximum` units of address space and back the first `units`."""
         import torch
-        from b12x.sequence._shared.disk_table import _tensor_from_pointer
 
         units = shape[0] if units is None else units
         unit_bytes = math.prod(shape[1:]) * dtype.itemsize
@@ -56,8 +55,8 @@ class VirtualStorage:
         region.name, region.group = name, group
         region.unit_bytes, region.maximum, region.extent = unit_bytes, maximum, extent
         self.dynamic_regions.append(region)
-        return _tensor_from_pointer(address.value, shape=shape, dtype=dtype,
-                                    device=torch.device("cuda", self.device), nbytes=math.prod(shape) * dtype.itemsize)
+        return tensor_from_pointer(address.value, shape=shape, dtype=dtype,
+                                   device=torch.device("cuda", self.device), nbytes=math.prod(shape) * dtype.itemsize)
 
     def grow(self, group, units):
         """Back additional units after compiler contexts have exited."""

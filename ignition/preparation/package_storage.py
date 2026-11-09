@@ -26,6 +26,15 @@ def pool_snapshot(pool_id):
     return snapshot(pool_id, **options)
 
 
+def tensor_from_pointer(pointer, *, shape, dtype, device, nbytes):
+    """View `nbytes` of storage owned elsewhere at `pointer` as a contiguous tensor."""
+    import torch
+
+    storage = torch._C._construct_storage_from_data_pointer(int(pointer), device, int(nbytes))
+    strides = tuple(math.prod(shape[index + 1:]) for index in range(len(shape)))
+    return torch.empty(0, dtype=dtype, device=device).set_(storage, 0, shape, strides)
+
+
 @dataclass
 class Mapping:
     address: int
@@ -60,6 +69,10 @@ class PackageStorage:
         if type(self.local_ranks) is not int or not 1 <= self.local_ranks <= world:
             raise ValueError("local preparation ranks must be positive and fit the rank group")
         properties = torch.cuda.get_device_properties(device)
+        # Driver calls here, in host_allocate and by callers use the current
+        # context. The PPU SDK 2.2.1 CUDA 12.9 runtime leaves the selected
+        # primary context inactive after set_device, so initialize it first.
+        torch.cuda.synchronize(device)
         self.integrated = properties.is_integrated
         self._retention_scope = False
         self.DEVICE_BASE += rank * self.RESERVATION_BYTES
@@ -270,7 +283,6 @@ class PackageStorage:
     def device_allocate(self, name, shape, dtype, *, group, maximum, units=None):
         """Map a prefix of a stable virtual range for runtime-sized storage."""
         import torch
-        from b12x.sequence._shared.disk_table import _tensor_from_pointer
 
         units = shape[0] if units is None else units
         unit_bytes = math.prod(shape[1:]) * dtype.itemsize
@@ -286,8 +298,8 @@ class PackageStorage:
         region.unit_bytes, region.maximum, region.extent = unit_bytes, maximum, extent
         self.dynamic_regions.append(region)
         self._device_cursor += extent
-        return _tensor_from_pointer(address, shape=shape, dtype=dtype,
-                                    device=torch.device("cuda", self.device), nbytes=math.prod(shape) * dtype.itemsize)
+        return tensor_from_pointer(address, shape=shape, dtype=dtype,
+                                   device=torch.device("cuda", self.device), nbytes=math.prod(shape) * dtype.itemsize)
 
     def grow(self, group, units):
         """Back additional units after compiler contexts have exited."""
@@ -325,7 +337,6 @@ class HostRegion:
         """`lock`, for a unified-memory GPU, keeps the region resident: registering host memory there
         does not pin it, and a swapped-out page turns each GPU access into a fault."""
         import torch
-        from b12x.sequence._shared.disk_table import _tensor_from_pointer
 
         self.cuda, self.address, self.extent = cuda, address, extent
         self.nbytes = math.prod(shape) * dtype.itemsize
@@ -349,7 +360,7 @@ class HostRegion:
             cuda.call("cuMemHostGetDevicePointer_v2", C.byref(gpu), C.c_void_p(address), C.c_uint(0))
             if gpu.value != address:
                 raise RuntimeError("mapped host storage requires identical CPU and CUDA addresses")
-            views = [_tensor_from_pointer(address, shape=shape, dtype=dtype, device=device, nbytes=self.nbytes)
+            views = [tensor_from_pointer(address, shape=shape, dtype=dtype, device=device, nbytes=self.nbytes)
                      for device in (torch.device("cpu"), torch.device("cuda", device))]
             self.host_view, self.device_view = views
         except BaseException:
@@ -383,7 +394,6 @@ class WindowsHostRegion:
 
     def __init__(self, cuda, address, extent, shape, dtype, device, *, lock=False):
         import torch
-        from b12x.sequence._shared.disk_table import _tensor_from_pointer
 
         self.cuda, self.address = cuda, address
         self.nbytes = math.prod(shape) * dtype.itemsize
@@ -412,7 +422,7 @@ class WindowsHostRegion:
             cuda.call("cuMemSetAccess", pointer, C.c_size_t(self.extent), access, C.c_size_t(2))
             C.memset(address, 0, self.extent)
             self.host_view, self.device_view = [
-                _tensor_from_pointer(address, shape=shape, dtype=dtype, device=location, nbytes=self.nbytes)
+                tensor_from_pointer(address, shape=shape, dtype=dtype, device=location, nbytes=self.nbytes)
                 for location in (torch.device("cpu"), torch.device("cuda", device))]
         except BaseException:
             if mapped:

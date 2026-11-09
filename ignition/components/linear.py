@@ -121,6 +121,7 @@ class UnquantizedProjection:
         if blas_owner is not None:
             from .blas_projection import PreparedBlasProjection
 
+            weight = blas_owner.operand(source, weight)
             self.blas = PreparedBlasProjection(source, weight, output, owner=blas_owner, bias=bias)
             self.weight, self.output, self.bias, self.plan = weight, output, bias, None
             return

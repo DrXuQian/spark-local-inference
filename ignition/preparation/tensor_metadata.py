@@ -116,8 +116,14 @@ def record_numeric_tensor(tensor):
 
 
 def _triton_parameters(kernel):
-    from triton.backends.nvidia.driver import expand_signature
     from triton.compiler import ASTSource
+
+    try:
+        from triton.backends.nvidia.driver import expand_signature
+    except ImportError:
+        # Triton 3.5, the PPU platform release, expands tensor descriptors only
+        # inside its launcher and passes every other top-level type through.
+        expand_signature = None
 
     if not isinstance(kernel.src, ASTSource) or not kernel.function:
         return None
@@ -134,11 +140,16 @@ def _triton_parameters(kernel):
         elif value != "constexpr":
             types.append(value)
 
-    descriptor = {}
-    if "descriptor_type" in inspect.signature(expand_signature).parameters:
-        descriptor["descriptor_type"] = "nvTmaDesc"
-    flatten(expand_signature(kernel.src.signature.values(),
-                             getattr(kernel.metadata, "tensordesc_meta", None), **descriptor))
+    signature = tuple(kernel.src.signature.values())
+    if expand_signature is None:
+        if any(isinstance(value, str) and value.startswith("tensordesc") for value in signature):
+            return None
+        flatten(signature)
+    else:
+        descriptor = {}
+        if "descriptor_type" in inspect.signature(expand_signature).parameters:
+            descriptor["descriptor_type"] = "nvTmaDesc"
+        flatten(expand_signature(signature, getattr(kernel.metadata, "tensordesc_meta", None), **descriptor))
     types.extend(("*i8", "*i8"))
     sizes = {"i1": 1, "u1": 1, "i8": 1, "u8": 1, "i16": 2, "u16": 2,
              "i32": 4, "u32": 4, "i64": 8, "u64": 8, "fp16": 2, "bf16": 2,

@@ -37,10 +37,10 @@ class PagedStateStorage(StateStorage):
         backing.memory_capacity[1] = pages
         reserved = backing.backing
         if storage is not None:
-            from b12x.sequence._shared.disk_table import _tensor_from_pointer
+            from ignition.preparation.package_storage import tensor_from_pointer
 
             region = next(r for r in storage.dynamic_regions if r.address == backing.backing.data_ptr())
-            reserved = _tensor_from_pointer(
+            reserved = tensor_from_pointer(
                 region.address,
                 shape=(region.maximum, layout.row_bytes),
                 dtype=torch.uint8,

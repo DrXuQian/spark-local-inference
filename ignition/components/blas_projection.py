@@ -56,9 +56,13 @@ class ProjectionGeometry:
             raise ValueError('BLAS projection batch dimensions must flatten without a copy') from exc
         strides = []
         for tensor in matrices:
-            if tensor.stride(1) != 1 or tensor.stride(0) < tensor.shape[1]:
+            # The stride of a size-one dimension addresses no element. Eager views
+            # and traced fake views may report different values for it, so a
+            # single row uses its dense leading dimension.
+            stride = tensor.stride(0) if tensor.shape[0] > 1 else tensor.shape[1]
+            if tensor.shape[1] > 1 and tensor.stride(1) != 1 or stride < tensor.shape[1]:
                 raise ValueError('BLAS projection requires contiguous columns and nonoverlapping rows')
-            strides.append(tensor.stride(0))
+            strides.append(stride)
         if any(n >= 1 << 31 for n in (rows, columns, inner, *strides)):
             raise ValueError('BLAS projection dimensions and leading dimensions must fit int32')
         return cls(rows, columns, inner, *strides, _DTYPES[source.dtype], _DTYPES[output.dtype])
@@ -163,6 +167,24 @@ class PreparedBlas:
         self.finalizer.atexit = False
         self.handle = next(_handles)
         _owners[self.handle] = self
+        self.narrowed = {}
+
+    def operand(self, source, weight):
+        """Weight operand for `source`, with one shared BF16 copy per exact FP32 weight.
+
+        GGUF stores small BF16 checkpoint matrices, such as GDN B/A, as exact FP32
+        values; GemmEx multiplies operands of one type. Other weights are unchanged.
+        """
+        if source.dtype != torch.bfloat16 or weight.dtype != torch.float32:
+            return weight
+        retained = self.narrowed.get(id(weight))
+        if retained is None:
+            narrowed = weight.bfloat16()
+            if not torch.equal(narrowed.float(), weight):
+                raise ValueError('FP32 BLAS weight with BF16 input is not exactly representable in BF16')
+            # Retaining the source weight keeps its identity from naming another tensor.
+            retained = self.narrowed[id(weight)] = (weight, narrowed)
+        return retained[1]
 
     def launch(self, source, weight, output, workspace):
         # Functionalization/rebinding may supply a new storage address. The
@@ -212,7 +234,9 @@ class PreparedBlasProjection:
         return {name: value for name, value in vars(self).items() if name != 'owner'}
 
     def __call__(self, source):
-        if ProjectionGeometry.from_tensors(source, self.weight, self.output) != self.geometry:
-            raise ValueError('BLAS projection shape, precision or strides changed after preparation')
+        geometry = ProjectionGeometry.from_tensors(source, self.weight, self.output)
+        if geometry != self.geometry:
+            raise ValueError(f'BLAS projection shape, precision or strides changed after preparation: '
+                             f'prepared {self.geometry}, called with {geometry}')
         projection(source, self.weight, self.output, self.workspace, self.handle)
         return self.output

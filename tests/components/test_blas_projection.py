@@ -92,6 +92,23 @@ def test_geometry_preserves_flattened_hc_rows_and_rejects_copying_layouts():
         ProjectionGeometry.from_tensors(torch.empty(3, 7, requires_grad=True), torch.empty(5, 7), torch.empty(3, 5))
 
 
+def test_single_row_geometry_matches_traced_fake_views():
+    from torch._subclasses import FakeTensorMode
+
+    # Eager view() recomputes a size-one row stride; fake tensor views keep the
+    # padded one. Compiled forwards compare their traced geometry with this.
+    source, weight, output = torch.empty(1, 24), torch.empty(5, 24), torch.empty(1, 21)[:, :5]
+    prepared = ProjectionGeometry.from_tensors(source, weight, output)
+    with FakeTensorMode() as mode:
+        traced = ProjectionGeometry.from_tensors(*(mode.from_tensor(t) for t in (source, weight, output)))
+    assert traced == prepared
+    assert (prepared.rows, prepared.input_stride, prepared.output_stride) == (1, 24, 5)
+    padded = torch.empty(2, 21)[:, :5]
+    assert ProjectionGeometry.from_tensors(torch.empty(2, 24), weight, padded).output_stride == 21
+    with pytest.raises(ValueError, match='contiguous columns'):
+        ProjectionGeometry.from_tensors(torch.empty(1, 48)[:, ::2], weight, output)
+
+
 def test_fake_export_retains_output_and_workspace_mutations_without_native_library():
     class Forward(torch.nn.Module):
         def forward(self, x, w, out, workspace):

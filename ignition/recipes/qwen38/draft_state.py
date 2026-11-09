@@ -10,6 +10,8 @@ import triton
 import triton.language as tl
 from torch.fx.experimental.proxy_tensor import get_proxy_mode
 
+from ignition.preparation.triton import wrap_triton
+
 from .attention import QSAMetadata
 
 HIDDEN = 10240
@@ -143,6 +145,6 @@ class DraftMetadata:
                 triton.next_power_of_2(triton.cdiv(pages, chunks)))
         grid = (self.tokens, chunks, 1)
         if torch.compiler.is_compiling() or get_proxy_mode() is not None:
-            torch.library.wrap_triton(_pack_draft_metadata)[grid](*args, num_warps=4)
+            wrap_triton(_pack_draft_metadata)[grid](*args, num_warps=4)
         else:
             _pack_draft_metadata[grid](*args, num_warps=4)
