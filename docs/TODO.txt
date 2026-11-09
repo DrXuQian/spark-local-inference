@@ -181,9 +181,11 @@
 [ ] Extend the passing PPU native export/replay boundary to complete operator
     and GGUF+MTP graphs. The tiny ppu10 module now passes eight native replays
     on SDK2.2.1 with HGPTI recording, ELF globals/parameters, fixed VMM addresses
-    and indirect-pointer state. Larger graph histories, external operator
-    modules and full-round timelines remain separate gates. See
-    model-preparation.md#ppu-port-preparation for the concrete operator table.
+    and indirect-pointer state, also on PPU-ZW610's CUDA 12.9 interface. There
+    the blocks 44/47 + Q2_0 MTP fixture now compiles and captures every forward;
+    package writing stopped on Triton 3.5 launch metadata, fixed but not rerun.
+    Native requests, replay and full-round timelines remain. See the PPU-ZW610
+    checkpoint in ppu-box-resume.txt and model-preparation.md#ppu-port-preparation.
 
 [x] Add a box launcher for the supplied UD-Q4_K_XL directory. Resolve only
     shards one/four and shared-Q8 MTP; reject ambiguous/missing MTP paths. Fetch
@@ -252,14 +254,33 @@
     metadata round-trip aliasing with unused operator imports forbidden. Device
     execution is unchanged and the actual PPU package export remains open.
 
-[ ] Qualify the supplied Q2_0 MTP on PPU. Fifteen added device cases cover file
-    packing, dense decoding, prepared projection catalog rebinding and graph
-    replay; they are collected but not run locally. Run them with the 0.2.1 wheel
-    and Q2_0 GGUF reader, then the partial target + complete MTP package and native
-    replay. The reported architecture is qwen4exp-mtp; the new preflight checks
-    the actual file against that producer's complete tensor layout. Source and
-    host ABI checks do not qualify device correctness or bubble-free execution.
-    See ppu-box-resume.txt for the focused Q2_0 command.
+[ ] Qualify the supplied Q2_0 MTP on PPU. All fifteen Q2_0 device cases pass on
+    PPU-ZW610 with the 0.2.1 wheel and Q2_0 reader: eight file-packing and
+    projection replays, two dense decodings and five lookup graphs. A
+    Strata-packed qwen4exp-mtp file (31 tensors, 889014272 tensor bytes) passes
+    the preflight and loads into the partial fixture. The partial target +
+    complete MTP package export and native replay remain; host and component
+    checks do not qualify complete MTP rounds or bubble-free execution.
+
+[ ] PPU SDK 2.2.1 blocking-sync events busy-wait: on PPU-ZW610 one wait on a
+    CU_EVENT_BLOCKING_SYNC event used 435 ms thread CPU over 435 ms wall with
+    both its CUDA 12.9 and 13 facades, failing the batched-copy test's sleep
+    check; the copied data is correct. Helios transfer waits spin on this SDK.
+    Report it with batched_copies_round_trip_through_registered_memory.
+
+[ ] PPU package weights report GPU_DIRECT_RDMA_CAPABLE 0 while the device
+    attribute reports support (test_package_weights_support_gpudirect_registration
+    on PPU-ZW610). The GGUF fixture does not use cuFile; resolve this before
+    direct storage transport on PPU.
+
+[ ] Count the BLAS BF16 copies of exact F32 GGUF weights (GDN B/A, routers,
+    shared gates) in the resident-weight plan, about 144 MB for the complete
+    checkpoint, or read those weights as BF16 when the selected projection needs it.
+
+[ ] A failed PPU export aborts at interpreter exit: after the Python exception,
+    PackageStorage.__del__ drops a pool that graphs or contexts still reference
+    and ~MemPool asserts use_count() == 1 (exit 134 instead of the exception's
+    status). Release preparation storage in order on error paths.
 
 [x] Check the SDK 2.1.1 export ABI and native ELF data discovery. All 66
     runtime driver entry names have hg-prefixed header declarations; 70 host

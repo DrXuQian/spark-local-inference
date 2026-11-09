@@ -453,3 +453,65 @@ or establish recorder/export/replay correctness. Local SDK2.2.1 builds for ppu10
 and ppu15 and the eleven ELF checks pass; three host Driver API argument tests
 and two allocation-callback tests also pass. The completed eight-replay device
 gate above qualifies the tiny ppu10 module; ppu15 remains compiler-only evidence.
+
+PPU-ZW610 checkpoint (2026-11-09)
+---------------------------------
+
+A second host (2x PPU-ZW610, PCI 1ded:6001, 48 GiB, driver 2.3.0) has no /sim
+share. The platform Torch 2.9.0 is a CUDA 12.9 build, so preparation and
+replay use SDK 2.2.1-184ee6's CUDA 12.9 variant (cuDriverGetVersion 12090):
+  /workspace/actlize-la-gdn-fla20-20261106/sdk/2.2.1-184ee6-cuda129/PPU_SDK
+The system /usr/local/PPU_SDK is v2.0.0; the SDK's CUDA 13 variant reports
+13000 and does not match this Torch. / and /workspace share one nearly full
+disk, so the venv, Rust toolchain, caches, inputs and packages live under
+/dev/shm/flare-qwen38-ppu610 (lost on reboot).
+
+Environment beyond the commands above:
+  - The four LFS wheels other than Heliopause install with --no-deps. Build
+    Heliopause from this tree (pip install --no-deps ./heliopause, Rust
+    1.99.1): the LFS wheel predates the CUDA 12.8 batched-copy binding and
+    fails current_context on this SDK.
+  - apache-tvm-ffi 0.1.14.post1 (uv.lock's version) in the venv. The platform
+    0.1.1 lacks tvm/ffi/extra/cuda/device_guard.h for the flare2 sampling JIT.
+  - Transformers installed from git 1d9654e7, so preparation finds its
+    recorded commit; protobuf 7.36, safetensors 0.8.0, tokenizers 0.23.2,
+    huggingface-hub 1.33.0 and pytest 9 from PyPI with platform Torch, Triton
+    and numpy as constraints.
+  - The venv appends the platform site-packages without processing its .pth
+    hooks. nvidia-cutlass-dsl 4.3.5 is then not importable, so FlashInfer
+    flare2's optional CuTe DSL import fails with ImportError as intended;
+    with 4.3.5 importable it raised AttributeError (cutlass.CUDA_VERSION).
+  - python -m ignition.patches --operator-target ppu10 patched the venv's
+    Triton copy; platform files are unchanged.
+
+Inputs: shards 1/4 of unsloth/Qwen3.8-Flash-Next-GGUF UD-Q4_K_XL at revision
+38bb39ee (Strata's pin; sha256 44481862... and 753bda48...), and an
+mtp-q2_0.gguf packed here by Strata tools/mtp_pack.py (unchanged since
+6780211b) from the pinned BF16 MTP tensors: qwen4exp-mtp, 31 tensors,
+889014272 tensor bytes, sha256 a22206a4d74eafbf31063a84610292535fb3b49af9a339963817fd04aed81e4d.
+The four pinned frontend files were fetched and their hashes checked.
+
+Results, each on a single PPU-ZW610:
+  - Preparation entry checks: 17 passed.
+  - qualify.ppu_export + test_actlize_runtime_package: 8 native replays passed.
+  - Q2_0 packing/helpers (-k 42): 15 passed, including the five lookup graphs.
+  - actlizeLA GDN sequence/mixing/PLE 14, QSA 6, sampling 2: all passed.
+  - Dense BLAS: 19 device and 14 host cases passed.
+  - Partial export: blocks 44/47 and the Q2_0 MTP load; all nine compiled
+    forwards trace, compile and capture, 18 minutes after start with warm
+    Triton/Inductor caches. Package writing
+    then stopped on Triton 3.5 launch metadata. That is fixed; the export has
+    not been rerun, so no package, native request, replay or timeline result
+    exists on this host yet.
+
+Rerun with the SDK environment above and a new output directory:
+  python -X faulthandler -u -m qualify.qwen38_gguf_box \
+    --model-dir /dev/shm/flare-qwen38-ppu610/inputs/UD-Q4_K_XL \
+    --mtp /dev/shm/flare-qwen38-ppu610/inputs/MTP-GGUF-modelzoo/Qwen3.8-Flash-Next-MTP/mtp-q2_0.gguf \
+    --operator-target ppu10 --blas-library "$CUDA_HOME/lib64/libcublas.so" \
+    --frontend /dev/shm/flare-qwen38-ppu610/inputs/frontend --output "$out"
+
+For timelines, source $ppu_sdk/asight/envsetup.sh and trace flare run with
+asys profile -t hggc --hggc-graph-trace=node. test_actlize_runtime_package's
+own HGPTI allocation observer saw no startup allocations under asys, so trace
+the service rather than the replay tools. Open PPU findings are in TODO.txt.
