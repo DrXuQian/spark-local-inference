@@ -273,14 +273,23 @@
     on PPU-ZW610). The GGUF fixture does not use cuFile; resolve this before
     direct storage transport on PPU.
 
-[ ] Count the BLAS BF16 copies of exact F32 GGUF weights (GDN B/A, routers,
-    shared gates) in the resident-weight plan, about 144 MB for the complete
-    checkpoint, or read those weights as BF16 when the selected projection needs it.
+[x] Count retained BLAS BF16 operands alongside their F32 GGUF sources in
+    main and draft resident-weight plans. The target's 48 routers/shared gates
+    and 36 GDN B/A pairs add 143769600 bytes. Loader-converted convolution and
+    HC injection weights do not add separate BLAS operands. Host planning tests
+    cover the full target geometry and legacy draft copies.
 
-[ ] A failed PPU export aborts at interpreter exit: after the Python exception,
-    PackageStorage.__del__ drops a pool that graphs or contexts still reference
-    and ~MemPool asserts use_count() == 1 (exit 134 instead of the exception's
-    status). Release preparation storage in order on error paths.
+[x] Close the partial GGUF prepared model when package writing fails, using
+    its existing context manager to drain, reset graphs and close resources.
+    Keep the PLE table among its close resources and print success only after
+    cleanup. Injected write success/failure tests preserve the primary error
+    and verify graph/session/table release ordering.
+
+[ ] Recheck failed-export teardown and the complete package_storage_cuda suite
+    on PPU-ZW610. Previously, PackageStorage.__del__ dropped a pool still held
+    by graphs and ~MemPool asserted use_count() == 1 (exit 134). The package-write
+    cleanup is now covered by host tests; earlier preparation/transient failures
+    and the actual PPU allocator teardown have not been requalified.
 
 [x] Check the SDK 2.1.1 export ABI and native ELF data discovery. All 66
     runtime driver entry names have hg-prefixed header declarations; 70 host

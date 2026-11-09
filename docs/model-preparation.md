@@ -1112,6 +1112,8 @@ columns must be contiguous and write spans disjoint. GGUF stores some BF16
 checkpoint matrices, such as GDN B/A, router and shared-expert gate weights, as
 F32. With BF16 inputs, such a weight is bound as one shared BF16 copy only when
 every value is exactly representable; any other F32 weight is rejected. A
+GGUF resident-weight plan includes these retained BF16 copies for both target
+and draft when BLAS is selected, in addition to the F32 source storage. A
 single row's leading dimension is its dense width, because eager and traced
 views of a padded row report different strides for that size-one dimension.
 FP32 accumulation is

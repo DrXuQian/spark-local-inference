@@ -4,6 +4,7 @@
 
 from dataclasses import replace
 import json
+from math import prod
 import os
 from pathlib import Path
 import subprocess
@@ -106,6 +107,37 @@ def test_ppu_weight_reader_requires_explicit_transport_and_native_decoder():
         GgufWeightLoader(manifest, 'cuda:0', read_mode='auto', quactlize_helpers=object())
     helper = object()
     assert GgufWeightLoader(manifest, 'cuda:0', read_mode='pread', quactlize_helpers=helper).quactlize_helpers is helper
+
+
+def test_blas_weight_plan_retains_f32_sources_and_bf16_copies_for_main_and_draft():
+    from ignition.preparation.qwen38_gguf import device_weight_bytes
+
+    def f32(shape):
+        return SimpleNamespace(nbytes=prod(shape) * 4, dtype='F32', shape=shape, component='decoder_other')
+
+    manifest = checkpoint()
+    tensors = dict(manifest.tensors)
+    for layer in range(48):
+        tensors[f'blk.{layer}.ffn_gate_inp.weight'] = f32((512, 2560))
+        tensors[f'blk.{layer}.ffn_gate_inp_shexp.weight'] = f32((2560,))
+        if layer % 4 != 3:
+            for part in ('alpha', 'beta'):
+                tensors[f'blk.{layer}.ssm_{part}.weight'] = f32((48, 2560))
+    # These are converted during loading or remain scalar/vector parameters,
+    # rather than producing extra retained BLAS matrices.
+    tensors.update({'blk.0.ssm_conv1d.weight': f32((10240, 4)),
+                    'blk.0.hc_attn_inject.weight': f32((4, 10240)),
+                    'blk.0.hc_attn_norm.weight': f32((10240,))})
+    draft = replace(manifest.draft, tensors={'blk.48.ffn_gate_inp.weight': f32((512, 2560)),
+                                           'blk.48.attn_q_norm.weight': f32((256,))})
+    manifest = replace(manifest, tensors=tensors, draft=draft)
+    main_base, draft_base = device_weight_bytes(manifest), device_weight_bytes(draft)
+    assert device_weight_bytes(manifest, dense_blas=True) == main_base + 143_769_600
+    assert device_weight_bytes(draft, dense_blas=True) == draft_base + 2_621_440
+    selected = gguf_recipe(manifest, Path('/fixture')).checkpoints[0]
+    assert selected.draft_bytes == draft_base + 2_621_440
+    assert selected.device_bytes == main_base + 143_769_600 + selected.draft_bytes
+    assert derive(manifest).weights_bytes == selected.device_bytes
 
 
 @pytest.fixture

@@ -224,9 +224,22 @@ def inspect_qwen38_gguf(inputs: GgufInputs):
                               inputs.flash_attention3)
 
 
-def device_weight_bytes(checkpoint):
-    """Resident packed experts/embedding and the once-expanded dense matrices."""
-    return sum(tensor.nbytes if '_exps.' in name or '.mlp.experts.' in name
-               or name == 'token_embd.weight' or tensor.dtype != 'U8'
-               else prod(tensor.shape) * 2
-               for name, tensor in checkpoint.tensors.items() if tensor.component != 'ple_tables')
+def device_weight_bytes(checkpoint, *, dense_blas=False):
+    """Resident weights, including exact BF16 operands retained by BLAS."""
+    total = 0
+    for name, tensor in checkpoint.tensors.items():
+        if tensor.component == 'ple_tables':
+            continue
+        total += (tensor.nbytes if '_exps.' in name or '.mlp.experts.' in name
+                  or name == 'token_embd.weight' or tensor.dtype != 'U8'
+                  else prod(tensor.shape) * 2)
+        # Projections retain their F32 source plus a shared BF16 operand. The
+        # shared gate is stored as a vector and loaded as a one-row matrix.
+        # Convolution and HC injection are converted by the weight loader;
+        # they do not create separate BLAS operands.
+        projection = ((len(tensor.shape) == 2
+                       and not name.endswith(('conv1d.weight', '_inject.weight')))
+                      or name.endswith('.ffn_gate_inp_shexp.weight'))
+        if dense_blas and tensor.dtype == 'F32' and projection:
+            total += prod(tensor.shape) * 2
+    return total

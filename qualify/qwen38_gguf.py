@@ -204,6 +204,14 @@ class PartialDecoder:
             *(operation for layer in self.layers for operation in layer))
 
 
+def export_fixture(prepared, images, storage, output, *, publisher):
+    """Drain and release captured graphs before their package pools leave scope."""
+    with prepared:
+        from ignition.preparation.runtime_package import export_model
+
+        export_model(prepared, images, storage, output, options={}, publisher=publisher)
+
+
 @torch.no_grad()
 def prepare(args):
     from transformers import Qwen4ExpTextConfig
@@ -220,7 +228,6 @@ def prepare(args):
     from ignition.preparation.model import PreparedModel
     from ignition.preparation.module_images import ModuleImages
     from ignition.preparation.package_storage import PackageStorage
-    from ignition.preparation.runtime_package import export_model
     from ignition.preparation.scratch import ScratchArena
     from ignition.recipes.qwen38.tuning import external_operators, preparation_session
     from ignition.preparation import runtime_package_pb2 as p
@@ -237,6 +244,7 @@ def prepare(args):
     from helios.tests.signing import publisher
 
     output, frontend = args.output.resolve(), args.frontend.resolve()
+    signer = publisher()
     if args.layers not in ([44, 47], [44, 45, 46, 47]):
         raise ValueError('qualification supports target blocks [44,47] or [44,45,46,47]')
     output.mkdir(parents=True, exist_ok=True)
@@ -446,13 +454,12 @@ def prepare(args):
                 operator_target=operator_target(operator_inputs),
                 session=session, server_config=settings, memory_report={}, package_data=table, export_events=table.events(),
                 export_zero_ranges=(*zero, *completion.zero_ranges()),
-                close_resources=() if quactlize_helpers is None else (quactlize_helpers,),
+                close_resources=(() if quactlize_helpers is None else (quactlize_helpers,)) + (table,),
                 resources=(weights, mtp, table, state, requests, inputs, scratch, workspace, rotary, cache,
                            completion, admission, transfer, functions, compiled, owners, speculation, stream, storage))
             print('Exporting native qualification package', flush=True)
-            export_model(prepared, images, storage, output / 'package', options={}, publisher=publisher())
+            export_fixture(prepared, images, storage, output / 'package', publisher=signer)
             print(f'Exported {output / "package"}; target blocks={args.layers}, shared GGUF MTP, synthetic endpoints', flush=True)
-            prepared.close(); table.close()
 
 
 if __name__ == '__main__':

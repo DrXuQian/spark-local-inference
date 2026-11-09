@@ -143,7 +143,7 @@ def gguf_recipe(manifest, directory):
     from ignition.preparation.qwen38 import ARCHITECTURE
     from ignition.preparation.qwen38_gguf import device_weight_bytes, operator_identity
 
-    draft = device_weight_bytes(manifest.draft)
+    draft = device_weight_bytes(manifest.draft, dense_blas=manifest.dense_blas is not None)
     actlize = manifest.actlize
     quactlize = manifest.quactlize
     dense_blas = manifest.dense_blas
@@ -156,7 +156,7 @@ def gguf_recipe(manifest, directory):
     checkpoint = Checkpoint(alias='qwen3.8-flash-gguf', repository=str(directory),
         revision=revision[:40], architecture=ARCHITECTURE,
         stored_bytes=sum(shard.file_size for checkpoint in (manifest, manifest.draft) for shard in checkpoint.shards),
-        device_bytes=device_weight_bytes(manifest) + draft, draft_bytes=draft,
+        device_bytes=device_weight_bytes(manifest, dense_blas=dense_blas is not None) + draft, draft_bytes=draft,
         mapped_host_bytes=manifest.tensors['per_layer_token_embd.weight'].nbytes)
     return replace(RECIPE, name='qwen38_gguf', prepare=prepare_gguf, checkpoints=(checkpoint,),
         concurrency=1, max_concurrency=1, max_images=0, image_bytes=0, actlize=actlize, quactlize=quactlize,

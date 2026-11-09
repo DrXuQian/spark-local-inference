@@ -515,3 +515,14 @@ For timelines, source $ppu_sdk/asight/envsetup.sh and trace flare run with
 asys profile -t hggc --hggc-graph-trace=node. test_actlize_runtime_package's
 own HGPTI allocation observer saw no startup allocations under asys, so trace
 the service rather than the replay tools. Open PPU findings are in TODO.txt.
+
+The subsequent framework review adds 143769600 bytes to the complete target's
+resident BLAS weight budget for its exact BF16 copies, and accounts for draft
+copies separately. The partial fixture also closes its prepared model through
+the existing context manager when package writing raises: synchronize, reset
+graphs, close the preparation session and owned resources, then leave package
+storage. The PLE table is an owned close resource. Its success message now
+follows cleanup. Eighty-five focused host checks pass, including full-geometry
+memory planning and injected package-write errors through the real PreparedModel
+cleanup. These checks do not reproduce PPU MemPool destruction: rerun the actual
+export and the remaining package-storage device cases before closing that issue.
