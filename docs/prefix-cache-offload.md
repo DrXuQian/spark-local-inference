@@ -491,7 +491,11 @@ stream-ordered; `cuMemHostRegister_v2` with the portable flag;
 which the loader's driver binding already has; and `cuMemAddressReserve`,
 `cuMemCreate`, `cuMemMap`, `cuMemSetAccess`, `cuMemUnmap`, `cuMemRelease`,
 `cuMemAddressFree`, and `cuMemGetAllocationGranularity` for split pools. The installed driver 610.57.04 exports the
-batched copy, and `/opt/cuda/include/cuda.h` declares it.
+batched copy, and `/opt/cuda/include/cuda.h` declares it. Drivers whose
+`cuDriverGetVersion` is below 13000, such as CUDA 12.8/12.9 drivers and the PPU
+SDK 2.2.1 CUDA 12.9 interface, export only the CUDA 12.8 `cuMemcpyBatchAsync`,
+whose failing-entry output precedes the stream. Helios binds that entry there
+and names the failing entry in its error.
 
 ### 2.6 Deferred GPUDirect Storage transport
 

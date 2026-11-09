@@ -47,6 +47,7 @@ type MemoryMap = unsafe extern "C" fn(u64, usize, usize, u64, u64) -> c_int;
 type MemoryUnmap = unsafe extern "C" fn(u64, usize) -> c_int;
 type MemoryAccess = unsafe extern "C" fn(u64, usize, *const AccessDescriptor, usize) -> c_int;
 type Granularity = unsafe extern "C" fn(*mut usize, *const AllocationProperties, c_int) -> c_int;
+type DriverVersion = unsafe extern "C" fn(*mut c_int) -> c_int;
 type MemcpyBatch = unsafe extern "C" fn(
     *const u64,
     *const u64,
@@ -57,6 +58,32 @@ type MemcpyBatch = unsafe extern "C" fn(
     usize,
     Handle,
 ) -> c_int;
+/// The CUDA 12.8 `cuMemcpyBatchAsync` ABI, with its failing-entry output
+/// before the stream.
+type MemcpyBatchFailure = unsafe extern "C" fn(
+    *const u64,
+    *const u64,
+    *const usize,
+    usize,
+    *const CopyAttributes,
+    *const usize,
+    usize,
+    *mut usize,
+    Handle,
+) -> c_int;
+
+/// The batched copy entry of the driver's API version. CUDA 13 exports the
+/// copy as `cuMemcpyBatchAsync_v2` without the failing-entry output; drivers
+/// implementing CUDA 12.8 or 12.9, such as the PPU SDK 2.2.1 CUDA 12.9 driver
+/// interface, export only the original `cuMemcpyBatchAsync`.
+#[derive(Clone, Copy)]
+enum MemcpyBatchEntry {
+    V2(MemcpyBatch),
+    FailureIndex(MemcpyBatchFailure),
+}
+
+/// `cuDriverGetVersion` of the first driver whose batched copy is `_v2`.
+const BATCH_COPY_V2_DRIVER: c_int = 13000;
 
 /// `CUmemcpyAttributes`: source access order, source and destination location
 /// hints as `CUmemLocation {type, id}`, and flags.
@@ -175,7 +202,7 @@ struct Driver {
     #[cfg(feature = "runtime-package")]
     device_uuid: DeviceUuid,
     event_synchronize: StreamOperation,
-    memcpy_batch: MemcpyBatch,
+    memcpy_batch: MemcpyBatchEntry,
     address_reserve: AddressReserve,
     address_free: AddressFree,
     memory_create: MemoryCreate,
@@ -207,6 +234,20 @@ impl Driver {
                     })?
                 };
             }
+            let driver_version: DriverVersion = symbol!("cuDriverGetVersion");
+            let mut version = 0;
+            let status = driver_version(&mut version);
+            if status != 0 {
+                return Err(Error::execution(
+                    ExecutionError::State,
+                    format!("cuDriverGetVersion failed with CUDA status {status}"),
+                ));
+            }
+            let memcpy_batch = if version >= BATCH_COPY_V2_DRIVER {
+                MemcpyBatchEntry::V2(symbol!("cuMemcpyBatchAsync_v2"))
+            } else {
+                MemcpyBatchEntry::FailureIndex(symbol!("cuMemcpyBatchAsync"))
+            };
             Ok(Arc::new(Self {
                 get_context: symbol!("cuCtxGetCurrent"),
                 set_context: symbol!("cuCtxSetCurrent"),
@@ -239,7 +280,7 @@ impl Driver {
                 #[cfg(feature = "runtime-package")]
                 device_uuid: symbol!("cuDeviceGetUuid"),
                 event_synchronize: symbol!("cuEventSynchronize"),
-                memcpy_batch: symbol!("cuMemcpyBatchAsync_v2"),
+                memcpy_batch,
                 address_reserve: symbol!("cuMemAddressReserve"),
                 address_free: symbol!("cuMemAddressFree"),
                 memory_create: symbol!("cuMemCreate"),
@@ -687,18 +728,46 @@ impl Stream {
         let first_entry = [0usize];
         // SAFETY: The arrays have equal validated lengths, the single attribute
         // applies from entry 0, and the caller guarantees every range's lifetime.
-        self.driver.check("cuMemcpyBatchAsync_v2", unsafe {
-            (self.driver.memcpy_batch)(
-                destinations.as_ptr(),
-                sources.as_ptr(),
-                sizes.as_ptr(),
-                sizes.len(),
-                &attributes,
-                first_entry.as_ptr(),
-                1,
-                self.handle as Handle,
-            )
-        })
+        match self.driver.memcpy_batch {
+            MemcpyBatchEntry::V2(copy) => self.driver.check("cuMemcpyBatchAsync_v2", unsafe {
+                copy(
+                    destinations.as_ptr(),
+                    sources.as_ptr(),
+                    sizes.as_ptr(),
+                    sizes.len(),
+                    &attributes,
+                    first_entry.as_ptr(),
+                    1,
+                    self.handle as Handle,
+                )
+            }),
+            MemcpyBatchEntry::FailureIndex(copy) => {
+                let mut failed = usize::MAX;
+                // SAFETY: As above; `failed` is a valid output for the call.
+                let status = unsafe {
+                    copy(
+                        destinations.as_ptr(),
+                        sources.as_ptr(),
+                        sizes.as_ptr(),
+                        sizes.len(),
+                        &attributes,
+                        first_entry.as_ptr(),
+                        1,
+                        &mut failed,
+                        self.handle as Handle,
+                    )
+                };
+                if status == 0 {
+                    return Ok(());
+                }
+                // The driver reports SIZE_MAX when no single entry failed.
+                if failed == usize::MAX {
+                    return self.driver.check("cuMemcpyBatchAsync", status);
+                }
+                self.driver
+                    .check(&format!("cuMemcpyBatchAsync entry {failed}"), status)
+            }
+        }
     }
 
     pub(crate) fn launch(&self, graph: usize) -> Result<()> {
